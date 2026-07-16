@@ -1,0 +1,56 @@
+name: Build romm-nx
+
+# Builds the Switch .nro using the official devkitPro toolchain container.
+# Runs on every push/PR and can also be triggered manually from the Actions tab.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install switch portlibs
+        # switch-portlibs is a meta-group covering most of the ported libraries
+        # this project links against; the explicit list below is belt-and-suspenders
+        # in case a given devkitPro release doesn't bundle one of them into the group.
+        # Re-running pacman on an already-installed package is a harmless no-op.
+        run: |
+          dkp-pacman -Sy --noconfirm
+          dkp-pacman -S --noconfirm --needed \
+            switch-dev switch-portlibs switch-mesa \
+            switch-curl switch-mbedtls \
+            switch-sdl2 switch-sdl2_image switch-sdl2_ttf switch-sdl2_gfx switch-sdl2_mixer \
+            switch-freetype switch-harfbuzz \
+            switch-libpng switch-libjpeg-turbo switch-libwebp \
+            switch-zlib switch-bzip2 \
+            switch-libvorbisidec switch-libogg switch-opus switch-opusfile \
+            switch-libmodplug switch-mpg123 \
+            switch-libdrm-nouveau || true
+
+      - name: Build Plutonium (vendored UI library)
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          make -C temp_plutonium/Plutonium -j"$(nproc)"
+
+      - name: Build romm-nx
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          make -j"$(nproc)"
+
+      - name: Upload .nro artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: romm-nx-nro-${{ github.sha }}
+          path: |
+            romm-nx.nro
+            romm-nx.elf
+          if-no-files-found: error
