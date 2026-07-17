@@ -149,8 +149,19 @@ void performDownload(
 
 class TaskQueue {
 public:
+    // Every async HTTP call in the app (cover downloads, ROM list/detail
+    // fetches, etc.) funnels through this one queue. A single worker meant
+    // they all ran strictly one at a time — a grid full of covers had to wait
+    // for each one's full connect+handshake+transfer cycle before the next
+    // could even start. Multiple workers let curl (thread-safe across
+    // separate easy handles, per its documented model — see HttpClient::init's
+    // curl_global_init call) actually run several transfers concurrently.
+    static constexpr int kWorkerCount = 4;
+
     TaskQueue() {
-        spawnWorker();
+        for (int i = 0; i < kWorkerCount; ++i) {
+            spawnWorker();
+        }
     }
 
     ~TaskQueue() {

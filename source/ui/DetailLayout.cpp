@@ -659,6 +659,8 @@ namespace romm::ui {
                 current_action_state = DownloadActionState::Downloading;
             } else if (task_snap.rom_id == rom_id && task_snap.state == romm::model::DownloadState::Queued) {
                 current_action_state = DownloadActionState::Queued;
+            } else if (task_snap.rom_id == rom_id && (task_snap.state == romm::model::DownloadState::Failed || task_snap.state == romm::model::DownloadState::Cancelled)) {
+                current_action_state = DownloadActionState::Failed;
             } else if (active_snap.rom_id != 0) {
                 current_action_state = DownloadActionState::AddToQueue;
             } else {
@@ -696,6 +698,8 @@ namespace romm::ui {
                     if (t.rom_id == rom_id) break;
                 }
                 new_dynamic_text = "QUEUED #" + std::to_string(q_pos);
+            } else if (current_action_state == DownloadActionState::Failed) {
+                active_btn_tex = tex_btn_failed;
             } else if (current_action_state == DownloadActionState::AddToQueue) {
                 if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2") active_btn_tex = tex_btn_unsupported;
                 else active_btn_tex = tex_btn_add_to_queue;
@@ -1261,6 +1265,22 @@ namespace romm::ui {
                     CoverProfileType::DefaultPortrait,
                     keys.large_key.variant,
                     false
+                );
+                if (res.state == CoverState::Ready && res.texture) {
+                    display_tex = res.texture;
+                }
+            }
+            // 3. Last resort: the small cover — this is what the Detail page itself
+            // is already showing, so if we have nothing else, this beats a black
+            // screen. Allow a download here too since it's our final fallback.
+            if (!display_tex && keys.small_key.rom_id > 0 && !keys.small_key.cover_source.empty()) {
+                auto res = CoverCache::Instance().GetOrRequest(
+                    keys.small_key.rom_id,
+                    keys.small_key.platform_slug,
+                    keys.small_key.cover_source,
+                    CoverProfileType::DefaultPortrait,
+                    keys.small_key.variant,
+                    true
                 );
                 if (res.state == CoverState::Ready && res.texture) {
                     display_tex = res.texture;

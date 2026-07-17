@@ -96,6 +96,10 @@ namespace romm::navigation {
         size_t selected_rom_path_row_idx = 0;
         bool rom_path_rows_focused = false;
 
+        // Library "Y-Menu" state (Search / Sort / View Mode)
+        bool library_menu_active = false;
+        size_t library_menu_selected_idx = 0;  // 0=Search, 1=Sort, 2=View Mode
+
         // Persistent layouts created once
         std::shared_ptr<romm::ui::MainMenuLayout> main_menu_layout;
         std::shared_ptr<romm::ui::LibraryLayout> library_layout;
@@ -167,6 +171,11 @@ namespace romm::navigation {
         void HideUninstallModal() { uninstall_modal.active = false; }
         const UninstallModalPayload& GetUninstallModalState() const { return uninstall_modal; }
         void HandleUninstallModalInput(u64 keys_down);
+
+        // Library Y-Menu controls
+        bool IsLibraryMenuActive() const { return library_menu_active; }
+        size_t GetLibraryMenuSelectedIdx() const { return library_menu_selected_idx; }
+        void HandleLibraryMenuInput(u64 keys_down);
 
     private:
         UninstallModalPayload uninstall_modal;

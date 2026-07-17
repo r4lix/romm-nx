@@ -813,7 +813,7 @@ namespace romm::model {
     void DownloadManager::RetryFailed(int rom_id) {
         std::lock_guard<std::mutex> lock(task_mutex);
         for (auto& t : download_queue) {
-            if (t.rom_id == rom_id && t.state == DownloadState::Failed) {
+            if (t.rom_id == rom_id && (t.state == DownloadState::Failed || t.state == DownloadState::Cancelled)) {
                 t.state = DownloadState::Queued;
                 t.error_message = "";
                 if (!worker_running) {
@@ -905,7 +905,36 @@ namespace romm::model {
         Result last_write_error = 0;
         s64 write_offset = 0;
         bool crossed_4GiB_logged = false;
+
+        // BigFile writes go straight to the FS sysmodule via fsFileWrite, which is
+        // a synchronous IPC round-trip. curl hands us one callback per TLS record
+        // (~16 KB), so without batching a 4+ GB ISO means hundreds of thousands of
+        // individual IPC calls and throughput tanks. Coalesce into large chunks
+        // before touching the filesystem.
+        static constexpr size_t kFlushBufferSize = 4 * 1024 * 1024; // 4 MB
+        std::vector<u8> flush_buffer;
+        size_t flush_buffer_used = 0;
     };
+
+    static bool FlushBigFileBuffer(DownloadWriter* writer) {
+        if (writer->flush_buffer_used == 0) return true;
+
+        s64 next_offset = writer->write_offset + (s64)writer->flush_buffer_used;
+        if (!writer->crossed_4GiB_logged && next_offset > 0xFFFFFFFFLL && writer->write_offset <= 0xFFFFFFFFLL) {
+            std::cout << "[BigFile] crossed_4GiB offset=" << next_offset << std::endl;
+            writer->crossed_4GiB_logged = true;
+        }
+
+        Result rc = fsFileWrite(&(writer->fs_file), writer->write_offset, writer->flush_buffer.data(), writer->flush_buffer_used, FsWriteOption_None);
+        if (R_FAILED(rc)) {
+            writer->last_write_error = rc;
+            std::cerr << "[BigFile] write failed at offset=" << writer->write_offset << " error=" << rc << std::endl;
+            return false;
+        }
+        writer->write_offset += (s64)writer->flush_buffer_used;
+        writer->flush_buffer_used = 0;
+        return true;
+    }
 
     static bool IsLogicalFileValid(const std::string& path) {
         FsFileSystem* fs = nullptr;
@@ -969,19 +998,26 @@ namespace romm::model {
         if (bytes_to_write == 0) return 0;
 
         if (writer->is_big_file) {
-            s64 next_offset = writer->write_offset + bytes_to_write;
-            if (!writer->crossed_4GiB_logged && next_offset > 0xFFFFFFFFLL && writer->write_offset <= 0xFFFFFFFFLL) {
-                std::cout << "[BigFile] crossed_4GiB offset=" << next_offset << std::endl;
-                writer->crossed_4GiB_logged = true;
+            if (writer->flush_buffer.empty()) {
+                writer->flush_buffer.resize(DownloadWriter::kFlushBufferSize);
             }
 
-            Result rc = fsFileWrite(&(writer->fs_file), writer->write_offset, contents, bytes_to_write, FsWriteOption_None);
-            if (R_FAILED(rc)) {
-                writer->last_write_error = rc;
-                std::cerr << "[BigFile] write failed at offset=" << writer->write_offset << " error=" << rc << std::endl;
-                return 0; // abort
+            const u8* src = static_cast<const u8*>(contents);
+            size_t remaining = bytes_to_write;
+            while (remaining > 0) {
+                size_t space = DownloadWriter::kFlushBufferSize - writer->flush_buffer_used;
+                size_t take = std::min(space, remaining);
+                std::copy(src, src + take, writer->flush_buffer.begin() + writer->flush_buffer_used);
+                writer->flush_buffer_used += take;
+                src += take;
+                remaining -= take;
+
+                if (writer->flush_buffer_used == DownloadWriter::kFlushBufferSize) {
+                    if (!FlushBigFileBuffer(writer)) {
+                        return 0; // abort — last_write_error already set
+                    }
+                }
             }
-            writer->write_offset += bytes_to_write;
             return bytes_to_write;
         } else {
             size_t written = fwrite(contents, size, nmemb, writer->file_ptr);
@@ -1151,6 +1187,8 @@ namespace romm::model {
 
                 curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
                 curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
                 curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
                 curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
                 curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -1160,7 +1198,9 @@ namespace romm::model {
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
                 // 256 KB receive buffer — maximizes throughput on Switch
                 curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 262144L);
-                curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+                // NOTE: CURLOPT_TCP_KEEPALIVE deliberately omitted — the Switch's bsd
+                // socket service does not reliably support SO_KEEPALIVE, and enabling
+                // it can make curl fail the connection outright on real hardware.
 
                 CURLcode res = curl_easy_perform(curl);
                 
@@ -1172,24 +1212,32 @@ namespace romm::model {
 
                 if (download_success) {
                     if (use_big_file) {
-                        // 1. verify write_offset == expected_size
-                        if (writer.write_offset != current_task.total_bytes) {
-                            std::cerr << "[Download] Size mismatch: write_offset=" << writer.write_offset 
-                                      << " expected=" << current_task.total_bytes << std::endl;
+                        // Flush any bytes still sitting in the coalescing buffer before
+                        // verifying the final size below.
+                        if (!FlushBigFileBuffer(&writer)) {
                             download_success = false;
-                        } else {
-                            // 2. fsFileFlush
-                            fsFileFlush(&writer.fs_file);
-                            
-                            // 3. fsFileGetSize and verify temporary logical size
-                            s64 temp_size = 0;
-                            Result sz_rc = fsFileGetSize(&writer.fs_file, &temp_size);
-                            if (R_FAILED(sz_rc) || temp_size != current_task.total_bytes) {
-                                std::cerr << "[Download] Temp size check failed: " << temp_size << " (rc=" << sz_rc << ")" << std::endl;
+                        }
+
+                        if (download_success) {
+                            // 1. verify write_offset == expected_size
+                            if (writer.write_offset != current_task.total_bytes) {
+                                std::cerr << "[Download] Size mismatch: write_offset=" << writer.write_offset
+                                          << " expected=" << current_task.total_bytes << std::endl;
                                 download_success = false;
+                            } else {
+                                // 2. fsFileFlush
+                                fsFileFlush(&writer.fs_file);
+
+                                // 3. fsFileGetSize and verify temporary logical size
+                                s64 temp_size = 0;
+                                Result sz_rc = fsFileGetSize(&writer.fs_file, &temp_size);
+                                if (R_FAILED(sz_rc) || temp_size != current_task.total_bytes) {
+                                    std::cerr << "[Download] Temp size check failed: " << temp_size << " (rc=" << sz_rc << ")" << std::endl;
+                                    download_success = false;
+                                }
                             }
                         }
-                        
+
                         // 4. fsFileClose
                         fsFileClose(&writer.fs_file);
                         writer.fs_file_open = false;
@@ -1340,10 +1388,16 @@ namespace romm::model {
                             std::string auth = "Authorization: Bearer " + config.GetApiKey();
                             headers = curl_slist_append(headers, auth.c_str());
 
+                            DownloadWriter cover_writer;
+                            cover_writer.is_big_file = false;
+                            cover_writer.file_ptr = fc;
+
                             curl_easy_setopt(curl, CURLOPT_URL, current_task.cover_url.c_str());
                             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
                             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-                            curl_easy_setopt(curl, CURLOPT_WRITEDATA, fc);
+                            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &cover_writer);
                             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
                             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 

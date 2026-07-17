@@ -51,50 +51,50 @@ namespace romm::ui {
             available_h = this->h - 95;
         }
 
-        // Set parameters based on profile type
+        // profile.columns/visibleRows come from GetCoverProfile(), which already
+        // accounts for the current grid view mode (Default vs. Big).
+        int cols = profile.columns;
+        int rows = profile.visibleRows;
+
+        // Which axis constrains tile size — width (split across columns) or
+        // height (split across rows) — depends on the profile's aspect ratio
+        // and the column/row count. This canvas is short and wide, so for any
+        // profile with 2+ rows, height is almost always the binding constraint:
+        // reducing columns alone barely changes tile size, it just widens the
+        // gaps between same-sized tiles. So compute both candidate sizes (using
+        // FIXED gap/offset constants, not ones back-derived from a guessed tile
+        // size) and take whichever is smaller, then center the leftover space
+        // on the other axis. This is what makes "Big" mode (fewer rows) actually
+        // grow the tiles instead of just spreading them out.
+        auto solve = [&](s32 offsetX, s32 gapX, s32 offsetY, s32 gapY, int aspect_w, int aspect_h) {
+            s32 h_bound = (available_h - 2 * offsetY - (rows - 1) * gapY) / rows;
+            s32 w_bound_as_h = ((this->w - 2 * offsetX - (cols - 1) * gapX) * aspect_h) / (cols * aspect_w);
+            profile.coverH = std::min(h_bound, w_bound_as_h);
+            profile.coverW = (profile.coverH * aspect_w) / aspect_h;
+            profile.gapX = gapX;
+            profile.gapY = gapY;
+            profile.offsetX = (this->w - cols * profile.coverW - (cols - 1) * gapX) / 2;
+            profile.offsetY = (available_h - rows * profile.coverH - (rows - 1) * gapY) / 2;
+        };
+
         if (profile.type == CoverProfileType::PS2Portrait) {
-            profile.offsetY = 15;
-            profile.gapY = 20;
-            profile.coverH = (available_h - 2 * profile.offsetY - profile.gapY) / 2;
-            profile.coverW = (profile.coverH * 161) / 230; // Aspect ratio 161:230
-            profile.offsetX = 36;
-            profile.gapX = (this->w - 5 * profile.coverW - 2 * profile.offsetX) / 4;
+            solve(36, 40, 15, 20, 161, 230); // Aspect ratio 161:230
         }
         else if (profile.type == CoverProfileType::PSPPortrait) {
-            profile.offsetY = 15;
-            profile.gapY = 20;
-            profile.coverH = (available_h - 2 * profile.offsetY - profile.gapY) / 2;
-            profile.coverW = (profile.coverH * 165) / 252; // Aspect ratio 165:252
-            profile.offsetX = 36;
-            profile.gapX = (this->w - 5 * profile.coverW - 2 * profile.offsetX) / 4;
+            solve(36, 40, 15, 20, 165, 252); // Aspect ratio 165:252
         }
         else if (profile.type == CoverProfileType::PS1Square) {
-            profile.offsetY = 12;
-            profile.gapY = 15;
-            profile.coverH = (available_h - 2 * profile.offsetY - 2 * profile.gapY) / 3;
-            profile.coverW = profile.coverH; // Square
-            profile.offsetX = 20;
-            profile.gapX = (this->w - 6 * profile.coverW - 2 * profile.offsetX) / 5;
+            solve(32, 24, 32, 24, 1, 1); // Square
         }
         else if (profile.type == CoverProfileType::NintendoDS ||
                  profile.type == CoverProfileType::GameBoy ||
                  profile.type == CoverProfileType::GameBoyColor ||
                  profile.type == CoverProfileType::GameBoyAdvance) {
-            profile.offsetY = 12;
-            profile.gapY = 15;
-            profile.coverH = (available_h - 2 * profile.offsetY - 2 * profile.gapY) / 3;
-            profile.coverW = (profile.coverH * 276) / 250; // Aspect ratio 276:250
-            profile.offsetX = 20;
-            profile.gapX = (this->w - 5 * profile.coverW - 2 * profile.offsetX) / 4;
+            solve(20, 30, 12, 15, 276, 250); // Aspect ratio 276:250
         }
         else {
             // DefaultPortrait fallback
-            profile.offsetY = 12;
-            profile.gapY = 15;
-            profile.coverH = (available_h - 2 * profile.offsetY - 2 * profile.gapY) / 3;
-            profile.coverW = (profile.coverH * 120) / 180; // Aspect ratio 120:180
-            profile.offsetX = 20;
-            profile.gapX = (this->w - 6 * profile.coverW - 2 * profile.offsetX) / 5;
+            solve(20, 30, 12, 15, 120, 180); // Aspect ratio 120:180
         }
     }
 
@@ -196,12 +196,20 @@ namespace romm::ui {
         const auto& current_platform = platforms.at(plat_idx);
         size_t letter_idx = nav->GetSelectedLetterIdx();
 
-        // 1. Rebuild filtered games only if platform or letter changed
-        if (plat_idx != cached_selected_platform_idx || letter_idx != cached_selected_letter_idx) {
+        // 1. Rebuild filtered games only if platform, letter, or the grid view
+        // mode (Default/Big, from the Y-Menu) changed — GetCoverProfile() picks
+        // column counts based on the live view mode, so a mode change needs the
+        // same refresh path as a platform change even though the platform itself
+        // didn't move.
+        auto current_view_mode = romm::model::ConfigManager::Instance().GetGridViewMode();
+        bool view_mode_changed = (current_view_mode != cached_view_mode);
+
+        if (plat_idx != cached_selected_platform_idx || letter_idx != cached_selected_letter_idx || view_mode_changed) {
             ClearStatusTex();
 
-            if (plat_idx != cached_selected_platform_idx) {
+            if (plat_idx != cached_selected_platform_idx || view_mode_changed) {
                 current_profile = GetCoverProfile(current_platform);
+                cached_view_mode = current_view_mode;
             }
 
             filtered_games.clear();

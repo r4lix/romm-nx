@@ -11,6 +11,12 @@ namespace romm::model {
         HD
     };
 
+    enum class GridViewMode {
+        Default,
+        Big,
+        Detail // Not implemented yet — grid rendering treats this the same as Default.
+    };
+
     class ConfigManager {
     public:
         static ConfigManager& Instance();
@@ -43,6 +49,10 @@ namespace romm::model {
         CoversQuality GetCoversQuality() const { return covers_quality; }
         void SetCoversQuality(CoversQuality q) { covers_quality = q; }
         std::string GetCoversQualityString() const;
+
+        GridViewMode GetGridViewMode() const { return grid_view_mode; }
+        void SetGridViewMode(GridViewMode m) { grid_view_mode = m; }
+        std::string GetGridViewModeString() const;
 
         bool IsAutoClearEnabled() const { return auto_clear_enabled; }
         void SetAutoClearEnabled(bool enabled) { auto_clear_enabled = enabled; }
@@ -93,6 +103,7 @@ namespace romm::model {
         std::string language = "en";
         std::string theme = "romm_brand";
         CoversQuality covers_quality = CoversQuality::Balanced;
+        GridViewMode grid_view_mode = GridViewMode::Default;
         bool auto_clear_enabled = false;
         int max_size_mb = 500;
         int max_age_days = 30;

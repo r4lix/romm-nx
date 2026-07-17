@@ -48,6 +48,7 @@ namespace romm::ui {
         AddToQueue,
         Queued,
         Downloading,
+        Failed,
         Uninstall
     };
 

@@ -5,6 +5,7 @@
 #include "AlphabetBar.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "GlobalProgressBar.hpp"
+#include "LibraryMenuModal.hpp"
 #include <sys/statvfs.h>
 #include <sstream>
 #include <iomanip>
@@ -169,7 +170,7 @@ namespace romm::ui {
         });
 
         // Create hint text block (Ubuntu, Light lavender #BEB4E1)
-        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, "A Select / Focus   |   B Back / Main Menu   |   + Exit");
+        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, "A Select / Focus   |   B Back / Main Menu   |   Y Menu   |   + Exit");
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(hint_text);
@@ -190,6 +191,10 @@ namespace romm::ui {
         // Grid takes the remaining space below the alphabet bar
         grid = GameGrid::New(380, 180, 1920 - 380, 800, nav);
         this->Add(grid);
+
+        // Y-Menu overlay — added last so it renders on top of everything else
+        library_menu_modal = LibraryMenuModal::New(nav);
+        this->Add(library_menu_modal);
     }
 
     LibraryLayout::~LibraryLayout() {

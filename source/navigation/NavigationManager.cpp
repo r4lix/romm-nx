@@ -146,6 +146,39 @@ namespace romm::navigation {
         }
     }
 
+    void NavigationManager::HandleLibraryMenuInput(u64 keys_down) {
+        if (!library_menu_active) return;
+
+        if (keys_down & HidNpadButton_B) {
+            library_menu_active = false;
+            std::cout << "[NAV] [Y MENU] Closed" << std::endl;
+        }
+        else if (keys_down & HidNpadButton_Up) {
+            if (library_menu_selected_idx > 0) library_menu_selected_idx--;
+        }
+        else if (keys_down & HidNpadButton_Down) {
+            if (library_menu_selected_idx < 2) library_menu_selected_idx++;
+        }
+        else if (keys_down & HidNpadButton_A) {
+            if (library_menu_selected_idx == 2) { // View Mode: press to cycle in place
+                auto& config = romm::model::ConfigManager::Instance();
+                romm::model::GridViewMode mode = config.GetGridViewMode();
+                romm::model::GridViewMode next =
+                    (mode == romm::model::GridViewMode::Default) ? romm::model::GridViewMode::Big :
+                    (mode == romm::model::GridViewMode::Big)     ? romm::model::GridViewMode::Detail :
+                                                                    romm::model::GridViewMode::Default;
+                config.SetGridViewMode(next);
+                config.Save();
+                std::cout << "[NAV] [Y MENU] View mode set to " << config.GetGridViewModeString() << std::endl;
+
+                // Force the grid to recompute its column layout immediately —
+                // it otherwise only refreshes CoverProfile on a platform change.
+                UpdateLayoutSelection();
+            }
+            // Search / Sort are stubs for now — no-op until implemented.
+        }
+    }
+
     void NavigationManager::HandleInput(const u64 keys_down, const u64 keys_held) {
         static auto last_transition_time = std::chrono::high_resolution_clock::time_point();
         auto now = std::chrono::high_resolution_clock::now();
@@ -157,6 +190,11 @@ namespace romm::navigation {
         // Block all background input if modal is active
         if (uninstall_modal.active) {
             HandleUninstallModalInput(keys_down);
+            return;
+        }
+
+        if (library_menu_active) {
+            HandleLibraryMenuInput(keys_down);
             return;
         }
 
@@ -346,7 +384,15 @@ namespace romm::navigation {
             }
             size_t filtered_count = filtered_indices.size();
 
-            if (library_focus == LibraryFocus::Sidebar) {
+            // Y opens the library menu (Search / Sort / View Mode) regardless of
+            // which sub-area (sidebar/alphabet/grid) currently has focus.
+            if (keys_down & HidNpadButton_Y) {
+                library_menu_active = true;
+                library_menu_selected_idx = 0;
+                state_changed = true;
+                std::cout << "[NAV] [Y PRESS] Opened Library Menu" << std::endl;
+            }
+            else if (library_focus == LibraryFocus::Sidebar) {
                 // Sidebar Up/Down: only moves focus highlight, does NOT trigger network fetch
                 if ((keys_effective & HidNpadButton_Up) || (keys_effective & HidNpadButton_StickLUp)) {
                     if (selected_platform_idx > 0) {
@@ -653,6 +699,8 @@ namespace romm::navigation {
                                     ShowUninstallModal(p);
                                 } else if (action == romm::ui::DownloadActionState::Queued) {
                                     dl_mgr.RemoveFromQueue(rom_id);
+                                } else if (action == romm::ui::DownloadActionState::Failed) {
+                                    dl_mgr.RetryFailed(rom_id);
                                 } else if (action == romm::ui::DownloadActionState::Download || action == romm::ui::DownloadActionState::AddToQueue) {
                                     dl_mgr.EnqueueDownload(*detail, detail_layout->ctx.platform_slug, detail_layout->ctx.title);
                                 }

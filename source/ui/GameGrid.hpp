@@ -2,6 +2,7 @@
 
 #include <pu/Plutonium>
 #include "../navigation/NavigationManager.hpp"
+#include "../model/ConfigManager.hpp"
 #include <memory>
 #include <vector>
 #include "CoverProfile.hpp"
@@ -40,6 +41,7 @@ namespace romm::ui {
         int    last_scroll_direction      = 0; // 1 = down, -1 = up, 0 = stationary
         size_t cached_selected_platform_idx = 999999;
         size_t cached_selected_letter_idx   = 999999;
+        romm::model::GridViewMode cached_view_mode = romm::model::GridViewMode::Default;
 
         // Marquee scrolling members
         enum class InfoScrollState { WaitStart, Scrolling, WaitEnd };

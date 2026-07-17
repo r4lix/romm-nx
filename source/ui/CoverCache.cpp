@@ -77,7 +77,7 @@ namespace romm::ui {
             } else if (profile_type == CoverProfileType::PSPPortrait) {
                 w = 247; h = 378;
             } else if (profile_type == CoverProfileType::PS1Square) {
-                w = 240; h = 240;
+                w = 310; h = 310;
             } else {
                 w = 180; h = 270;
             }
@@ -307,7 +307,12 @@ namespace romm::ui {
                 if (tmp_path.length() >= 4 && tmp_path.substr(tmp_path.length() - 4) == ".tmp") {
                     std::string ext = DetectImageExtension(tmp_path);
                     std::string final_path = tmp_path.substr(0, tmp_path.length() - 4) + "." + ext;
-                    
+
+                    // The Switch's sdmc: fs driver, unlike POSIX rename(), does not
+                    // overwrite an existing destination — it just fails. Clear the
+                    // way first (a stale leftover from an earlier run, if any).
+                    remove(final_path.c_str());
+
                     if (rename(tmp_path.c_str(), final_path.c_str()) == 0) {
                         entry.cache_path = final_path;
                     } else {

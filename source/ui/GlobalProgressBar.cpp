@@ -136,11 +136,6 @@ namespace romm::ui {
                 speed_text = "Syncing Cover...";
             }
 
-            std::cout << "[DL_WIDGET] Active title=" << game_name 
-                      << " progress=" << (int)(progress_pct * 100) 
-                      << " speed=" << active_snap.download_speed_bps 
-                      << " queued=" << pending << std::endl;
-
         } else if (pending > 0) {
             status_text = "Queue";
             speed_text = std::to_string(pending) + " items queued";

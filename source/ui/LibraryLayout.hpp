@@ -11,14 +11,16 @@ namespace romm::ui {
     class SidebarList;
     class GameGrid;
     class AlphabetBar;
+    class LibraryMenuModal;
 
     class LibraryLayout : public pu::ui::Layout {
     private:
         std::weak_ptr<romm::navigation::NavigationManager> nav_mgr;
-        
+
         std::shared_ptr<SidebarList> sidebar;
         std::shared_ptr<GameGrid> grid;
         std::shared_ptr<AlphabetBar> alphabet_bar;
+        std::shared_ptr<LibraryMenuModal> library_menu_modal;
         
         pu::ui::elm::TextBlock::Ref title_text;
         pu::ui::elm::TextBlock::Ref info_text;

@@ -140,6 +140,15 @@ namespace romm::model {
             covers_quality = CoversQuality::Balanced;
         }
 
+        std::string view_mode_str;
+        if (jsonExtractString(content, "grid_view_mode", view_mode_str)) {
+            if (view_mode_str == "Big" || view_mode_str == "big") grid_view_mode = GridViewMode::Big;
+            else if (view_mode_str == "Detail" || view_mode_str == "detail") grid_view_mode = GridViewMode::Detail;
+            else grid_view_mode = GridViewMode::Default;
+        } else {
+            grid_view_mode = GridViewMode::Default;
+        }
+
         jsonExtractBool(content, "auto_clear_enabled", auto_clear_enabled);
         jsonExtractInt(content, "max_size_mb", max_size_mb);
         jsonExtractInt(content, "max_age_days", max_age_days);
@@ -235,6 +244,7 @@ namespace romm::model {
         content += "  \"language\": \"" + language + "\",\n";
         content += "  \"theme\": \"" + theme + "\",\n";
         content += "  \"covers_quality\": \"" + GetCoversQualityString() + "\",\n";
+        content += "  \"grid_view_mode\": \"" + GetGridViewModeString() + "\",\n";
         content += "  \"connection\": {\n";
         content += "    \"server_url\": \"" + romm_host + "\",\n";
         content += "    \"api_key\": \"" + api_key + "\"\n";
@@ -297,6 +307,14 @@ namespace romm::model {
             case CoversQuality::SD: return "SD";
             case CoversQuality::HD: return "HD";
             default: return "Balanced";
+        }
+    }
+
+    std::string ConfigManager::GetGridViewModeString() const {
+        switch (grid_view_mode) {
+            case GridViewMode::Big: return "Big";
+            case GridViewMode::Detail: return "Detail";
+            default: return "Default";
         }
     }
 

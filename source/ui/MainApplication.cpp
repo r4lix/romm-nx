@@ -91,11 +91,7 @@ namespace romm::ui {
             }
 
             if (keys_down != 0) {
-                auto start = std::chrono::high_resolution_clock::now();
                 nav_mgr->HandleInput(keys_down, keys_held);
-                auto end = std::chrono::high_resolution_clock::now();
-                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-                std::cout << "[PERF] Input handling: " << elapsed_ms << " ms" << std::endl;
             } else if (keys_held != 0) {
                 // No fresh press, but check for held repeat (directional hold scrolling)
                 nav_mgr->HandleInput(0, keys_held);
