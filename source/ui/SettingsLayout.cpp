@@ -308,6 +308,8 @@ namespace romm::ui {
             options.push_back({"Show installed badge", config.ShowInstalledBadge() ? "ON" : "OFF"});
             options.push_back({"Screen Always On", config.ScreenAlwaysOn() ? "ON" : "OFF"});
             options.push_back({"Covers Quality", config.GetCoversQualityString()});
+            options.push_back({"File browser writes", config.FileBrowserWriteAnywhere() ? "Everywhere (SD)" : "ROMs folder only"});
+            options.push_back({"Default View Mode", config.GetGridViewModeString() + " (per-platform via Y-Menu)"});
         }
         else if (active_cat == 1) { // Theme
             options.push_back({"Theme", "RomM Brand"});
@@ -755,6 +757,19 @@ namespace romm::ui {
                 } else {
                     config.SetCoversQuality(romm::model::CoversQuality::Balanced);
                 }
+                config.Save();
+            } else if (opt_idx == 6) {
+                config.SetFileBrowserWriteAnywhere(!config.FileBrowserWriteAnywhere());
+                config.Save();
+            } else if (opt_idx == 7) {
+                // Global default only — platforms with their own Y-Menu
+                // override are unaffected.
+                auto current = config.GetGridViewMode();
+                romm::model::GridViewMode next =
+                    (current == romm::model::GridViewMode::Default) ? romm::model::GridViewMode::Big :
+                    (current == romm::model::GridViewMode::Big)     ? romm::model::GridViewMode::Detail :
+                                                                        romm::model::GridViewMode::Default;
+                config.SetGridViewMode(next);
                 config.Save();
             }
         }

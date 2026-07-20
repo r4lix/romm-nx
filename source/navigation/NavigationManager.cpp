@@ -161,19 +161,32 @@ namespace romm::navigation {
         }
         else if (keys_down & HidNpadButton_A) {
             if (library_menu_selected_idx == 2) { // View Mode: press to cycle in place
+                // Cycles only the CURRENT platform's view mode (per-platform
+                // override) — the global default (Settings > General) is a
+                // separate value, changed only from Settings.
                 auto& config = romm::model::ConfigManager::Instance();
-                romm::model::GridViewMode mode = config.GetGridViewMode();
-                romm::model::GridViewMode next =
-                    (mode == romm::model::GridViewMode::Default) ? romm::model::GridViewMode::Big :
-                    (mode == romm::model::GridViewMode::Big)     ? romm::model::GridViewMode::Detail :
-                                                                    romm::model::GridViewMode::Default;
-                config.SetGridViewMode(next);
-                config.Save();
-                std::cout << "[NAV] [Y MENU] View mode set to " << config.GetGridViewModeString() << std::endl;
+                std::string platform_slug;
+                if (model) {
+                    const auto& platforms = model->GetPlatforms();
+                    if (loaded_platform_idx < platforms.size()) {
+                        platform_slug = platforms[loaded_platform_idx].slug;
+                    }
+                }
+                if (!platform_slug.empty()) {
+                    romm::model::GridViewMode mode = config.GetGridViewMode(platform_slug);
+                    romm::model::GridViewMode next =
+                        (mode == romm::model::GridViewMode::Default) ? romm::model::GridViewMode::Big :
+                        (mode == romm::model::GridViewMode::Big)     ? romm::model::GridViewMode::Detail :
+                                                                        romm::model::GridViewMode::Default;
+                    config.SetGridViewModeForPlatform(platform_slug, next);
+                    config.Save();
+                    std::cout << "[NAV] [Y MENU] View mode for platform=" << platform_slug
+                              << " set to " << config.GetGridViewModeString(platform_slug) << std::endl;
 
-                // Force the grid to recompute its column layout immediately —
-                // it otherwise only refreshes CoverProfile on a platform change.
-                UpdateLayoutSelection();
+                    // Force the grid to recompute its column layout immediately —
+                    // it otherwise only refreshes CoverProfile on a platform change.
+                    UpdateLayoutSelection();
+                }
             }
             // Search / Sort are stubs for now — no-op until implemented.
         }

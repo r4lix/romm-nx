@@ -50,9 +50,19 @@ namespace romm::model {
         void SetCoversQuality(CoversQuality q) { covers_quality = q; }
         std::string GetCoversQualityString() const;
 
+        // Global default grid view mode — set from Settings > General, applies
+        // to any platform without its own override below.
         GridViewMode GetGridViewMode() const { return grid_view_mode; }
         void SetGridViewMode(GridViewMode m) { grid_view_mode = m; }
         std::string GetGridViewModeString() const;
+
+        // Effective view mode for a specific platform: its own override if one
+        // was set (via the in-game Y-Menu), otherwise the global default.
+        GridViewMode GetGridViewMode(const std::string& platform_slug) const;
+        std::string GetGridViewModeString(const std::string& platform_slug) const;
+        // Per-platform override, set from the in-game Y-Menu — affects only
+        // this platform, independent of the global default above.
+        void SetGridViewModeForPlatform(const std::string& platform_slug, GridViewMode m);
 
         bool IsAutoClearEnabled() const { return auto_clear_enabled; }
         void SetAutoClearEnabled(bool enabled) { auto_clear_enabled = enabled; }
@@ -77,6 +87,11 @@ namespace romm::model {
 
         bool ScreenAlwaysOn() const { return screen_always_on; }
         void SetScreenAlwaysOn(bool enabled) { screen_always_on = enabled; }
+
+        // File browser write policy: false (default) restricts create/rename/
+        // delete to the ROMs folders; true allows writes anywhere on the SD.
+        bool FileBrowserWriteAnywhere() const { return filebrowser_write_anywhere; }
+        void SetFileBrowserWriteAnywhere(bool enabled) { filebrowser_write_anywhere = enabled; }
 
         std::string GetUpdateManifestUrl() const { return update_manifest_url; }
         void SetUpdateManifestUrl(const std::string& url) { update_manifest_url = url; }
@@ -112,12 +127,14 @@ namespace romm::model {
         bool confirm_before_uninstall = true;
         bool show_installed_badge = true;
         bool screen_always_on = false;
+        bool filebrowser_write_anywhere = false;
 
         std::string update_manifest_url = "https://romm-nx.aaaoz.fr/romm-nx/stable/manifest.json";
         std::string update_channel = "stable";
         bool check_updates_on_startup = false;
 
         std::map<std::string, std::string> rom_paths;
+        std::map<std::string, GridViewMode> platform_grid_view_mode;
     };
 
 }

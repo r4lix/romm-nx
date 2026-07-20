@@ -1,4 +1,5 @@
 #include "DetailLayout.hpp"
+#include "PlaceholderCover.hpp"
 #include "../model/DataModel.hpp"
 #include "../model/DownloadManager.hpp"
 #include "../navigation/NavigationManager.hpp"
@@ -579,8 +580,12 @@ namespace romm::ui {
             opts.height = draw_h;
             drawer->RenderTexture(cover_tex, draw_x, draw_y, opts);
         } else {
-            // Draw placeholder inside stable viewport
-            if (display_state == DetailDisplayState::Placeholder) {
+            // No cover available (loading, missing, or failed): prefer the
+            // bundled per-platform "NO COVER" art, fall back to the old text.
+            auto ph_tex = GetPlaceholderCover(expected_identity.cache_key.platform_slug);
+            if (ph_tex) {
+                DrawPlaceholderCover(drawer, ph_tex, actual_cover_x, actual_cover_y, actual_cover_w, actual_cover_h);
+            } else if (display_state == DetailDisplayState::Placeholder) {
                 s32 ph_w = pu::ui::render::GetTextureWidth(cover_placeholder_tex);
                 s32 ph_h = pu::ui::render::GetTextureHeight(cover_placeholder_tex);
                 drawer->RenderTexture(cover_placeholder_tex, actual_cover_x + (actual_cover_w - ph_w) / 2, actual_cover_y + (actual_cover_h - ph_h) / 2);

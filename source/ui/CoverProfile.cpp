@@ -12,7 +12,7 @@ namespace romm::ui {
         // live in GameGrid::AdjustProfileForHeight, which must use matching
         // column/row counts per branch.
         // "Detail" mode isn't implemented yet, so it renders identically to Default.
-        const bool big = (romm::model::ConfigManager::Instance().GetGridViewMode() == romm::model::GridViewMode::Big);
+        const bool big = (romm::model::ConfigManager::Instance().GetGridViewMode(platform.slug) == romm::model::GridViewMode::Big);
 
         if (platform.slug == "ps1" || platform.slug == "psx" ||
             platform.slug == "playstation" || platform.slug == "sony-playstation") {

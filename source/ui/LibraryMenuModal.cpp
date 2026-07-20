@@ -38,7 +38,15 @@ namespace romm::ui {
         }
 
         auto& config = romm::model::ConfigManager::Instance();
-        std::string view_mode_label = "View Mode: " + config.GetGridViewModeString();
+        std::string platform_slug;
+        if (auto model = nav->GetModel()) {
+            const auto& platforms = model->GetPlatforms();
+            size_t plat_idx = nav->GetLoadedPlatformIdx();
+            if (plat_idx < platforms.size()) {
+                platform_slug = platforms[plat_idx].slug;
+            }
+        }
+        std::string view_mode_label = "View Mode: " + config.GetGridViewModeString(platform_slug);
 
         struct Row { std::string main; std::string note; };
         Row rows[3] = {

@@ -31,6 +31,8 @@ namespace romm::model {
             return "gba";
         } else if (slug == "ps2" || slug == "playstation-2" || slug == "playstation2" || slug == "sony-playstation-2") {
             return "ps2";
+        } else if (slug == "ps3" || slug == "playstation-3" || slug == "playstation3" || slug == "sony-playstation-3") {
+            return "ps3";
         }
         return slug;
     }

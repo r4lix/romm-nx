@@ -1,5 +1,6 @@
 #include "GameGrid.hpp"
 #include "CoverCache.hpp"
+#include "PlaceholderCover.hpp"
 #include "../model/ConfigManager.hpp"
 #include "../model/DownloadManager.hpp"
 #include <cstdio>
@@ -201,7 +202,7 @@ namespace romm::ui {
         // column counts based on the live view mode, so a mode change needs the
         // same refresh path as a platform change even though the platform itself
         // didn't move.
-        auto current_view_mode = romm::model::ConfigManager::Instance().GetGridViewMode();
+        auto current_view_mode = romm::model::ConfigManager::Instance().GetGridViewMode(current_platform.slug);
         bool view_mode_changed = (current_view_mode != cached_view_mode);
 
         if (plat_idx != cached_selected_platform_idx || letter_idx != cached_selected_letter_idx || view_mode_changed) {
@@ -541,6 +542,7 @@ namespace romm::ui {
                 }
             } else {
                 drawer->RenderRoundedRectangleFill(placeholder_color, actual_x, actual_y, actual_w, actual_h, 4);
+                DrawPlaceholderCover(drawer, GetPlaceholderCover(platform_slug), actual_x, actual_y, actual_w, actual_h);
             }
 
             if (romm::model::ConfigManager::Instance().ShowInstalledBadge()) {

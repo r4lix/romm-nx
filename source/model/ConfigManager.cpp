@@ -1,6 +1,7 @@
 #include "ConfigManager.hpp"
 #include "RomPathManager.hpp"
 #include "JsonUtil.hpp"
+#include "DataModel.hpp"
 #include <cstdio>
 #include <iostream>
 #include <sys/stat.h>
@@ -44,6 +45,39 @@ namespace romm::model {
         rom_paths["gb"] = "sdmc:/roms/gb/";
         rom_paths["gbc"] = "sdmc:/roms/gbc/";
         rom_paths["gba"] = "sdmc:/roms/gba/";
+    }
+
+    namespace {
+        std::string GridViewModeToString(GridViewMode m) {
+            switch (m) {
+                case GridViewMode::Big: return "Big";
+                case GridViewMode::Detail: return "Detail";
+                default: return "Default";
+            }
+        }
+        GridViewMode GridViewModeFromString(const std::string& s) {
+            if (s == "Big" || s == "big") return GridViewMode::Big;
+            if (s == "Detail" || s == "detail") return GridViewMode::Detail;
+            return GridViewMode::Default;
+        }
+    }
+
+    GridViewMode ConfigManager::GetGridViewMode(const std::string& platform_slug) const {
+        std::string norm = NormalizePlatformSlug(platform_slug);
+        auto it = platform_grid_view_mode.find(norm);
+        if (it != platform_grid_view_mode.end()) {
+            return it->second;
+        }
+        return grid_view_mode;
+    }
+
+    std::string ConfigManager::GetGridViewModeString(const std::string& platform_slug) const {
+        return GridViewModeToString(GetGridViewMode(platform_slug));
+    }
+
+    void ConfigManager::SetGridViewModeForPlatform(const std::string& platform_slug, GridViewMode m) {
+        std::string norm = NormalizePlatformSlug(platform_slug);
+        platform_grid_view_mode[norm] = m;
     }
 
     void ConfigManager::SetPsxDownloadDir(const std::string& dir) {
@@ -157,10 +191,22 @@ namespace romm::model {
         jsonExtractBool(content, "confirm_before_uninstall", confirm_before_uninstall);
         jsonExtractBool(content, "show_installed_badge", show_installed_badge);
         jsonExtractBool(content, "screen_always_on", screen_always_on);
+        jsonExtractBool(content, "filebrowser_write_anywhere", filebrowser_write_anywhere);
 
         jsonExtractString(content, "update_manifest_url", update_manifest_url);
         jsonExtractString(content, "update_channel", update_channel);
         jsonExtractBool(content, "check_updates_on_startup", check_updates_on_startup);
+
+        // Per-platform grid view mode overrides (set via the in-game Y-Menu;
+        // independent of the global grid_view_mode default above).
+        platform_grid_view_mode.clear();
+        std::vector<std::string> view_mode_platforms = {"psx", "ps2", "psp", "nds", "gb", "gbc", "gba"};
+        for (const auto& plat : view_mode_platforms) {
+            std::string mode_str = extractPlatformPath(content, "platform_grid_view_mode", plat);
+            if (!mode_str.empty()) {
+                platform_grid_view_mode[plat] = GridViewModeFromString(mode_str);
+            }
+        }
 
         // Load PS1 download dir
         std::string psx_path = extractPlatformPath(content, "rom_paths", "psx");
@@ -245,21 +291,22 @@ namespace romm::model {
         content += "  \"theme\": \"" + theme + "\",\n";
         content += "  \"covers_quality\": \"" + GetCoversQualityString() + "\",\n";
         content += "  \"grid_view_mode\": \"" + GetGridViewModeString() + "\",\n";
+        content += "  \"platform_grid_view_mode\": {\n";
+        {
+            bool first_vm = true;
+            for (const auto& pair : platform_grid_view_mode) {
+                if (!first_vm) content += ",\n";
+                first_vm = false;
+                content += "    \"" + pair.first + "\": \"" + GridViewModeToString(pair.second) + "\"";
+            }
+        }
+        content += "\n  },\n";
         content += "  \"connection\": {\n";
         content += "    \"server_url\": \"" + romm_host + "\",\n";
         content += "    \"api_key\": \"" + api_key + "\"\n";
         content += "  },\n";
         content += "  \"rom_paths\": {\n";
         bool first = true;
-        for (const auto& pair : rom_paths) {
-            if (!first) content += ",\n";
-            first = false;
-            content += "    \"" + pair.first + "\": \"" + pair.second + "\"";
-        }
-        content += "\n  },\n";
-        // Also keep download_dirs for backwards compatibility
-        content += "  \"download_dirs\": {\n";
-        first = true;
         for (const auto& pair : rom_paths) {
             if (!first) content += ",\n";
             first = false;
@@ -278,6 +325,7 @@ namespace romm::model {
         content += "  \"confirm_before_uninstall\": " + std::string(confirm_before_uninstall ? "true" : "false") + ",\n";
         content += "  \"show_installed_badge\": " + std::string(show_installed_badge ? "true" : "false") + ",\n";
         content += "  \"screen_always_on\": " + std::string(screen_always_on ? "true" : "false") + ",\n";
+        content += "  \"filebrowser_write_anywhere\": " + std::string(filebrowser_write_anywhere ? "true" : "false") + ",\n";
         content += "  \"update_manifest_url\": \"" + update_manifest_url + "\",\n";
         content += "  \"update_channel\": \"" + update_channel + "\",\n";
         content += "  \"check_updates_on_startup\": " + std::string(check_updates_on_startup ? "true" : "false") + "\n";
@@ -311,11 +359,7 @@ namespace romm::model {
     }
 
     std::string ConfigManager::GetGridViewModeString() const {
-        switch (grid_view_mode) {
-            case GridViewMode::Big: return "Big";
-            case GridViewMode::Detail: return "Detail";
-            default: return "Default";
-        }
+        return GridViewModeToString(grid_view_mode);
     }
 
     std::string ConfigManager::GetMaskedApiKey() const {
