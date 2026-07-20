@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <list>
 #include <memory>
+#include <atomic>
 
 namespace romm::ui {
 
@@ -44,10 +45,28 @@ namespace romm::ui {
         CoverState state = CoverState::Unknown;
     };
 
+    // Result of an off-main-thread image decode. Mirrors the HttpResult
+    // pattern: a worker thread fills it in and flips `completed`; the main
+    // thread polls it from PollCompleted() and takes ownership of `surface`
+    // for the GPU upload. If the entry is evicted while a decode is in
+    // flight, the worker's shared_ptr keeps this alive and the destructor
+    // frees the orphaned surface.
+    struct CoverDecodeResult {
+        std::atomic<bool> completed{false};
+        SDL_Surface* surface = nullptr;   // decoded pixels, ready for GPU upload
+        std::string final_path;           // cache path after any .tmp rename
+        ~CoverDecodeResult() {
+            if (surface) {
+                SDL_FreeSurface(surface);
+            }
+        }
+    };
+
     struct CoverEntry {
         CoverState state = CoverState::Unknown;
         pu::sdl2::Texture texture = nullptr;
         std::shared_ptr<HttpResult> download_result;
+        std::shared_ptr<CoverDecodeResult> decode_result;
         std::string cache_path;
 
         CoverProfileType profile_type = CoverProfileType::DefaultPortrait;
@@ -80,7 +99,9 @@ namespace romm::ui {
         CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type = CoverProfileType::DefaultPortrait, bool is_big = false, bool allow_download = true);
         CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download = true);
 
-        // Promote completed downloads to GPU textures. At most 2 per call.
+        // Drive the two-phase cover pipeline: hand completed downloads (or
+        // disk-cache hits) to a worker thread for decoding, and upload
+        // finished decodes to GPU textures (at most 2 uploads per call).
         // Must be called on the main/render thread.
         void PollCompleted();
 

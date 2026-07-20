@@ -23,6 +23,31 @@ size_t writeToFile(void* contents, size_t size, size_t nmemb, void* userp) {
     return fwrite(contents, size, nmemb, static_cast<FILE*>(userp));
 }
 
+// Persistent per-thread curl handle. The app issues many small HTTPS requests
+// (covers, ROM lists, details); creating a fresh handle per request forced a
+// full TCP+TLS handshake every time, which dominates per-request latency on
+// the Switch's CPU. Reusing one handle per worker thread keeps connections
+// alive (curl's connection cache is per-handle), so subsequent requests to the
+// same host skip the handshake entirely. curl_easy_reset() clears options but
+// deliberately preserves live connections.
+thread_local CURL* tl_curl = nullptr;
+
+CURL* acquireCurl() {
+    if (tl_curl) {
+        curl_easy_reset(tl_curl);
+    } else {
+        tl_curl = curl_easy_init();
+    }
+    return tl_curl;
+}
+
+void releaseThreadCurl() {
+    if (tl_curl) {
+        curl_easy_cleanup(tl_curl);
+        tl_curl = nullptr;
+    }
+}
+
 struct curl_slist* buildHeaderList(const std::map<std::string, std::string>& headers) {
     struct curl_slist* headerList = nullptr;
     headerList = curl_slist_append(headerList, "User-Agent: romm-nx/3.0.0");
@@ -41,7 +66,7 @@ void performRequest(
     std::string body,
     std::shared_ptr<HttpResult> result) {
 
-    CURL* curl = curl_easy_init();
+    CURL* curl = acquireCurl();
     if (!curl) {
         result->success = false;
         result->error = "curl init failed";
@@ -84,7 +109,6 @@ void performRequest(
     if (headerList) {
         curl_slist_free_all(headerList);
     }
-    curl_easy_cleanup(curl);
     result->completed = true;
 }
 
@@ -94,7 +118,7 @@ void performDownload(
     std::string outputPath,
     std::shared_ptr<HttpResult> result) {
 
-    CURL* curl = curl_easy_init();
+    CURL* curl = acquireCurl();
     if (!curl) {
         result->success = false;
         result->error = "curl init failed";
@@ -104,7 +128,6 @@ void performDownload(
 
     FILE* file = fopen(outputPath.c_str(), "wb");
     if (!file) {
-        curl_easy_cleanup(curl);
         result->success = false;
         result->error = "failed to open output file";
         result->completed = true;
@@ -143,7 +166,6 @@ void performDownload(
     if (headerList) {
         curl_slist_free_all(headerList);
     }
-    curl_easy_cleanup(curl);
     result->completed = true;
 }
 
@@ -223,6 +245,8 @@ private:
             }
             task();
         }
+        // Free this worker's persistent curl handle before the thread exits.
+        releaseThreadCurl();
     }
 
     std::queue<std::function<void()>> tasks_;
@@ -245,6 +269,9 @@ void HttpClient::init() {
 
 void HttpClient::shutdown() {
     queue()->shutdown();
+    // getSync runs on the caller's thread (normally the main thread), so this
+    // thread may also own a persistent handle — free it before global cleanup.
+    releaseThreadCurl();
     curl_global_cleanup();
 }
 

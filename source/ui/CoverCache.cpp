@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <SDL2/SDL_image.h>
 #include <algorithm>
+#include <unordered_set>
 
 namespace romm::ui {
 
@@ -88,7 +89,10 @@ namespace romm::ui {
         return key.platform_slug + "|" + std::to_string(key.rom_id) + "|" + key.cover_source + "|" + key.variant + "|" + std::to_string(key.requested_width) + "x" + std::to_string(key.requested_height);
     }
 
-    static pu::sdl2::Texture LoadAndResizeImage(const std::string& path, int target_w, int target_h) {
+    // CPU-only load+resize producing a surface. Safe to run on a worker
+    // thread: touches no renderer state, only SDL_image decode and surface
+    // blits.
+    static SDL_Surface* LoadAndResizeSurface(const std::string& path, int target_w, int target_h) {
         SDL_Surface* orig = IMG_Load(path.c_str());
         if (!orig) {
             std::cerr << "[COVER] Failed to load image for resizing: " << path << std::endl;
@@ -109,14 +113,42 @@ namespace romm::ui {
         }
 
         SDL_BlitScaled(orig, nullptr, resized, nullptr);
-        auto tex = SDL_CreateTextureFromSurface(pu::ui::render::GetMainRenderer(), resized);
-        if (tex) {
-            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-        }
-
         SDL_FreeSurface(orig);
-        SDL_FreeSurface(resized);
-        return tex;
+        return resized;
+    }
+
+    // Worker-thread half of the cover pipeline: rename the fresh .tmp download
+    // to its sniffed extension, then decode (and resize, for the handheld
+    // small-cover profiles) to a surface. Everything here is SD-card I/O and
+    // CPU decode that used to run on the render thread and stall the UI while
+    // covers were first downloading.
+    static void DecodeCoverTask(std::shared_ptr<CoverDecodeResult> dec, std::string path, bool resize_handheld) {
+        if (path.length() >= 4 && path.compare(path.length() - 4, 4, ".tmp") == 0) {
+            const std::string ext = DetectImageExtension(path);
+            const std::string final_path = path.substr(0, path.length() - 4) + "." + ext;
+
+            // The Switch's sdmc: fs driver, unlike POSIX rename(), does not
+            // overwrite an existing destination — it just fails. Clear the
+            // way first (a stale leftover from an earlier run, if any).
+            remove(final_path.c_str());
+
+            if (rename(path.c_str(), final_path.c_str()) == 0) {
+                path = final_path;
+            } else {
+                std::cerr << "[COVER] Failed to rename temp file: " << path << " -> " << final_path << std::endl;
+            }
+        }
+        dec->final_path = path;
+
+        if (resize_handheld) {
+            dec->surface = LoadAndResizeSurface(path, 380, 344);
+        } else {
+            dec->surface = IMG_Load(path.c_str());
+            if (!dec->surface) {
+                std::cerr << "[COVER] Failed to load image: " << path << std::endl;
+            }
+        }
+        dec->completed.store(true, std::memory_order_release);
     }
 
     static void EnsureDirExists(const std::string& path) {
@@ -202,7 +234,14 @@ namespace romm::ui {
         std::string hash_str = HashString(cover_path_rel);
         std::string base_path = std::string("sdmc:/switch/romm-nx/cache/covers/") + norm_slug + "/" + variant + "/" + std::to_string(rom_id) + "_" + hash_str;
         std::string cache_path = "";
-        if (cover_path_rel.rfind("sdmc:/", 0) == 0 || cover_path_rel.rfind("/", 0) == 0) {
+        // Only a genuine on-SD absolute path (sdmc:/...) points straight at a local
+        // file. RomM cover paths are server-relative and start with "/" (e.g.
+        // "/assets/romm/resources/roms/1/47/cover/small.png") — those, and http(s)
+        // URLs, must go through our own disk cache keyed by rom_id+hash. (A previous
+        // "|| starts-with '/'" check sent every server path down the local-file
+        // branch, so the disk cache was never consulted and covers re-downloaded on
+        // every launch.)
+        if (cover_path_rel.rfind("sdmc:/", 0) == 0) {
             if (FileExists(cover_path_rel)) {
                 cache_path = cover_path_rel;
             }
@@ -271,7 +310,13 @@ namespace romm::ui {
                     }
 
                     std::string dir_base = std::string("sdmc:/switch/romm-nx/cache/covers/") + norm_slug + "/" + variant + "/";
-                    EnsureDirExists(dir_base);
+                    // GetOrRequest runs on the render thread; the mkdir chain
+                    // is several SD-card syscalls, so only walk it once per
+                    // directory per app run (main-thread only, no lock needed).
+                    static std::unordered_set<std::string> ensured_dirs;
+                    if (ensured_dirs.insert(dir_base).second) {
+                        EnsureDirExists(dir_base);
+                    }
 
                     entry.state = CoverState::Loading;
                     entry.download_result = HttpClient::downloadFileAsync(url, headers, cache_path);
@@ -297,37 +342,24 @@ namespace romm::ui {
         constexpr int MAX_PER_POLL = 2; // GPU uploads per frame
 
         for (auto& [cache_key, entry] : cache_) {
-            if (promoted >= MAX_PER_POLL) break;
             if (entry.state != CoverState::Loading) continue;
-            if (!entry.download_result || !entry.download_result->completed) continue;
 
-            if (entry.download_result->success) {
-                // If it is a temporary file from async download, rename it based on detected format
-                std::string tmp_path = entry.cache_path;
-                if (tmp_path.length() >= 4 && tmp_path.substr(tmp_path.length() - 4) == ".tmp") {
-                    std::string ext = DetectImageExtension(tmp_path);
-                    std::string final_path = tmp_path.substr(0, tmp_path.length() - 4) + "." + ext;
+            // Phase 2: a worker finished decoding — upload to the GPU. This is
+            // the only part that must run on the render thread, and it's cheap
+            // (texture creation from an already-decoded surface).
+            if (entry.decode_result) {
+                if (!entry.decode_result->completed.load(std::memory_order_acquire)) continue;
+                if (promoted >= MAX_PER_POLL) continue; // spread uploads across frames
 
-                    // The Switch's sdmc: fs driver, unlike POSIX rename(), does not
-                    // overwrite an existing destination — it just fails. Clear the
-                    // way first (a stale leftover from an earlier run, if any).
-                    remove(final_path.c_str());
-
-                    if (rename(tmp_path.c_str(), final_path.c_str()) == 0) {
-                        entry.cache_path = final_path;
-                    } else {
-                        std::cerr << "[COVER] Failed to rename temp file: " << tmp_path << " -> " << final_path << std::endl;
-                    }
+                auto dec = entry.decode_result;
+                entry.decode_result.reset();
+                if (!dec->final_path.empty()) {
+                    entry.cache_path = dec->final_path;
                 }
 
-                bool is_ds_or_gb_family = (entry.profile_type == CoverProfileType::NintendoDS ||
-                                           entry.profile_type == CoverProfileType::GameBoy ||
-                                           entry.profile_type == CoverProfileType::GameBoyColor ||
-                                           entry.profile_type == CoverProfileType::GameBoyAdvance);
-                if (is_ds_or_gb_family && !entry.is_big) {
-                    entry.texture = LoadAndResizeImage(entry.cache_path, 380, 344);
-                } else {
-                    entry.texture = pu::ui::render::LoadImageFromFile(entry.cache_path);
+                if (dec->surface) {
+                    entry.texture = SDL_CreateTextureFromSurface(pu::ui::render::GetMainRenderer(), dec->surface);
+                    // dec's destructor frees the surface once we're done here.
                 }
 
                 if (entry.texture) {
@@ -336,9 +368,9 @@ namespace romm::ui {
                     entry.decode_retry_count = 0;
                     s32 w = pu::ui::render::GetTextureWidth(entry.texture);
                     s32 h = pu::ui::render::GetTextureHeight(entry.texture);
-                    std::cout << "[COVER] decoded platform=" << entry.key.platform_slug 
-                              << " rom_id=" << entry.key.rom_id 
-                              << " quality=" << entry.key.variant 
+                    std::cout << "[COVER] decoded platform=" << entry.key.platform_slug
+                              << " rom_id=" << entry.key.rom_id
+                              << " quality=" << entry.key.variant
                               << " size=" << w << "x" << h << std::endl;
                 } else {
                     remove(entry.cache_path.c_str()); // delete corrupt cache file
@@ -351,6 +383,28 @@ namespace romm::ui {
                         std::cerr << "[cover] Decode failed permanently: " << entry.cache_path << std::endl;
                     }
                 }
+
+                promoted++;
+                continue;
+            }
+
+            // Phase 1: download (or disk-cache hit) is ready — hand the file
+            // off to a worker thread for the rename + decode. Not counted
+            // against the upload budget; enqueueing is trivial.
+            if (!entry.download_result || !entry.download_result->completed) continue;
+
+            if (entry.download_result->success) {
+                const bool resize_handheld = !entry.is_big &&
+                                             (entry.profile_type == CoverProfileType::NintendoDS ||
+                                              entry.profile_type == CoverProfileType::GameBoy ||
+                                              entry.profile_type == CoverProfileType::GameBoyColor ||
+                                              entry.profile_type == CoverProfileType::GameBoyAdvance);
+                auto dec = std::make_shared<CoverDecodeResult>();
+                entry.decode_result = dec;
+                const std::string path = entry.cache_path;
+                HttpClient::runAsync([dec, path, resize_handheld]() {
+                    DecodeCoverTask(dec, path, resize_handheld);
+                });
             } else {
                 remove(entry.cache_path.c_str());
                 long code = entry.download_result->statusCode;
@@ -368,7 +422,6 @@ namespace romm::ui {
             }
 
             entry.download_result.reset();
-            promoted++;
         }
     }
 
