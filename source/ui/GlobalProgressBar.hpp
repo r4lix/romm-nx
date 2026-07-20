@@ -3,7 +3,7 @@
 #include <pu/Plutonium>
 #include <memory>
 #include <string>
-#include <memory>
+#include <chrono>
 #include "../navigation/NavigationManager.hpp"
 
 namespace romm::ui {
@@ -14,11 +14,22 @@ namespace romm::ui {
         std::weak_ptr<romm::navigation::NavigationManager> nav_mgr;
         pu::sdl2::Texture text_tex = nullptr;
         pu::sdl2::Texture speed_tex = nullptr;
-        pu::sdl2::Texture cover_tex = nullptr;
         std::string current_text;
         std::string current_speed;
-        int current_rom_id = -1;
-        
+
+        // Display state, recomputed from DownloadManager snapshots at most
+        // every 250ms — snapshots deep-copy the queue, far too heavy for 60fps.
+        std::chrono::steady_clock::time_point last_poll;
+        bool cached_active = false;
+        int cached_pending = 0;
+        float cached_pct = 0.0f;
+        std::string cached_title;
+        std::string cached_sub;
+        int cached_cover_rom_id = 0;
+        std::string cached_cover_slug;
+        std::string cached_cover_rel;
+
+        void PollDownloadState();
         void UpdateTextures(const std::string& text, const std::string& speed);
 
     public:

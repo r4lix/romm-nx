@@ -1,4 +1,5 @@
 #include "GlobalProgressBar.hpp"
+#include "PlaceholderCover.hpp"
 #include "../model/DownloadManager.hpp"
 #include "../model/DataModel.hpp"
 #include "CoverCache.hpp"
@@ -7,6 +8,25 @@
 #include <algorithm>
 
 namespace romm::ui {
+
+    static std::string FormatSpeed(size_t bps) {
+        std::stringstream ss;
+        double speed_mbps = (double)bps / (1024.0 * 1024.0);
+        if (speed_mbps >= 1.0) {
+            ss << std::fixed << std::setprecision(1) << speed_mbps << " MB/s";
+        } else {
+            ss << std::fixed << std::setprecision(1) << ((double)bps / 1024.0) << " KB/s";
+        }
+        return ss.str();
+    }
+
+    static std::string FormatEta(long long remaining_bytes, size_t bps) {
+        if (bps == 0 || remaining_bytes <= 0) return "";
+        long long secs = remaining_bytes / (long long)bps;
+        if (secs < 60) return std::to_string(secs) + "s";
+        if (secs < 3600) return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
+        return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) + "m";
+    }
 
     GlobalProgressBar::GlobalProgressBar(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element(), x(x), y(y), w(w), h(h), nav_mgr(nav) {
@@ -31,7 +51,7 @@ namespace romm::ui {
             }
             if (!text.empty()) {
                 pu::ui::Color text_color(237, 229, 251, 255); // #EDE5FB
-                text_tex = pu::ui::render::RenderText("Ubuntu@20", text, text_color);
+                text_tex = pu::ui::render::RenderText("Ubuntu@20", text, text_color, w - 95);
             }
             current_text = text;
         }
@@ -42,9 +62,80 @@ namespace romm::ui {
             }
             if (!speed.empty()) {
                 pu::ui::Color text_color(180, 180, 180, 255); // Gray for speed
-                speed_tex = pu::ui::render::RenderText("Ubuntu@18", speed, text_color);
+                speed_tex = pu::ui::render::RenderText("Ubuntu@18", speed, text_color, w - 95);
             }
             current_speed = speed;
+        }
+    }
+
+    void GlobalProgressBar::PollDownloadState() {
+        auto& dl_mgr = romm::model::DownloadManager::Instance();
+        auto active_snap = dl_mgr.GetActiveDownloadSnapshot();
+        auto queue_snap = dl_mgr.GetQueueSnapshot();
+
+        cached_active = (active_snap.state == romm::model::DownloadState::Preparing ||
+                         active_snap.state == romm::model::DownloadState::DownloadingGame ||
+                         active_snap.state == romm::model::DownloadState::DownloadingCover ||
+                         active_snap.state == romm::model::DownloadState::SyncingCover);
+
+        cached_pending = 0;
+        for (const auto& t : queue_snap) {
+            if (t.state == romm::model::DownloadState::Queued) cached_pending++;
+        }
+
+        cached_pct = 0.0f;
+        cached_title = "";
+        cached_sub = "";
+
+        if (cached_active) {
+            cached_cover_rom_id = active_snap.rom_id;
+            cached_cover_slug = active_snap.platform_slug;
+            cached_cover_rel = active_snap.cover_path_rel;
+
+            // Format Game Name (extension stripped if using filename)
+            std::string game_name = active_snap.title;
+            if (game_name.empty()) {
+                game_name = active_snap.original_filename;
+                if (game_name.empty()) game_name = active_snap.filename;
+
+                size_t last_dot = game_name.find_last_of('.');
+                if (last_dot != std::string::npos) {
+                    game_name = game_name.substr(0, last_dot);
+                }
+            }
+            if (game_name.empty()) game_name = "ROM ID " + std::to_string(active_snap.rom_id);
+            if (game_name.length() > 28) {
+                game_name = game_name.substr(0, 25) + "...";
+            }
+            cached_title = game_name;
+
+            const std::string queued_suffix =
+                (cached_pending > 0) ? ("  •  +" + std::to_string(cached_pending) + " queued") : "";
+
+            if (active_snap.state == romm::model::DownloadState::Preparing) {
+                cached_sub = "Preparing..." + queued_suffix;
+            } else if (active_snap.state == romm::model::DownloadState::DownloadingGame) {
+                long long downloaded = active_snap.downloaded_bytes.load();
+                if (active_snap.total_bytes > 0) {
+                    cached_pct = (float)downloaded / active_snap.total_bytes;
+                    if (cached_pct > 1.0f) cached_pct = 1.0f;
+                }
+                size_t bps = active_snap.download_speed_bps.load();
+                int pct_int = (int)(cached_pct * 100);
+
+                std::string sub = std::to_string(pct_int) + "%  •  " + (bps > 0 ? FormatSpeed(bps) : "0.0 KB/s");
+                std::string eta = FormatEta(active_snap.total_bytes - downloaded, bps);
+                if (!eta.empty()) sub += "  •  ETA " + eta;
+                sub += queued_suffix;
+                cached_sub = sub;
+            } else {
+                // DownloadingCover / SyncingCover: game payload is done
+                cached_pct = 1.0f;
+                cached_sub = "Cover Sync..." + queued_suffix;
+            }
+        } else if (cached_pending > 0) {
+            cached_title = "Queue";
+            cached_sub = std::to_string(cached_pending) + " item" + (cached_pending > 1 ? "s" : "") + " queued";
         }
     }
 
@@ -53,111 +144,40 @@ namespace romm::ui {
             if (nav->GetUninstallModalState().active) return;
         }
 
-        auto& dl_mgr = romm::model::DownloadManager::Instance();
-        auto active_snap = dl_mgr.GetActiveDownloadSnapshot();
-        auto queue_snap = dl_mgr.GetQueueSnapshot();
-        
-        bool is_active = (active_snap.state == romm::model::DownloadState::Preparing || 
-                          active_snap.state == romm::model::DownloadState::DownloadingGame || 
-                          active_snap.state == romm::model::DownloadState::DownloadingCover || 
-                          active_snap.state == romm::model::DownloadState::SyncingCover);
-
-        int pending = 0;
-        for (const auto& t : queue_snap) {
-            if (t.state == romm::model::DownloadState::Queued) pending++;
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_poll).count() >= 250 ||
+            last_poll == std::chrono::steady_clock::time_point{}) {
+            last_poll = now;
+            PollDownloadState();
         }
 
-        if (!is_active && pending == 0) {
+        if (!cached_active && cached_pending == 0) {
             return;
         }
 
-        std::string status_text = "";
-        std::string speed_text = "";
-        float progress_pct = 0.0f;
+        UpdateTextures(cached_title, cached_sub);
 
-        if (is_active) {
-            if (current_rom_id != active_snap.rom_id) {
-                current_rom_id = active_snap.rom_id;
-                cover_tex = nullptr; // Let CoverCache fetch it
-            }
+        // Draw background pill (taller when a download is active, to fit the
+        // thumbnail + progress track)
+        s32 render_h = cached_active ? 70 : h;
 
-            if (cover_tex == nullptr && !active_snap.cover_path_rel.empty()) {
-                cover_tex = CoverCache::Instance().GetOrRequest(active_snap.rom_id, active_snap.platform_slug, active_snap.cover_path_rel).texture;
-            }
-
-            // Format Game Name (extension stripped if using filename)
-            std::string game_name = active_snap.title;
-            if (game_name.empty()) {
-                game_name = active_snap.original_filename;
-                if (game_name.empty()) game_name = active_snap.filename;
-                
-                size_t last_dot = game_name.find_last_of('.');
-                if (last_dot != std::string::npos) {
-                    game_name = game_name.substr(0, last_dot);
-                }
-            }
-            if (game_name.empty()) game_name = "ROM ID " + std::to_string(active_snap.rom_id);
-            
-            // Truncate game name if too long
-            if (game_name.length() > 25) {
-                game_name = game_name.substr(0, 22) + "...";
-            }
-            
-            status_text = game_name;
-
-            if (active_snap.state == romm::model::DownloadState::Preparing) {
-                speed_text = "Preparing...";
-            } else if (active_snap.state == romm::model::DownloadState::DownloadingGame) {
-                if (active_snap.total_bytes > 0) {
-                    progress_pct = (float)active_snap.downloaded_bytes / active_snap.total_bytes;
-                }
-                
-                // Format speed
-                std::string speed_val = "";
-                if (active_snap.download_speed_bps > 0) {
-                    double speed_mbps = (double)active_snap.download_speed_bps / (1024.0 * 1024.0);
-                    std::stringstream ss;
-                    if (speed_mbps >= 1.0) {
-                        ss << std::fixed << std::setprecision(1) << speed_mbps << " MB/s";
-                    } else {
-                        double speed_kbps = (double)active_snap.download_speed_bps / 1024.0;
-                        ss << std::fixed << std::setprecision(1) << speed_kbps << " KB/s";
-                    }
-                    speed_val = ss.str();
-                } else {
-                    speed_val = "0.0 KB/s";
-                }
-                int pct_int = (int)(progress_pct * 100);
-                speed_text = std::to_string(pct_int) + "% | " + speed_val;
-
-            } else if (active_snap.state == romm::model::DownloadState::DownloadingCover) {
-                speed_text = "Downloading Cover...";
-            } else if (active_snap.state == romm::model::DownloadState::SyncingCover) {
-                speed_text = "Syncing Cover...";
-            }
-
-        } else if (pending > 0) {
-            status_text = "Queue";
-            speed_text = std::to_string(pending) + " items queued";
-        }
-
-        UpdateTextures(status_text, speed_text);
-
-        // Draw background pill (expanded for rich layout)
-        s32 render_h = h;
-        if (is_active) render_h = 70; // Taller to fit thumbnail
-        
         pu::ui::Color bg_color(30, 34, 43, 230); // Web Charcoal Grey
         pu::ui::Color border_color(45, 50, 62, 255);
         drawer->RenderRoundedRectangleFill(border_color, x_coord, y_coord, w, render_h, 12);
         drawer->RenderRoundedRectangleFill(bg_color, x_coord + 2, y_coord + 2, w - 4, render_h - 4, 10);
 
         s32 content_x = x_coord + 15;
-        
-        // Draw Thumbnail or placeholder if active
-        if (is_active) {
-            s32 placeholder_w = 38;
-            s32 placeholder_h = 50;
+
+        if (cached_active) {
+            // Cover thumbnail. Looked up from CoverCache every frame — the
+            // cache owns the texture and may evict/delete it at any time, so
+            // holding the raw pointer across frames would eventually render a
+            // freed texture.
+            pu::sdl2::Texture cover_tex = nullptr;
+            if (!cached_cover_rel.empty()) {
+                cover_tex = CoverCache::Instance().GetOrRequest(cached_cover_rom_id, cached_cover_slug, cached_cover_rel).texture;
+            }
+
             if (cover_tex != nullptr) {
                 s32 c_w = pu::ui::render::GetTextureWidth(cover_tex);
                 s32 c_h = pu::ui::render::GetTextureHeight(cover_tex);
@@ -169,27 +189,43 @@ namespace romm::ui {
                 opts.height = draw_h;
                 drawer->RenderTexture(cover_tex, content_x + (50 - draw_w) / 2, y_coord + 10 + (50 - draw_h) / 2, opts);
             } else {
-                // Placeholder grey rectangle
-                drawer->RenderRoundedRectangleFill(pu::ui::Color(60, 60, 60, 255), content_x + (50 - placeholder_w) / 2, y_coord + 10, placeholder_w, placeholder_h, 4);
+                auto plat_ph = GetPlaceholderCover(cached_cover_slug);
+                if (plat_ph) {
+                    DrawPlaceholderCover(drawer, plat_ph, content_x, y_coord + 10, 50, 50);
+                } else {
+                    drawer->RenderRoundedRectangleFill(pu::ui::Color(60, 60, 60, 255), content_x + 6, y_coord + 10, 38, 50, 4);
+                }
             }
-            content_x += 65; // offset for text
-        }
+            content_x += 65;
 
-        // Draw progress fill in background of text area
-        if (progress_pct > 0.0f) {
-            pu::ui::Color fill_color(85, 63, 152, 100); // Violet accent, transparent
-            s32 fill_w = (s32)((w - content_x + x_coord - 10) * progress_pct);
+            // Title line
+            if (text_tex) {
+                drawer->RenderTexture(text_tex, content_x, y_coord + 7);
+            }
+
+            // Progress track + fill
+            s32 track_x = content_x;
+            s32 track_w = w - (content_x - x_coord) - 15;
+            s32 track_y = y_coord + 36;
+            drawer->RenderRoundedRectangleFill(pu::ui::Color(45, 50, 62, 255), track_x, track_y, track_w, 8, 4);
+            s32 fill_w = (s32)(track_w * cached_pct);
             if (fill_w > 0) {
-                drawer->RenderRoundedRectangleFill(fill_color, content_x, y_coord + 5, fill_w, render_h - 10, 6);
+                if (fill_w > track_w) fill_w = track_w;
+                drawer->RenderRoundedRectangleFill(pu::ui::Color(140, 100, 240, 255), track_x, track_y, fill_w, 8, 4);
             }
-        }
 
-        // Draw text
-        if (text_tex) {
-            drawer->RenderTexture(text_tex, content_x + 10, y_coord + 12);
-        }
-        if (speed_tex) {
-            drawer->RenderTexture(speed_tex, content_x + 10, y_coord + 35);
+            // Sub line: percent • speed • ETA • queued
+            if (speed_tex) {
+                drawer->RenderTexture(speed_tex, content_x, y_coord + 47);
+            }
+        } else {
+            // Queue-only compact pill
+            if (text_tex) {
+                drawer->RenderTexture(text_tex, content_x + 10, y_coord + 12);
+            }
+            if (speed_tex) {
+                drawer->RenderTexture(speed_tex, content_x + 10, y_coord + 35);
+            }
         }
     }
 
