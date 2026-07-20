@@ -8,6 +8,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <unordered_map>
 
 namespace romm::navigation {
     class NavigationManager;
@@ -69,6 +70,19 @@ namespace romm::ui {
         std::string status_line2;
     };
 
+    // Small string→texture cache for text that changes rarely but was being
+    // re-rendered with TTF every frame (header stats, footer counter, error
+    // line). Re-renders only when the string actually changes.
+    struct CachedText {
+        std::string str;
+        pu::sdl2::Texture tex = nullptr;
+
+        void Clear() {
+            if (tex) { pu::ui::render::DeleteTexture(tex); tex = nullptr; }
+            str.clear();
+        }
+    };
+
     struct StorageInfo {
         double sd_free = 0.0;
         double sd_total = 0.0;
@@ -90,6 +104,10 @@ namespace romm::ui {
         // Data containers
         std::vector<LocationEntry> locations;
         std::vector<FileEntry> loaded_items;
+        // Entries displaced by a directory scan. Their textures must be freed
+        // on the render thread, so the scan thread parks them here (under
+        // data_mutex) and OnRender frees them on its next pass.
+        std::vector<FileEntry> retired_items;
         std::vector<std::string> options_menu_items;
         std::vector<std::string> confirm_menu_items;
 
@@ -122,6 +140,11 @@ namespace romm::ui {
         std::chrono::steady_clock::time_point last_scroll_time;
         bool is_repeating = false;
 
+        // Per-frame text caches (header stats, footer counter, error message,
+        // footer button glyphs/labels)
+        CachedText net1_cache, net2_cache, sd_cache, sys_cache, pos_cache, error_cache;
+        std::unordered_map<std::string, pu::sdl2::Texture> button_text_cache;
+
         // UI Pre-rendered textures
         DetailTextures detail_texs;
         pu::sdl2::Texture loading_tex = nullptr;
@@ -145,6 +168,7 @@ namespace romm::ui {
         // Core layout helpers
         void BuildLocationsList();
         void LoadDirectoryAsync(const std::string& path);
+        void CreateItemTextures(FileEntry& item);
         void RebuildFileTextures();
         void RebuildDetailTextures();
         void RebuildOptionsTextures();

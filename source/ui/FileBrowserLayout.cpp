@@ -37,10 +37,8 @@ namespace romm::ui {
         options_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "File Options", pu::ui::Color(255, 255, 255, 255));
         confirm_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Delete Selected files?", pu::ui::Color(255, 255, 255, 255));
 
-        // Automatically create the test-safe zone if missing
         mkdir("sdmc:/switch", 0777);
         mkdir("sdmc:/switch/romm-nx", 0777);
-        mkdir("sdmc:/switch/romm-nx/filebrowser-test", 0777);
 
         RefreshStats();
         BuildLocationsList();
@@ -72,6 +70,25 @@ namespace romm::ui {
             if (item.details_tex_unselected) pu::ui::render::DeleteTexture(item.details_tex_unselected);
         }
         loaded_items.clear();
+
+        for (auto& item : retired_items) {
+            if (item.text_tex_selected) pu::ui::render::DeleteTexture(item.text_tex_selected);
+            if (item.text_tex_unselected) pu::ui::render::DeleteTexture(item.text_tex_unselected);
+            if (item.details_tex_selected) pu::ui::render::DeleteTexture(item.details_tex_selected);
+            if (item.details_tex_unselected) pu::ui::render::DeleteTexture(item.details_tex_unselected);
+        }
+        retired_items.clear();
+
+        net1_cache.Clear();
+        net2_cache.Clear();
+        sd_cache.Clear();
+        sys_cache.Clear();
+        pos_cache.Clear();
+        error_cache.Clear();
+        for (auto& [key, tex] : button_text_cache) {
+            if (tex) pu::ui::render::DeleteTexture(tex);
+        }
+        button_text_cache.clear();
 
         for (auto& tex : options_texs_selected) pu::ui::render::DeleteTexture(tex);
         for (auto& tex : options_texs_unselected) pu::ui::render::DeleteTexture(tex);
@@ -147,21 +164,39 @@ namespace romm::ui {
 
     bool FileBrowserPane::IsWritablePath(const std::string& path) {
         std::string normalized = NormalizePath(path);
-        
+
         // Block path traversal tricks completely
         if (normalized.find("..") != std::string::npos) {
             return false;
         }
 
-        std::string safe_prefix = "sdmc:/switch/romm-nx/filebrowser-test/";
-        if (normalized.rfind(safe_prefix, 0) == 0) {
+        // Only SD card paths are ever writable
+        if (normalized.rfind("sdmc:/", 0) != 0) {
+            return false;
+        }
+
+        auto& config = romm::model::ConfigManager::Instance();
+        if (config.FileBrowserWriteAnywhere()) {
             return true;
         }
 
-        if (normalized == "sdmc:/switch/romm-nx/filebrowser-test") {
+        // Default policy: writes only inside the ROMs tree — sdmc:/roms/ plus
+        // any custom per-platform ROM path configured in Settings.
+        if (normalized == "sdmc:/roms" || normalized.rfind("sdmc:/roms/", 0) == 0) {
             return true;
         }
-
+        static const char* kRomSlugs[] = {"psx", "psp", "nds", "gb", "gbc", "gba", "ps2"};
+        for (const char* slug : kRomSlugs) {
+            std::string root = config.GetRomPath(slug);
+            if (root.empty()) continue;
+            if (root.back() == '/') {
+                if (normalized == root.substr(0, root.size() - 1) || normalized.rfind(root, 0) == 0) {
+                    return true;
+                }
+            } else if (normalized == root || normalized.rfind(root + "/", 0) == 0) {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -198,8 +233,7 @@ namespace romm::ui {
         std::vector<LocDef> defs = {
             {"SD Card Root", "sdmc:/"},
             {"romm-nx Folder", "sdmc:/switch/romm-nx/"},
-            {"ROMs Folder", "sdmc:/roms/"},
-            {"Safe Test Zone", "sdmc:/switch/romm-nx/filebrowser-test/"}
+            {"ROMs Folder", "sdmc:/roms/"}
         };
 
         auto& config = romm::model::ConfigManager::Instance();
@@ -220,11 +254,7 @@ namespace romm::ui {
 
             std::string display_name = d.name;
             if (!loc.exists) {
-                if (d.path == "sdmc:/switch/romm-nx/filebrowser-test/") {
-                    display_name += " (missing - Press A)";
-                } else {
-                    display_name += " (missing)";
-                }
+                display_name += " (missing)";
             }
 
             pu::ui::Color text_color = loc.exists ? unselected_clr : missing_clr;
@@ -351,6 +381,12 @@ namespace romm::ui {
             {
                 std::lock_guard<std::mutex> d_lock(data_mutex);
                 if (!cancel_scan && active_gen == scan_generation_id && current_scan_path == path) {
+                    // The displaced entries own GPU textures that may only be
+                    // freed on the render thread — park them for OnRender to
+                    // clean up (previously they were dropped here and leaked).
+                    for (auto& old : loaded_items) {
+                        retired_items.push_back(std::move(old));
+                    }
                     loaded_items = std::move(entries);
                     is_loading = false;
                     needs_layout_update = true;
@@ -365,49 +401,46 @@ namespace romm::ui {
         });
     }
 
-    void FileBrowserPane::RebuildFileTextures() {
-        std::lock_guard<std::mutex> lock(data_mutex);
-        
-        for (auto& item : loaded_items) {
-            if (item.text_tex_selected) pu::ui::render::DeleteTexture(item.text_tex_selected);
-            if (item.text_tex_unselected) pu::ui::render::DeleteTexture(item.text_tex_unselected);
-            if (item.details_tex_selected) pu::ui::render::DeleteTexture(item.details_tex_selected);
-            if (item.details_tex_unselected) pu::ui::render::DeleteTexture(item.details_tex_unselected);
-        }
-
+    // Render the four text textures for one row. Called lazily from OnRender
+    // for visible rows only (with a per-frame budget) — the old code
+    // pre-rendered every entry in the directory in a single frame, which froze
+    // the UI for seconds in large folders.
+    void FileBrowserPane::CreateItemTextures(FileEntry& item) {
         pu::ui::Color selected_clr(230, 199, 167, 255);
         pu::ui::Color unselected_clr(255, 255, 255, 255);
         pu::ui::Color detail_selected_clr(210, 190, 170, 255);
         pu::ui::Color detail_unselected_clr(120, 125, 135, 255);
 
-        for (auto& item : loaded_items) {
-            // Limit text width to 1000px for full-width list layout
-            item.text_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), item.name, selected_clr, 1000);
-            item.text_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), item.name, unselected_clr, 1000);
+        // Limit text width to 1000px for full-width list layout
+        item.text_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), item.name, selected_clr, 1000);
+        item.text_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), item.name, unselected_clr, 1000);
 
-            std::string details_str = "";
-            if (item.name == "..") {
-                details_str = "";
-            } else if (item.is_dir) {
-                details_str = "Folder";
-            } else {
-                std::string date_str = "";
-                if (item.mtime > 0) {
-                    struct tm* timeinfo = std::localtime(&item.mtime);
-                    char buf[32];
-                    std::strftime(buf, sizeof(buf), "%d/%m/%Y", timeinfo);
-                    date_str = buf;
-                }
-                details_str = FormatSize(item.size);
-                if (!date_str.empty()) {
-                    details_str += "\n" + date_str;
-                }
+        std::string details_str = "";
+        if (item.name == "..") {
+            details_str = "";
+        } else if (item.is_dir) {
+            details_str = "Folder";
+        } else {
+            std::string date_str = "";
+            if (item.mtime > 0) {
+                struct tm* timeinfo = std::localtime(&item.mtime);
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%d/%m/%Y", timeinfo);
+                date_str = buf;
             }
-
-            // Right-aligned details card (max 400px width)
-            item.details_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), details_str, detail_selected_clr, 400);
-            item.details_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), details_str, detail_unselected_clr, 400);
+            details_str = FormatSize(item.size);
+            if (!date_str.empty()) {
+                details_str += "\n" + date_str;
+            }
         }
+
+        // Right-aligned details card (max 400px width)
+        item.details_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), details_str, detail_selected_clr, 400);
+        item.details_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), details_str, detail_unselected_clr, 400);
+    }
+
+    void FileBrowserPane::RebuildFileTextures() {
+        std::lock_guard<std::mutex> lock(data_mutex);
 
         // Restore selection if we just navigated back to parent folder
         if (!target_select_name.empty()) {
@@ -553,10 +586,16 @@ namespace romm::ui {
         options_menu_items.push_back("Properties");
         options_menu_items.push_back("Refresh");
 
-        bool in_safe = IsWritablePath(current_path);
-        if (in_safe) {
+        bool can_write = IsWritablePath(current_path);
+        if (can_write) {
             options_menu_items.push_back("Create Folder");
-            if (!loaded_items.empty() && selected_file_idx < loaded_items.size() && loaded_items[selected_file_idx].name != "..") {
+            bool sel_is_mutable = false;
+            {
+                std::lock_guard<std::mutex> lock(data_mutex);
+                sel_is_mutable = !loaded_items.empty() && selected_file_idx < loaded_items.size() &&
+                                 loaded_items[selected_file_idx].name != "..";
+            }
+            if (sel_is_mutable) {
                 options_menu_items.push_back("Rename");
                 options_menu_items.push_back("Delete");
             }
@@ -566,10 +605,10 @@ namespace romm::ui {
         pu::ui::Color unselected_clr(255, 255, 255, 255);
 
         // Pre-render mount name textures
-        std::string mount_names[] = { "microSD card", "romm-nx", "ROMs", "Safe Test Zone" };
-        std::string active_mount_name = mount_names[current_mount_idx];
+        std::string mount_names[] = { "microSD card", "romm-nx", "ROMs" };
+        std::string active_mount_name = mount_names[current_mount_idx % 3];
         mount_val_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), active_mount_name, selected_clr);
-        mount_val_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), active_mount_name, selected_clr);
+        mount_val_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), active_mount_name, unselected_clr);
 
         for (const auto& opt : options_menu_items) {
             options_texs_selected.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), opt, selected_clr, 370));
@@ -653,29 +692,50 @@ namespace romm::ui {
         }
     }
 
+    // Re-render only when the string changes; returns the cached texture.
+    static pu::sdl2::Texture UpdateCachedText(CachedText& cache, const std::string& str, const std::string& font, pu::ui::Color color) {
+        if (!cache.tex || cache.str != str) {
+            if (cache.tex) {
+                pu::ui::render::DeleteTexture(cache.tex);
+                cache.tex = nullptr;
+            }
+            cache.str = str;
+            if (!str.empty()) {
+                cache.tex = pu::ui::render::RenderText(font, str, color);
+            }
+        }
+        return cache.tex;
+    }
+
     void FileBrowserPane::DrawSwitchButton(pu::ui::render::Renderer::Ref &drawer, const std::string& letter, const std::string& label, s32 &x_pos, s32 y_pos) {
         pu::ui::Color btn_bg(50, 55, 65, 255);
         pu::ui::Color btn_text(255, 255, 255, 255);
-        
+
         s32 box_w = 40;
         s32 box_h = 40;
         drawer->RenderRoundedRectangleFill(btn_bg, x_pos, y_pos - 6, box_w, box_h, 8);
-        
-        s32 lw = pu::ui::render::GetTextWidth(GetSafeFont("Ubuntu@20", "Ubuntu@24"), letter);
-        s32 lh = pu::ui::render::GetTextHeight(GetSafeFont("Ubuntu@20", "Ubuntu@24"), letter);
-        auto letter_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), letter, btn_text);
-        if (letter_tex) {
-            drawer->RenderTexture(letter_tex, x_pos + (box_w - lw) / 2, y_pos - 6 + (box_h - lh) / 2);
-            pu::ui::render::DeleteTexture(letter_tex);
+
+        // Footer glyphs come from a tiny fixed set — cache them instead of
+        // doing a TTF render + texture destroy for each, every frame.
+        auto& letter_tex = button_text_cache["K|" + letter];
+        if (!letter_tex) {
+            letter_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), letter, btn_text);
         }
-        
+        if (letter_tex) {
+            s32 lw = pu::ui::render::GetTextureWidth(letter_tex);
+            s32 lh = pu::ui::render::GetTextureHeight(letter_tex);
+            drawer->RenderTexture(letter_tex, x_pos + (box_w - lw) / 2, y_pos - 6 + (box_h - lh) / 2);
+        }
+
         x_pos += box_w + 12;
-        auto label_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), label, pu::ui::Color(200, 205, 215, 255));
+        auto& label_tex = button_text_cache["L|" + label];
+        if (!label_tex) {
+            label_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), label, pu::ui::Color(200, 205, 215, 255));
+        }
         if (label_tex) {
-            s32 label_h = pu::ui::render::GetTextHeight(GetSafeFont("Ubuntu@24", "Ubuntu@20"), label);
+            s32 label_h = pu::ui::render::GetTextureHeight(label_tex);
             drawer->RenderTexture(label_tex, x_pos, y_pos - 6 + (box_h - label_h) / 2);
             x_pos += pu::ui::render::GetTextureWidth(label_tex) + 30;
-            pu::ui::render::DeleteTexture(label_tex);
         }
     }
 
@@ -708,7 +768,21 @@ namespace romm::ui {
 
     void FileBrowserPane::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x_coord, const s32 y_coord) {
         bool logged_render = false;
-        if (needs_layout_update) {
+        bool do_layout_update = false;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex);
+            // Free textures of entries displaced by the scan thread — texture
+            // deletion must happen here on the render thread.
+            for (auto& item : retired_items) {
+                if (item.text_tex_selected) pu::ui::render::DeleteTexture(item.text_tex_selected);
+                if (item.text_tex_unselected) pu::ui::render::DeleteTexture(item.text_tex_unselected);
+                if (item.details_tex_selected) pu::ui::render::DeleteTexture(item.details_tex_selected);
+                if (item.details_tex_unselected) pu::ui::render::DeleteTexture(item.details_tex_unselected);
+            }
+            retired_items.clear();
+            do_layout_update = needs_layout_update;
+        }
+        if (do_layout_update) {
             std::cout << "[FILE_BROWSER] render_start" << std::endl;
             RebuildFileTextures();
             OnSelectionUpdated();
@@ -730,27 +804,23 @@ namespace romm::ui {
         // 1. Draw Top Separator Line
         drawer->RenderRectangleFill(separator_clr, 60, 135, 1800, 1);
 
-        // 2. Draw Top-Right System Info
-        s32 wifi_w = pu::ui::render::GetTextWidth(GetSafeFont("Ubuntu@20", "Ubuntu@24"), cached_net_info.status_line1);
-        auto wifi_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), cached_net_info.status_line1, pu::ui::Color(190, 180, 225, 255));
+        // 2. Draw Top-Right System Info (textures cached; strings change at
+        // most every 3s when RefreshStats runs)
+        auto wifi_tex = UpdateCachedText(net1_cache, cached_net_info.status_line1, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (wifi_tex) {
-            drawer->RenderTexture(wifi_tex, 1300 - wifi_w, 50);
-            pu::ui::render::DeleteTexture(wifi_tex);
+            drawer->RenderTexture(wifi_tex, 1300 - pu::ui::render::GetTextureWidth(wifi_tex), 50);
         }
-        s32 ip_w = pu::ui::render::GetTextWidth(GetSafeFont("Ubuntu@20", "Ubuntu@24"), cached_net_info.status_line2);
-        auto ip_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), cached_net_info.status_line2, pu::ui::Color(190, 180, 225, 255));
+        auto ip_tex = UpdateCachedText(net2_cache, cached_net_info.status_line2, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (ip_tex) {
-            drawer->RenderTexture(ip_tex, 1300 - ip_w, 80);
-            pu::ui::render::DeleteTexture(ip_tex);
+            drawer->RenderTexture(ip_tex, 1300 - pu::ui::render::GetTextureWidth(ip_tex), 80);
         }
 
         // microSD space
         char sd_buf[64];
         std::sprintf(sd_buf, "microSD %.1f GB", cached_store_info.sd_free);
-        auto sd_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), sd_buf, pu::ui::Color(190, 180, 225, 255));
+        auto sd_tex = UpdateCachedText(sd_cache, sd_buf, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (sd_tex) {
             drawer->RenderTexture(sd_tex, 1350, 60);
-            pu::ui::render::DeleteTexture(sd_tex);
         }
         pu::ui::Color bar_bg(30, 32, 36, 255);
         drawer->RenderRectangleFill(bar_bg, 1350, 95, 220, 8);
@@ -764,10 +834,9 @@ namespace romm::ui {
         // NAND (System) space
         char sys_buf[64];
         std::sprintf(sys_buf, "System %.1f GB", cached_store_info.sys_free);
-        auto sys_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@24"), sys_buf, pu::ui::Color(190, 180, 225, 255));
+        auto sys_tex = UpdateCachedText(sys_cache, sys_buf, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (sys_tex) {
             drawer->RenderTexture(sys_tex, 1620, 60);
-            pu::ui::render::DeleteTexture(sys_tex);
         }
         drawer->RenderRectangleFill(bar_bg, 1620, 95, 220, 8);
         double sys_used = cached_store_info.sys_total - cached_store_info.sys_free;
@@ -781,11 +850,15 @@ namespace romm::ui {
         s32 file_h = 92;
         size_t max_visible = 8;
 
-        std::vector<FileEntry> current_items;
+        // Render straight from loaded_items under the lock (the scan thread
+        // only holds it for brief moments) — the previous full-vector copy
+        // per frame churned hundreds of string allocations at 60fps. Rows
+        // lazily render their text textures here, a few per frame, instead of
+        // pre-rendering the entire directory in one hitch.
+        size_t item_count_snapshot = 0;
         {
-            std::lock_guard<std::mutex> lock(data_mutex);
-            current_items = loaded_items;
-        }
+        std::lock_guard<std::mutex> lock(data_mutex);
+        item_count_snapshot = loaded_items.size();
 
         if (is_loading) {
             s32 tw = pu::ui::render::GetTextureWidth(loading_tex);
@@ -793,14 +866,13 @@ namespace romm::ui {
             drawer->RenderTexture(loading_tex, x_coord + (1800 - tw) / 2, y_coord + (760 - th) / 2);
         } else if (load_failed) {
             pu::ui::Color red_clr(231, 76, 60, 255);
-            auto err_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), error_msg.empty() ? "Failed to read path." : error_msg, red_clr);
+            auto err_tex = UpdateCachedText(error_cache, error_msg.empty() ? "Failed to read path." : error_msg, GetSafeFont("Ubuntu@30", "Ubuntu@24"), red_clr);
             if (err_tex) {
                 s32 tw = pu::ui::render::GetTextureWidth(err_tex);
                 s32 th = pu::ui::render::GetTextureHeight(err_tex);
                 drawer->RenderTexture(err_tex, x_coord + (1800 - tw) / 2, y_coord + (760 - th) / 2);
-                pu::ui::render::DeleteTexture(err_tex);
             }
-        } else if (current_items.empty()) {
+        } else if (loaded_items.empty()) {
             s32 tw = pu::ui::render::GetTextureWidth(empty_tex);
             s32 th = pu::ui::render::GetTextureHeight(empty_tex);
             drawer->RenderTexture(empty_tex, x_coord + (1800 - tw) / 2, y_coord + (760 - th) / 2);
@@ -812,9 +884,11 @@ namespace romm::ui {
                 file_scroll_offset = (int)(selected_file_idx - max_visible + 1);
             }
 
+            int lazy_texture_budget = 4; // rows whose text we render this frame
+
             for (size_t i = 0; i < max_visible; ++i) {
                 size_t idx = file_scroll_offset + i;
-                if (idx >= current_items.size()) break;
+                if (idx >= loaded_items.size()) break;
 
                 s32 iy = y_coord + (s32)i * file_h;
                 bool is_selected = (active_focus == FileBrowserFocus::Files && idx == selected_file_idx);
@@ -823,7 +897,11 @@ namespace romm::ui {
                     DrawRectangleBorder(drawer, cream_accent, x_coord, iy, 1800, file_h - 10, 2);
                 }
 
-                const auto& item = current_items[idx];
+                auto& item = loaded_items[idx];
+                if (!item.text_tex_unselected && lazy_texture_budget > 0) {
+                    CreateItemTextures(item);
+                    lazy_texture_budget--;
+                }
 
                 // Draw vector icons
                 s32 icon_x = x_coord + 20;
@@ -864,6 +942,7 @@ namespace romm::ui {
                 drawer->RenderRectangleFill(separator_clr, x_coord, iy + file_h - 1, 1800, 1);
             }
         }
+        } // release data_mutex
 
         // Draw dimming overlay if options panel or dialog is open
         if (is_dimmed) {
@@ -984,11 +1063,10 @@ namespace romm::ui {
         drawer->RenderRectangleFill(separator_clr, 60, 930, 1800, 1);
 
         char pos_buf[64];
-        std::sprintf(pos_buf, "%zu / %zu", loaded_items.empty() ? 0 : (selected_file_idx + 1), loaded_items.size());
-        auto pos_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), pos_buf, pu::ui::Color(120, 125, 135, 255));
+        std::sprintf(pos_buf, "%zu / %zu", item_count_snapshot == 0 ? (size_t)0 : (selected_file_idx + 1), item_count_snapshot);
+        auto pos_tex = UpdateCachedText(pos_cache, pos_buf, GetSafeFont("Ubuntu@24", "Ubuntu@20"), pu::ui::Color(120, 125, 135, 255));
         if (pos_tex) {
             drawer->RenderTexture(pos_tex, 60, 965);
-            pu::ui::render::DeleteTexture(pos_tex);
         }
 
         struct FooterBtn {
@@ -1006,7 +1084,11 @@ namespace romm::ui {
 
         s32 total_w = 0;
         for (const auto& btn : btns) {
-            total_w += 40 + 12 + pu::ui::render::GetTextWidth(GetSafeFont("Ubuntu@24", "Ubuntu@20"), btn.label) + 30;
+            auto& label_tex = button_text_cache["L|" + btn.label];
+            if (!label_tex) {
+                label_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), btn.label, pu::ui::Color(200, 205, 215, 255));
+            }
+            total_w += 40 + 12 + (label_tex ? pu::ui::render::GetTextureWidth(label_tex) : 0) + 30;
         }
         s32 start_x = 1860 - total_w;
         for (const auto& btn : btns) {
@@ -1022,10 +1104,26 @@ namespace romm::ui {
         auto nav = nav_mgr.lock();
         if (!nav) return;
 
-        std::vector<FileEntry> current_items;
+        // Snapshot just the item count and the selected entry's data fields
+        // under a short lock — input handling only ever needs those, and the
+        // previous full-vector copy churned every string in the directory on
+        // every input frame. (Texture pointers deliberately not copied; the
+        // snapshot owns nothing.)
+        size_t item_count = 0;
+        FileEntry sel_item;
+        bool has_sel = false;
         {
             std::lock_guard<std::mutex> lock(data_mutex);
-            current_items = loaded_items;
+            item_count = loaded_items.size();
+            if (selected_file_idx < item_count) {
+                const auto& src = loaded_items[selected_file_idx];
+                sel_item.name = src.name;
+                sel_item.path = src.path;
+                sel_item.is_dir = src.is_dir;
+                sel_item.size = src.size;
+                sel_item.mtime = src.mtime;
+                has_sel = true;
+            }
         }
 
         // 1. Held repeat scroll timer logic
@@ -1069,26 +1167,23 @@ namespace romm::ui {
                 }
             }
             else if (do_down) {
-                if (selected_file_idx < current_items.size() - 1) {
+                if (item_count > 0 && selected_file_idx < item_count - 1) {
                     selected_file_idx++;
                     OnSelectionUpdated();
                 }
             }
 
             if (keys_down & HidNpadButton_A) {
-                if (selected_file_idx < current_items.size()) {
-                    const auto& item = current_items[selected_file_idx];
-                    if (item.is_dir) {
-                        current_path = NormalizePath(item.path);
-                        if (current_path.back() != '/') current_path += "/";
-                        
-                        std::cout << "[FILE_BROWSER] open path=" << current_path << std::endl;
-                        LoadDirectoryAsync(current_path);
-                        
-                        selected_file_idx = 0;
-                        file_scroll_offset = 0;
-                        OnSelectionUpdated();
-                    }
+                if (has_sel && sel_item.is_dir) {
+                    current_path = NormalizePath(sel_item.path);
+                    if (current_path.back() != '/') current_path += "/";
+
+                    std::cout << "[FILE_BROWSER] open path=" << current_path << std::endl;
+                    LoadDirectoryAsync(current_path);
+
+                    selected_file_idx = 0;
+                    file_scroll_offset = 0;
+                    OnSelectionUpdated();
                 }
             }
             if (keys_down & HidNpadButton_B) {
@@ -1148,8 +1243,8 @@ namespace romm::ui {
                 std::string option = options_menu_items[selected_option_idx];
                 
                 if (option == "Mount") {
-                    current_mount_idx = (current_mount_idx + 1) % 4;
-                    std::string mount_paths[] = { "sdmc:/", "sdmc:/switch/romm-nx/", "sdmc:/roms/", "sdmc:/switch/romm-nx/filebrowser-test/" };
+                    current_mount_idx = (current_mount_idx + 1) % 3;
+                    std::string mount_paths[] = { "sdmc:/", "sdmc:/switch/romm-nx/", "sdmc:/roms/" };
                     current_path = mount_paths[current_mount_idx];
                     
                     std::cout << "[FILE_BROWSER] mount_cycle idx=" << current_mount_idx << " path=" << current_path << std::endl;
@@ -1164,8 +1259,7 @@ namespace romm::ui {
                     HandleInput(HidNpadButton_A, 0); // Trigger standard Open behavior
                 }
                 else if (option == "Properties") {
-                    if (selected_file_idx < current_items.size()) {
-                        const auto& item = current_items[selected_file_idx];
+                    if (has_sel) {
                         pu::ui::Color text_clr(255, 255, 255, 255);
                         pu::ui::Color title_clr(230, 199, 167, 255); // Cream Accent
 
@@ -1175,12 +1269,12 @@ namespace romm::ui {
                         properties_texs.clear();
 
                         properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Item Properties", title_clr));
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Name: " + item.name, text_clr, 720));
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Type: " + (item.is_dir ? std::string("Folder") : std::string("File")), text_clr, 720));
-                        if (!item.is_dir) {
-                            properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Size: " + FormatSize(item.size), text_clr, 720));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Name: " + sel_item.name, text_clr, 720));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Type: " + (sel_item.is_dir ? std::string("Folder") : std::string("File")), text_clr, 720));
+                        if (!sel_item.is_dir) {
+                            properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Size: " + FormatSize(sel_item.size), text_clr, 720));
                         }
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Path: " + item.path, text_clr, 720));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Path: " + sel_item.path, text_clr, 720));
                         properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "OK", title_clr));
 
                         active_focus = FileBrowserFocus::PropertiesModal;
@@ -1212,20 +1306,20 @@ namespace romm::ui {
                                         nav->ShowKeyboard("Error", "Could not create directory. Already exists?", "");
                                     }
                                 } else {
-                                    std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=outside_safe_zone" << std::endl;
-                                    nav->ShowKeyboard("Error", "Write operation target is outside the safe zone.", "");
+                                    std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=write_not_allowed" << std::endl;
+                                    nav->ShowKeyboard("Error", "Writes are limited to the ROMs folder. See Settings > File browser writes.", "");
                                 }
                             } else {
                                 nav->ShowKeyboard("Error", "Invalid name. Avoid symbols / \\ : * ? \" < > | ..", "");
                             }
                         }
                     } else {
-                        std::cout << "[FILE_BROWSER] blocked_write path=" << current_path << " reason=outside_safe_zone" << std::endl;
+                        std::cout << "[FILE_BROWSER] blocked_write path=" << current_path << " reason=write_not_allowed" << std::endl;
                     }
                 }
                 else if (option == "Rename") {
-                    if (selected_file_idx < current_items.size()) {
-                        const auto& item = current_items[selected_file_idx];
+                    if (has_sel) {
+                        const auto& item = sel_item;
                         if (IsWritablePath(item.path)) {
                             std::string new_name = nav->ShowKeyboard("Rename Item", "Enter new name:", item.name);
                             if (!new_name.empty() && new_name != item.name) {
@@ -1250,15 +1344,15 @@ namespace romm::ui {
                                             }
                                         }
                                     } else {
-                                        std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=outside_safe_zone" << std::endl;
-                                        nav->ShowKeyboard("Error", "Write operation target is outside the safe zone.", "");
+                                        std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=write_not_allowed" << std::endl;
+                                        nav->ShowKeyboard("Error", "Writes are limited to the ROMs folder. See Settings > File browser writes.", "");
                                     }
                                 } else {
                                     nav->ShowKeyboard("Error", "Invalid name. Avoid symbols / \\ : * ? \" < > | ..", "");
                                 }
                             }
                         } else {
-                            std::cout << "[FILE_BROWSER] blocked_write path=" << item.path << " reason=outside_safe_zone" << std::endl;
+                            std::cout << "[FILE_BROWSER] blocked_write path=" << item.path << " reason=write_not_allowed" << std::endl;
                         }
                     }
                 }
@@ -1298,8 +1392,8 @@ namespace romm::ui {
                     OnSelectionUpdated();
                 } else {
                     // "Yes" (Confirm Delete)
-                    if (selected_file_idx < current_items.size()) {
-                        const auto& item = current_items[selected_file_idx];
+                    if (has_sel) {
+                        const auto& item = sel_item;
                         if (IsWritablePath(item.path) && item.name != "..") {
                             int rc = -1;
                             if (item.is_dir) {
@@ -1339,7 +1433,7 @@ namespace romm::ui {
                                 OnSelectionUpdated();
                             }
                         } else {
-                            std::cout << "[FILE_BROWSER] blocked_write path=" << item.path << " reason=outside_safe_zone" << std::endl;
+                            std::cout << "[FILE_BROWSER] blocked_write path=" << item.path << " reason=write_not_allowed" << std::endl;
                             active_focus = FileBrowserFocus::OptionsMenu;
                             OnSelectionUpdated();
                         }
