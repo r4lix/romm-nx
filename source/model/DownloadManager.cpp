@@ -1077,7 +1077,26 @@ namespace romm::model {
             ScreenWakeManager::Instance().RequestUpdate();
 
             if (!found_task) {
-                worker_running = false;
+                // Re-check under task_mutex before exiting. EnqueueDownload
+                // pushes tasks and reads worker_running under this same lock;
+                // without this re-check, a task enqueued between the scan
+                // above and the worker_running=false store below would never
+                // be picked up (the enqueuer sees a "running" worker that is
+                // actually about to exit and doesn't spawn a new one).
+                {
+                    std::lock_guard<std::mutex> lock(task_mutex);
+                    bool any_queued = false;
+                    for (const auto& t : download_queue) {
+                        if (t.state == DownloadState::Queued) {
+                            any_queued = true;
+                            break;
+                        }
+                    }
+                    if (any_queued) {
+                        continue;
+                    }
+                    worker_running = false;
+                }
                 ScreenWakeManager::Instance().RequestUpdate();
                 break;
             }

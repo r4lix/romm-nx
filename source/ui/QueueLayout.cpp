@@ -1,11 +1,96 @@
 #include "QueueLayout.hpp"
+#include "PlaceholderCover.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "../model/DownloadManager.hpp"
 #include "GlobalProgressBar.hpp"
 #include "CoverCache.hpp"
 #include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <chrono>
 
 namespace romm::ui {
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    static bool IsActiveState(romm::model::DownloadState s) {
+        return s == romm::model::DownloadState::Preparing ||
+               s == romm::model::DownloadState::DownloadingGame ||
+               s == romm::model::DownloadState::DownloadingCover ||
+               s == romm::model::DownloadState::SyncingCover;
+    }
+
+    static int StateSortRank(romm::model::DownloadState s) {
+        if (IsActiveState(s)) return 0;
+        switch (s) {
+            case romm::model::DownloadState::Queued:    return 1;
+            case romm::model::DownloadState::Failed:    return 2;
+            case romm::model::DownloadState::Cancelled: return 3;
+            case romm::model::DownloadState::Completed: return 4;
+            default:                                    return 5;
+        }
+    }
+
+    // Display order: active first, then queued, then failed/cancelled (they
+    // want attention), completed last. Stable within each group.
+    static std::vector<romm::model::DownloadTask> SortedQueueSnapshot() {
+        auto snap = romm::model::DownloadManager::Instance().GetQueueSnapshot();
+        std::stable_sort(snap.begin(), snap.end(), [](const auto& a, const auto& b) {
+            return StateSortRank(a.state.load()) < StateSortRank(b.state.load());
+        });
+        return snap;
+    }
+
+    static std::string MakeStatusString(const romm::model::DownloadTask& t) {
+        switch (t.state.load()) {
+            case romm::model::DownloadState::Preparing:
+                return "Preparing...";
+            case romm::model::DownloadState::DownloadingGame: {
+                float progress_pct = 0.0f;
+                if (t.total_bytes > 0) {
+                    progress_pct = (float)t.downloaded_bytes.load() / t.total_bytes;
+                }
+                int pct_int = (int)(progress_pct * 100);
+
+                std::string speed_str = "Starting...";
+                size_t bps = t.download_speed_bps.load();
+                if (bps > 0) {
+                    std::stringstream ss;
+                    double speed_mbps = (double)bps / (1024.0 * 1024.0);
+                    if (speed_mbps >= 1.0) {
+                        ss << std::fixed << std::setprecision(1) << speed_mbps << " MB/s";
+                    } else {
+                        ss << std::fixed << std::setprecision(1) << ((double)bps / 1024.0) << " KB/s";
+                    }
+                    speed_str = ss.str();
+                }
+                return "Downloading  •  " + std::to_string(pct_int) + "%  •  " + speed_str;
+            }
+            case romm::model::DownloadState::DownloadingCover:
+            case romm::model::DownloadState::SyncingCover:
+                return "Cover Sync...";
+            case romm::model::DownloadState::Queued:
+                return "Queued";
+            case romm::model::DownloadState::Completed:
+                return "Completed";
+            case romm::model::DownloadState::Failed: {
+                std::string s = "Failed";
+                if (!t.error_message.empty()) s += " (" + t.error_message + ")";
+                return s;
+            }
+            case romm::model::DownloadState::Cancelled:
+                return "Cancelled";
+            default:
+                return "Unknown";
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // QueueList
+    // -----------------------------------------------------------------------
 
     QueueList::QueueList(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element(), x(x), y(y), w(w), h(h), nav_mgr(nav) {
@@ -28,139 +113,130 @@ namespace romm::ui {
         items.clear();
     }
 
+    void QueueList::RenderStatusTextures(QueueItem& item) {
+        if (item.status_tex_selected)   { pu::ui::render::DeleteTexture(item.status_tex_selected);   item.status_tex_selected = nullptr; }
+        if (item.status_tex_unselected) { pu::ui::render::DeleteTexture(item.status_tex_unselected); item.status_tex_unselected = nullptr; }
+
+        pu::ui::Color detail_selected_clr(210, 200, 235, 255);
+        pu::ui::Color detail_unselected_clr(140, 130, 170, 255);
+        item.status_tex_selected = pu::ui::render::RenderText("Ubuntu@20", item.status_str, detail_selected_clr, w - 120);
+        item.status_tex_unselected = pu::ui::render::RenderText("Ubuntu@20", item.status_str, detail_unselected_clr, w - 120);
+    }
+
     void QueueList::BuildList() {
         ClearTextures();
         auto nav = nav_mgr.lock();
         if (!nav) return;
         auto model = nav->GetModel();
         if (!model) return;
-        
-        auto& dl_mgr = romm::model::DownloadManager::Instance();
-        auto queue_snap = dl_mgr.GetQueueSnapshot();
-        auto active_snap = dl_mgr.GetActiveDownloadSnapshot();
+
+        auto snap = SortedQueueSnapshot();
 
         pu::ui::Color selected_clr(237, 229, 251, 255);
         pu::ui::Color unselected_clr(190, 180, 225, 255);
-        pu::ui::Color detail_selected_clr(210, 200, 235, 255);
-        pu::ui::Color detail_unselected_clr(140, 130, 170, 255);
-        
-        // Add active download to the top if any
-        if (active_snap.rom_id != 0) {
-            QueueItem item;
-            item.task = active_snap;
-            
-            item.game_title = active_snap.title;
-            if (item.game_title.empty()) {
-                const auto* detail = model->GetCachedDetail(active_snap.rom_id);
-                if (detail) item.game_title = detail->file_name;
-                else item.game_title = active_snap.original_filename;
-                
-                size_t last_dot = item.game_title.find_last_of('.');
-                if (last_dot != std::string::npos) {
-                    item.game_title = item.game_title.substr(0, last_dot);
-                }
-            }
-            if (item.game_title.empty()) item.game_title = "ROM ID " + std::to_string(active_snap.rom_id);
-            
-            // Format status for active download
-            std::string state_str = "";
-            if (active_snap.state == romm::model::DownloadState::DownloadingGame) {
-                float progress_pct = 0.0f;
-                if (active_snap.total_bytes > 0) {
-                    progress_pct = (float)active_snap.downloaded_bytes / active_snap.total_bytes;
-                }
-                int pct_int = (int)(progress_pct * 100);
-                
-                std::string speed_str = "";
-                if (active_snap.download_speed_bps > 0) {
-                    double speed_mbps = (double)active_snap.download_speed_bps / (1024.0 * 1024.0);
-                    std::stringstream ss;
-                    if (speed_mbps >= 1.0) {
-                        ss << std::fixed << std::setprecision(1) << speed_mbps << " MB/s";
-                    } else {
-                        double speed_kbps = (double)active_snap.download_speed_bps / 1024.0;
-                        ss << std::fixed << std::setprecision(1) << speed_kbps << " KB/s";
-                    }
-                    speed_str = ss.str();
-                } else {
-                    speed_str = "Starting...";
-                }
-                state_str = "Downloading  •  " + std::to_string(pct_int) + "%  •  " + speed_str;
-            } else if (active_snap.state == romm::model::DownloadState::Preparing) {
-                state_str = "Preparing...";
-            } else if (active_snap.state == romm::model::DownloadState::DownloadingCover || active_snap.state == romm::model::DownloadState::SyncingCover) {
-                state_str = "Cover Sync...";
-            } else {
-                state_str = "Active";
-            }
-            
-            item.text_tex_selected = pu::ui::render::RenderText("Ubuntu@30", item.game_title, selected_clr, w - 120);
-            item.text_tex_unselected = pu::ui::render::RenderText("Ubuntu@30", item.game_title, unselected_clr, w - 120);
-            item.status_tex_selected = pu::ui::render::RenderText("Ubuntu@20", state_str, detail_selected_clr, w - 120);
-            item.status_tex_unselected = pu::ui::render::RenderText("Ubuntu@20", state_str, detail_unselected_clr, w - 120);
-            
-            items.push_back(item);
-        }
 
-        // Add queued items
-        for (const auto& t : queue_snap) {
-            if (!active_snap.final_path.empty() && t.final_path == active_snap.final_path) continue; // Prevent duplication by path
-            
+        for (const auto& t : snap) {
             QueueItem item;
             item.task = t;
+
             item.game_title = t.title;
             if (item.game_title.empty()) {
                 const auto* detail = model->GetCachedDetail(t.rom_id);
                 if (detail) item.game_title = detail->file_name;
                 else item.game_title = t.original_filename;
-                
+
                 size_t last_dot = item.game_title.find_last_of('.');
                 if (last_dot != std::string::npos) {
                     item.game_title = item.game_title.substr(0, last_dot);
                 }
             }
             if (item.game_title.empty()) item.game_title = "ROM ID " + std::to_string(t.rom_id);
-            
-            std::string state_str = "";
-            switch (t.state) {
-                case romm::model::DownloadState::Queued: state_str = "Queued"; break;
-                case romm::model::DownloadState::Preparing: state_str = "Preparing"; break;
-                case romm::model::DownloadState::DownloadingGame: state_str = "Downloading"; break;
-                case romm::model::DownloadState::DownloadingCover: state_str = "Cover Sync"; break;
-                case romm::model::DownloadState::SyncingCover: state_str = "Cover Sync"; break;
-                case romm::model::DownloadState::Completed: state_str = "Completed"; break;
-                case romm::model::DownloadState::Failed: {
-                    state_str = "Failed";
-                    if (!t.error_message.empty()) state_str += " (" + t.error_message + ")";
-                    break;
-                }
-                case romm::model::DownloadState::Cancelled: state_str = "Cancelled"; break;
-                default: state_str = "Unknown"; break;
-            }
 
+            item.status_str = MakeStatusString(t);
             item.text_tex_selected = pu::ui::render::RenderText("Ubuntu@30", item.game_title, selected_clr, w - 120);
             item.text_tex_unselected = pu::ui::render::RenderText("Ubuntu@30", item.game_title, unselected_clr, w - 120);
-            item.status_tex_selected = pu::ui::render::RenderText("Ubuntu@20", state_str, detail_selected_clr, w - 120);
-            item.status_tex_unselected = pu::ui::render::RenderText("Ubuntu@20", state_str, detail_unselected_clr, w - 120);
-            
+            RenderStatusTextures(item);
+
             items.push_back(item);
         }
-        
+
         if (selected_idx >= items.size() && !items.empty()) {
             selected_idx = items.size() - 1;
         } else if (items.empty()) {
             selected_idx = 0;
         }
-        
+
         list_built = true;
+        last_refresh = std::chrono::steady_clock::now();
+    }
+
+    void QueueList::RefreshList() {
+        if (!list_built) {
+            BuildList();
+            return;
+        }
+
+        // The previous implementation fully rebuilt every row's textures each
+        // idle frame (~20+ TTF renders at 60fps). Throttle, then re-render
+        // only what changed.
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_refresh).count() < 250) {
+            return;
+        }
+        last_refresh = now;
+
+        auto snap = SortedQueueSnapshot();
+
+        bool membership_changed = (snap.size() != items.size());
+        if (!membership_changed) {
+            for (size_t i = 0; i < snap.size(); ++i) {
+                if (snap[i].rom_id != items[i].task.rom_id) {
+                    membership_changed = true;
+                    break;
+                }
+            }
+        }
+        if (membership_changed) {
+            BuildList();
+            return;
+        }
+
+        for (size_t i = 0; i < snap.size(); ++i) {
+            auto& item = items[i];
+            item.task = snap[i]; // keep current state for input handling
+            std::string s = MakeStatusString(snap[i]);
+            if (s != item.status_str) {
+                item.status_str = s;
+                RenderStatusTextures(item);
+            }
+        }
     }
 
     void QueueList::OnSelectionUpdated() {
-        BuildList();
+        RefreshList();
+    }
+
+    std::string QueueList::GetContextHint() const {
+        if (items.empty() || selected_idx >= items.size()) {
+            return "B Back";
+        }
+        auto st = items[selected_idx].task.state.load();
+        if (IsActiveState(st)) {
+            return "A Cancel Download   |   X Clear Completed   |   B Back";
+        }
+        switch (st) {
+            case romm::model::DownloadState::Failed:
+            case romm::model::DownloadState::Cancelled:
+                return "A Retry   |   X Clear Completed   |   B Back";
+            case romm::model::DownloadState::Queued:
+            case romm::model::DownloadState::Completed:
+            default:
+                return "A Remove   |   X Clear Completed   |   B Back";
+        }
     }
 
     void QueueList::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x_coord, const s32 y_coord) {
-        if (!list_built) BuildList();
+        RefreshList();
 
         if (items.empty()) {
             s32 tw = pu::ui::render::GetTextureWidth(empty_tex);
@@ -215,8 +291,13 @@ namespace romm::ui {
                 opts.height = cover_h;
                 drawer->RenderTexture(cover_tex, cover_x, cover_y, opts);
             } else {
-                // Placeholder grey rectangle
-                drawer->RenderRoundedRectangleFill(pu::ui::Color(60, 60, 60, 255), cover_x, cover_y, cover_w, cover_h, 6);
+                auto plat_ph = GetPlaceholderCover(item.task.platform_slug);
+                if (plat_ph) {
+                    DrawPlaceholderCover(drawer, plat_ph, cover_x, cover_y, cover_w, cover_h);
+                } else {
+                    // Placeholder grey rectangle
+                    drawer->RenderRoundedRectangleFill(pu::ui::Color(60, 60, 60, 255), cover_x, cover_y, cover_w, cover_h, 6);
+                }
             }
 
             // Render text
@@ -243,17 +324,23 @@ namespace romm::ui {
         }
         else if (keys_down & HidNpadButton_A) {
             auto& dl_mgr = romm::model::DownloadManager::Instance();
-            auto& item = items[selected_idx];
-            
-            if (item.task.state == romm::model::DownloadState::Failed || item.task.state == romm::model::DownloadState::Cancelled) {
-                dl_mgr.RetryFailed(item.task.rom_id);
-            } else if (item.task.state == romm::model::DownloadState::Queued) {
-                dl_mgr.RemoveFromQueue(item.task.rom_id);
-            } else if (item.task.state == romm::model::DownloadState::Completed) {
-                dl_mgr.ClearCompleted();
-            } else {
-                // Active task, do we cancel it?
-                dl_mgr.CancelDownload();
+            const int rom_id = items[selected_idx].task.rom_id;
+
+            // Act on the task's CURRENT state, not the one captured at render
+            // time — acting on a stale row could otherwise cancel whichever
+            // download happens to be active now.
+            auto fresh = dl_mgr.GetTaskSnapshot(rom_id);
+            if (fresh.rom_id != 0) {
+                auto st = fresh.state.load();
+                if (IsActiveState(st)) {
+                    dl_mgr.CancelDownload();
+                } else if (st == romm::model::DownloadState::Failed ||
+                           st == romm::model::DownloadState::Cancelled) {
+                    dl_mgr.RetryFailed(rom_id);
+                } else {
+                    // Queued or Completed: remove just this entry
+                    dl_mgr.RemoveFromQueue(rom_id);
+                }
             }
             BuildList();
         }
@@ -278,7 +365,8 @@ namespace romm::ui {
         header_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
         this->Add(header_text);
 
-        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, "A Remove/Retry   |   X Clear Completed   |   B Back");
+        last_hint = "A Action   |   X Clear Completed   |   B Back";
+        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, last_hint);
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         hint_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
@@ -291,16 +379,28 @@ namespace romm::ui {
         this->Add(global_progress);
     }
 
+    void QueueLayout::UpdateHint() {
+        if (!list || !hint_text) return;
+        std::string hint = list->GetContextHint();
+        if (hint != last_hint) {
+            last_hint = hint;
+            hint_text->SetText(hint);
+        }
+    }
+
     void QueueLayout::OnSelectionUpdated() {
-        if (list) list->OnSelectionUpdated();
+        if (list) list->RefreshList();
+        UpdateHint();
     }
 
     void QueueLayout::ForceRefresh() {
         if (list) list->BuildList();
+        UpdateHint();
     }
 
     void QueueLayout::HandleInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
         if (list) list->HandleInput(keys_down, keys_held);
+        UpdateHint();
     }
 
 }
