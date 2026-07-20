@@ -1,4 +1,5 @@
 #include "InstalledLayout.hpp"
+#include "PlaceholderCover.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "../model/DownloadManager.hpp"
 #include "GlobalProgressBar.hpp"
@@ -207,6 +208,7 @@ namespace romm::ui {
         
         sd_card_icon = pu::ui::render::LoadImageFromFile("romfs:/sd_card.png");
         cover_placeholder_tex = pu::ui::render::RenderText("Ubuntu@30", "NO IMAGE", pu::ui::Color(190, 180, 225, 255));
+        empty_state_tex = pu::ui::render::RenderText("Ubuntu@30", "No installed games for this platform.", pu::ui::Color(130, 120, 165, 255));
 
         pu::ui::Color label_clr(190, 180, 225, 255);
         label_platform_tex = pu::ui::render::RenderText("Ubuntu@20", "PLATFORM", label_clr);
@@ -216,8 +218,26 @@ namespace romm::ui {
         label_status_tex   = pu::ui::render::RenderText("Ubuntu@20", "STATUS", label_clr);
     }
 
+    void InstalledListPanel::ClearRowTextures() {
+        for (auto& rt : row_texs) {
+            if (rt.sel)   pu::ui::render::DeleteTexture(rt.sel);
+            if (rt.unsel) pu::ui::render::DeleteTexture(rt.unsel);
+        }
+        row_texs.clear();
+    }
+
+    void InstalledListPanel::InvalidateSelectionVisuals() {
+        ClearInfoTextures();
+        cover_resolved = false;
+        resolved_cover_source = "";
+        resolved_is_local = false;
+        resolved_is_url = false;
+        current_generation_id++;
+    }
+
     InstalledListPanel::~InstalledListPanel() {
         ClearInfoTextures();
+        ClearRowTextures();
         if (sd_card_icon) {
             pu::ui::render::DeleteTexture(sd_card_icon);
             sd_card_icon = nullptr;
@@ -225,6 +245,10 @@ namespace romm::ui {
         if (cover_placeholder_tex) {
             pu::ui::render::DeleteTexture(cover_placeholder_tex);
             cover_placeholder_tex = nullptr;
+        }
+        if (empty_state_tex) {
+            pu::ui::render::DeleteTexture(empty_state_tex);
+            empty_state_tex = nullptr;
         }
         if (label_platform_tex) { pu::ui::render::DeleteTexture(label_platform_tex); label_platform_tex = nullptr; }
         if (label_size_tex)     { pu::ui::render::DeleteTexture(label_size_tex);     label_size_tex = nullptr; }
@@ -325,18 +349,15 @@ namespace romm::ui {
                                       const std::string& norm_slug) {
         games = entries;
         platform_slug = norm_slug;
+        ClearRowTextures();
+        row_texs.resize(games.size());
         ResetSelection();
-        ClearInfoTextures();
     }
 
     void InstalledListPanel::ResetSelection() {
         selected_idx = 0;
         scroll_offset = 0;
-        cover_resolved = false;
-        resolved_cover_source = "";
-        resolved_is_local = false;
-        resolved_is_url = false;
-        current_generation_id++;
+        InvalidateSelectionVisuals();
     }
 
     void InstalledListPanel::SetSelectedIdx(size_t idx) {
@@ -348,12 +369,7 @@ namespace romm::ui {
             } else if ((int)selected_idx >= scroll_offset + vis_rows) {
                 scroll_offset = (int)selected_idx - vis_rows + 1;
             }
-            ClearInfoTextures();
-            cover_resolved = false;
-            resolved_cover_source = "";
-            resolved_is_local = false;
-            resolved_is_url = false;
-            current_generation_id++;
+            InvalidateSelectionVisuals();
         }
     }
 
@@ -372,13 +388,10 @@ namespace romm::ui {
         CoverCache::Instance().PollCompleted();
 
         if (games.empty()) {
-            pu::ui::Color empty_clr(130, 120, 165, 255);
-            auto tex = pu::ui::render::RenderText("Ubuntu@30", "No installed games for this platform.", empty_clr);
-            if (tex) {
-                s32 tw = pu::ui::render::GetTextureWidth(tex);
-                s32 th = pu::ui::render::GetTextureHeight(tex);
-                drawer->RenderTexture(tex, x_coord + (600 - tw) / 2, y_coord + (h - th) / 2);
-                pu::ui::render::DeleteTexture(tex);
+            if (empty_state_tex) {
+                s32 tw = pu::ui::render::GetTextureWidth(empty_state_tex);
+                s32 th = pu::ui::render::GetTextureHeight(empty_state_tex);
+                drawer->RenderTexture(empty_state_tex, x_coord + (600 - tw) / 2, y_coord + (h - th) / 2);
             }
             
             pu::ui::Color panel_bg(22, 24, 33, 255);
@@ -388,7 +401,10 @@ namespace romm::ui {
             s32 ph_x = x_coord + 625 + 30;
             s32 ph_y = y_coord + 110;
             drawer->RenderRoundedRectangleFill(ph_clr, ph_x, ph_y, 380, 540, 6);
-            if (cover_placeholder_tex) {
+            auto plat_ph = GetPlaceholderCover(platform_slug);
+            if (plat_ph) {
+                DrawPlaceholderCover(drawer, plat_ph, ph_x, ph_y, 380, 540);
+            } else if (cover_placeholder_tex) {
                 s32 ptw = pu::ui::render::GetTextureWidth(cover_placeholder_tex);
                 s32 pth = pu::ui::render::GetTextureHeight(cover_placeholder_tex);
                 drawer->RenderTexture(cover_placeholder_tex, ph_x + (380 - ptw) / 2, ph_y + (540 - pth) / 2);
@@ -433,13 +449,20 @@ namespace romm::ui {
                 drawer->RenderTexture(sd_card_icon, x_coord + 30, row_y + (row_h - 30) / 2, opts);
             }
 
-            pu::ui::Color text_color = is_sel ? pu::ui::Color(255, 255, 255, 255) : pu::ui::Color(190, 180, 225, 255);
-            std::string disp_title = TruncateTitle(CleanDisplayTitle(g.title), 36);
-            auto title_tex = pu::ui::render::RenderText("Ubuntu@22", disp_title, text_color);
-            if (title_tex) {
-                s32 th = pu::ui::render::GetTextureHeight(title_tex);
-                drawer->RenderTexture(title_tex, x_coord + 75, row_y + (row_h - th) / 2);
-                pu::ui::render::DeleteTexture(title_tex);
+            // Lazily render both title variants once per row and reuse them —
+            // this used to be a TTF render + destroy per row, per frame.
+            if (idx < (int)row_texs.size()) {
+                auto& rt = row_texs[idx];
+                if (!rt.sel && !rt.unsel) {
+                    std::string disp_title = TruncateTitle(CleanDisplayTitle(g.title), 36);
+                    rt.sel   = pu::ui::render::RenderText("Ubuntu@22", disp_title, pu::ui::Color(255, 255, 255, 255));
+                    rt.unsel = pu::ui::render::RenderText("Ubuntu@22", disp_title, pu::ui::Color(190, 180, 225, 255));
+                }
+                auto title_tex = is_sel ? rt.sel : rt.unsel;
+                if (title_tex) {
+                    s32 th = pu::ui::render::GetTextureHeight(title_tex);
+                    drawer->RenderTexture(title_tex, x_coord + 75, row_y + (row_h - th) / 2);
+                }
             }
         }
 
@@ -543,13 +566,6 @@ namespace romm::ui {
             cache_state = res.state;
         }
 
-        if (tex) {
-            const auto* current_selected = GetSelected();
-            if (!current_selected || current_selected->rom_id != g.rom_id) {
-                tex = nullptr;
-            }
-        }
-
         bool failed = (tex == nullptr) && (cache_state == CoverState::Missing || cache_state == CoverState::FailedPermanent || cache_state == CoverState::FailedTransient);
         if (failed && g.rom_id != failed_logged_rom_id) {
             std::cout << "[INSTALLED LOG] Cover load failed for: " << g.title << std::endl;
@@ -583,7 +599,10 @@ namespace romm::ui {
             opts.height = actual_h;
             drawer->RenderTexture(tex, actual_x, actual_y, opts);
         } else {
-            if (cover_placeholder_tex) {
+            auto plat_ph = GetPlaceholderCover(platform_slug);
+            if (plat_ph) {
+                DrawPlaceholderCover(drawer, plat_ph, actual_x, actual_y, actual_w, actual_h);
+            } else if (cover_placeholder_tex) {
                 s32 ptw = pu::ui::render::GetTextureWidth(cover_placeholder_tex);
                 s32 pth = pu::ui::render::GetTextureHeight(cover_placeholder_tex);
                 drawer->RenderTexture(cover_placeholder_tex, actual_x + (actual_w - ptw) / 2, actual_y + (actual_h - pth) / 2);
@@ -622,9 +641,12 @@ namespace romm::ui {
         size_t total = games.size();
 
         if (keys_down & HidNpadButton_Up || keys_down & HidNpadButton_StickLUp) {
-            if (selected_idx > 0) { selected_idx--; ClearInfoTextures(); }
+            // InvalidateSelectionVisuals (not just ClearInfoTextures): the
+            // cover-resolution state must reset with the selection, otherwise
+            // the panel keeps showing the previous game's cover while scrolling.
+            if (selected_idx > 0) { selected_idx--; InvalidateSelectionVisuals(); }
         } else if (keys_down & HidNpadButton_Down || keys_down & HidNpadButton_StickLDown) {
-            if (selected_idx + 1 < total) { selected_idx++; ClearInfoTextures(); }
+            if (selected_idx + 1 < total) { selected_idx++; InvalidateSelectionVisuals(); }
         } else if (keys_down & HidNpadButton_A) {
             return true;
         }

@@ -83,6 +83,22 @@ namespace romm::ui {
 
         pu::sdl2::Texture sd_card_icon = nullptr;
         pu::sdl2::Texture cover_placeholder_tex = nullptr;
+        pu::sdl2::Texture empty_state_tex = nullptr;
+
+        // Cached row title textures, parallel to `games` (selected/unselected
+        // variants). Filled lazily for visible rows in OnRender — titles were
+        // previously TTF-rendered and destroyed every frame for every row.
+        struct RowTextures {
+            pu::sdl2::Texture sel = nullptr;
+            pu::sdl2::Texture unsel = nullptr;
+        };
+        std::vector<RowTextures> row_texs;
+        void ClearRowTextures();
+
+        // Reset per-selection cached state (info strip + cover resolution).
+        // Must run on EVERY selection change — the cover fields going stale on
+        // plain scrolling was showing the previous game's cover.
+        void InvalidateSelectionVisuals();
 
         // Static label texture caches
         pu::sdl2::Texture label_platform_tex = nullptr;
