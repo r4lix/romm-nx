@@ -1153,7 +1153,7 @@ namespace romm::model {
                         ScreenWakeManager::Instance().RequestUpdate();
                         continue;
                     }
-                    static char file_buf[256 * 1024];
+                    static char file_buf[512 * 1024];
                     setvbuf(writer.file_ptr, file_buf, _IOFBF, sizeof(file_buf));
                 }
 
@@ -1196,8 +1196,10 @@ namespace romm::model {
                 curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
                 curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-                // 256 KB receive buffer — maximizes throughput on Switch
-                curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 262144L);
+                // 512 KB receive buffer, paired with the larger TCP window opened in
+                // main() via SocketInitConfig — curl silently caps this at its build's
+                // CURL_MAX_READ_SIZE if that's smaller, so it's a safe upper bound to ask for.
+                curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 524288L);
                 // NOTE: CURLOPT_TCP_KEEPALIVE deliberately omitted — the Switch's bsd
                 // socket service does not reliably support SO_KEEPALIVE, and enabling
                 // it can make curl fail the connection outright on real hardware.

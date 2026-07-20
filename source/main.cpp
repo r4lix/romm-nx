@@ -36,7 +36,18 @@ int main(int argc, char* argv[]) {
     std::cout << "[LOG] main: Initializing Plutonium ROM Manager Client" << std::endl;
 
     // 1. Safe Socket and Network Initialization inside main()
-    bool socket_ok = R_SUCCEEDED(socketInitializeDefault());
+    // libnx's stock socket config uses small, fixed-ish TCP buffers, which caps
+    // the effective receive window and throttles throughput on higher-latency
+    // Wi-Fi links (RomM downloads are one big long-lived transfer, so a larger
+    // window matters far more here than session/connection overhead). Start
+    // from the documented defaults and only raise the buffer/window knobs.
+    SocketInitConfig socket_cfg = *socketGetDefaultInitConfig();
+    socket_cfg.tcp_tx_buf_size = 0x40000;       // 256 KiB initial send buffer
+    socket_cfg.tcp_rx_buf_size = 0x40000;       // 256 KiB initial receive buffer
+    socket_cfg.tcp_tx_buf_max_size = 0x200000;  // let the send window grow to 2 MiB
+    socket_cfg.tcp_rx_buf_max_size = 0x200000;  // let the receive window grow to 2 MiB
+    socket_cfg.sb_efficiency = 8;               // max per libnx docs; more buffers/socket
+    bool socket_ok = R_SUCCEEDED(socketInitialize(&socket_cfg));
     if (socket_ok) {
         nxlinkStdio();
         std::cout << "[LOG] Sockets initialized successfully." << std::endl;
