@@ -2,6 +2,6 @@
 #include <string>
 
 namespace romm {
-    inline const std::string ROMM_NX_VERSION = "0.6.0";
-    inline constexpr int ROMM_NX_VERSION_CODE = 313;
+    inline const std::string ROMM_NX_VERSION = "0.6.1";
+    inline constexpr int ROMM_NX_VERSION_CODE = 314;
 }
