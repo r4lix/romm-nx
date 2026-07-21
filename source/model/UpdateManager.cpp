@@ -442,6 +442,15 @@ namespace romm::model {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+        // There's no cancel button anywhere in the UI for an in-progress
+        // update download/install, and no overall timeout — a connection that
+        // stalls after the initial connect (server hangs mid-transfer) would
+        // otherwise wedge the state machine in "Downloading" forever: the app
+        // shows no error, and CheckForUpdates()/StartDownloadAndInstall() both
+        // bail out early while install_in_progress stays true until restart.
+        // Abort if the transfer sustains under 1 KB/s for 30 seconds.
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
