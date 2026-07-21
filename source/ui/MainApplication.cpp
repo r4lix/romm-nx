@@ -5,6 +5,7 @@
 #include "../model/JsonUtil.hpp"
 #include "../model/UpdateManager.hpp"
 #include "../model/ScreenWakeManager.hpp"
+#include "../model/AudioManager.hpp"
 #include "LibraryLayout.hpp"
 #include <iostream>
 #include <chrono>
@@ -79,6 +80,8 @@ namespace romm::ui {
         this->AddRenderCallback([this]() {
             this->PollNetworkRequests();
             romm::model::ScreenWakeManager::Instance().Poll();
+            romm::model::AudioManager::Instance().Poll();
+            nav_mgr->PollUpdateNotification();
         });
 
         // Set inputs callback

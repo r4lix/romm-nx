@@ -23,7 +23,8 @@ namespace romm::ui {
         ResetRomPath,
         RebuildIndex,
         InstallUpdate,
-        RestoreBackup
+        RestoreBackup,
+        DownloadSoundPack
     };
 
     enum class PathStatus {
@@ -38,6 +39,7 @@ namespace romm::ui {
         std::string label;
         std::string value;
         bool is_action = false;
+        int volume_percent = -1; // >= 0 draws a HorizonOS-style slider bar instead of `value` text
     };
 
     struct PlatformPathStatus {
@@ -106,6 +108,11 @@ namespace romm::ui {
 
         // ROM Paths status cache
         std::vector<PlatformPathStatus> cached_statuses;
+        // ROM Paths platform tab bar: index of the first visible tab. Tabs
+        // stay a fixed, legible width — this scrolls the visible window
+        // instead of shrinking tabs to force-fit an arbitrary platform count
+        // (which just overlaps again once the count grows further).
+        size_t rom_path_tab_scroll_offset = 0;
 
     public:
         SettingsCard(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav);
@@ -147,7 +154,13 @@ namespace romm::ui {
         bool IsConfirmModalActive() const { return confirm_modal && confirm_modal->IsActive(); }
         void HandleConfirmModalInput(u64 keys_down) { if (confirm_modal) confirm_modal->HandleInput(keys_down); }
         void HandleOptionAction(size_t cat_idx, size_t opt_idx);
+        void CycleStartupSound(int direction);
+        void CycleThemeSound(int direction);
+        void CycleStartupVolume(int direction);
+        void CycleAmbientVolume(int direction);
         static size_t GetOptionsCount(size_t cat_idx);
+        static size_t GetCategoriesCount();
+        static size_t GetSelectableRomPathRowCount();
         static size_t GetSupportedPlatformsCount();
 
         void EditSelectedRomPath();

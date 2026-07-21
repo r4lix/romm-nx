@@ -177,8 +177,20 @@ namespace romm::navigation {
         size_t GetLibraryMenuSelectedIdx() const { return library_menu_selected_idx; }
         void HandleLibraryMenuInput(u64 keys_down);
 
+        // Startup update-available popup
+        bool IsUpdateModalActive() const { return update_modal_active; }
+        void HandleUpdateModalInput(u64 keys_down);
+        // Call once per rendered frame (works even while the user isn't
+        // pressing anything, unlike HandleInput) — shows the popup the first
+        // time a background update check lands on UpdateAvailable while the
+        // user is on the Main Menu, once per session, unless already
+        // dismissed for that exact version.
+        void PollUpdateNotification();
+
     private:
         UninstallModalPayload uninstall_modal;
+        bool update_modal_active = false;
+        bool update_popup_shown_this_session = false;
     };
 
 }

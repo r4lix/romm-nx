@@ -93,6 +93,26 @@ namespace romm::model {
         bool FileBrowserWriteAnywhere() const { return filebrowser_write_anywhere; }
         void SetFileBrowserWriteAnywhere(bool enabled) { filebrowser_write_anywhere = enabled; }
 
+        // Boot chime + looping menu background track (Settings > Theme).
+        // Values are romfs:/audio/{startup,theme}/<key>.mp3 keys, or "none".
+        const std::string& GetStartupSound() const { return startup_sound; }
+        void SetStartupSound(const std::string& key) { startup_sound = key; }
+        const std::string& GetThemeSound() const { return theme_sound; }
+        void SetThemeSound(const std::string& key) { theme_sound = key; }
+
+        // 0-100, independent per track like HorizonOS's own volume sliders —
+        // AudioManager applies the matching one whenever it starts playback.
+        int GetStartupVolume() const { return startup_volume; }
+        void SetStartupVolume(int volume) { startup_volume = volume; }
+        int GetAmbientVolume() const { return ambient_volume; }
+        void SetAmbientVolume(int volume) { ambient_volume = volume; }
+
+        // Host serving <base>/startup/<key>.mp3 and <base>/theme/<key>.mp3 —
+        // tracks aren't bundled in the NRO, they're downloaded on first use
+        // and cached to SD (see AudioManager).
+        const std::string& GetAudioBaseUrl() const { return audio_base_url; }
+        void SetAudioBaseUrl(const std::string& url) { audio_base_url = url; }
+
         std::string GetUpdateManifestUrl() const { return update_manifest_url; }
         void SetUpdateManifestUrl(const std::string& url) { update_manifest_url = url; }
 
@@ -101,6 +121,12 @@ namespace romm::model {
 
         bool CheckUpdatesOnStartup() const { return check_updates_on_startup; }
         void SetCheckUpdatesOnStartup(bool check) { check_updates_on_startup = check; }
+
+        // Version the user explicitly dismissed ("Later") on the startup
+        // update popup — suppresses re-showing it for that exact version on
+        // future launches. A newer version still triggers the popup again.
+        const std::string& GetDismissedUpdateVersion() const { return dismissed_update_version; }
+        void SetDismissedUpdateVersion(const std::string& version) { dismissed_update_version = version; }
 
         // ROM paths for different platforms
         std::string GetRomPath(const std::string& platform) const;
@@ -128,10 +154,18 @@ namespace romm::model {
         bool show_installed_badge = true;
         bool screen_always_on = false;
         bool filebrowser_write_anywhere = false;
+        std::string startup_sound = "none";
+        std::string theme_sound = "none";
+        int startup_volume = 100;
+        int ambient_volume = 100;
+        // Best-guess default following the same host/path convention as the
+        // existing update_manifest_url — confirm or correct via Settings.
+        std::string audio_base_url = "https://romm-nx.aaaoz.fr/romm-nx/audio/";
 
         std::string update_manifest_url = "https://romm-nx.aaaoz.fr/romm-nx/stable/manifest.json";
         std::string update_channel = "stable";
-        bool check_updates_on_startup = false;
+        bool check_updates_on_startup = true;
+        std::string dismissed_update_version;
 
         std::map<std::string, std::string> rom_paths;
         std::map<std::string, GridViewMode> platform_grid_view_mode;

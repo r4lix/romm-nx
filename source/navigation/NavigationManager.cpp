@@ -3,14 +3,17 @@
 #include "../model/DownloadManager.hpp"
 #include "../ui/MainMenuLayout.hpp"
 #include "../ui/LibraryLayout.hpp"
+#include "../ui/GameGrid.hpp"
+#include "../model/UpdateManager.hpp"
 #include "../ui/DetailLayout.hpp"
 #include "../ui/SettingsLayout.hpp"
 #include "../ui/InstalledLayout.hpp"
 #include "../ui/QueueLayout.hpp"
 #include "../ui/FileBrowserLayout.hpp"
+#include "../ui/LibraryMenuModal.hpp"
+#include "../ui/AlphabetBar.hpp"
 #include "../ui/MainApplication.hpp"
 #include "../model/ConfigManager.hpp"
-#include "../ui/CoverProfile.hpp"
 #include <sstream>
 #include <chrono>
 #include <vector>
@@ -157,7 +160,7 @@ namespace romm::navigation {
             if (library_menu_selected_idx > 0) library_menu_selected_idx--;
         }
         else if (keys_down & HidNpadButton_Down) {
-            if (library_menu_selected_idx < 2) library_menu_selected_idx++;
+            if (library_menu_selected_idx + 1 < romm::ui::LibraryMenuModal::GetRowCount()) library_menu_selected_idx++;
         }
         else if (keys_down & HidNpadButton_A) {
             if (library_menu_selected_idx == 2) { // View Mode: press to cycle in place
@@ -192,6 +195,55 @@ namespace romm::navigation {
         }
     }
 
+    void NavigationManager::HandleUpdateModalInput(u64 keys_down) {
+        if (!update_modal_active) return;
+
+        if (keys_down & HidNpadButton_B) {
+            // "Later" — remember this exact version so it won't nag again
+            // until a newer one ships. Badges (Settings card / Updates row)
+            // stay up regardless; only the popup itself is suppressed.
+            auto manifest = romm::model::UpdateManager::Instance().GetRemoteManifest();
+            auto& config = romm::model::ConfigManager::Instance();
+            config.SetDismissedUpdateVersion(manifest.version);
+            config.Save();
+            update_modal_active = false;
+            std::cout << "[NAV] [UPDATE POPUP] Dismissed for version " << manifest.version << std::endl;
+        }
+        else if (keys_down & HidNpadButton_A) {
+            // Jump straight to Settings > Updates rather than installing
+            // directly from the popup — reuses the existing progress/
+            // changelog/confirm UI there instead of duplicating it here.
+            update_modal_active = false;
+            current_screen = Screen::Settings;
+            selected_settings_category_idx = 5; // Updates
+            settings_focus = romm::ui::SettingsFocusArea::OptionList;
+            selected_settings_option_idx = 0;
+            if (settings_layout) {
+                app->LoadLayout(settings_layout);
+            }
+            std::cout << "[NAV] [UPDATE POPUP] Opening Settings > Updates" << std::endl;
+            UpdateLayoutSelection();
+        }
+    }
+
+    void NavigationManager::PollUpdateNotification() {
+        if (update_modal_active || update_popup_shown_this_session) return;
+        if (current_screen != Screen::MainMenu) return; // don't yank a popup over whatever else the user's doing
+
+        auto& um = romm::model::UpdateManager::Instance();
+        if (um.GetState() != romm::model::UpdateState::UpdateAvailable) return;
+
+        auto manifest = um.GetRemoteManifest();
+        if (manifest.version.empty()) return;
+
+        auto& config = romm::model::ConfigManager::Instance();
+        if (manifest.version == config.GetDismissedUpdateVersion()) return;
+
+        update_modal_active = true;
+        update_popup_shown_this_session = true;
+        std::cout << "[NAV] [UPDATE POPUP] Showing for version " << manifest.version << std::endl;
+    }
+
     void NavigationManager::HandleInput(const u64 keys_down, const u64 keys_held) {
         static auto last_transition_time = std::chrono::high_resolution_clock::time_point();
         auto now = std::chrono::high_resolution_clock::now();
@@ -208,6 +260,11 @@ namespace romm::navigation {
 
         if (library_menu_active) {
             HandleLibraryMenuInput(keys_down);
+            return;
+        }
+
+        if (update_modal_active) {
+            HandleUpdateModalInput(keys_down);
             return;
         }
 
@@ -375,26 +432,13 @@ namespace romm::navigation {
             // selected_platform_idx is only for sidebar focus highlight
             const auto& current_platform = platforms.at(loaded_platform_idx);
 
-            // Compute the letter-filtered index set using loaded_platform_idx.
+            // The letter-filtered index set, using loaded_platform_idx. Built via
+            // the same romm::model::FilterGamesByLetter() predicate GameGrid uses
+            // to build its render list, so the two can't silently drift apart.
             // selected_game_idx is always an index into THIS filtered list (it's what
             // GameGrid renders/highlights), so any lookup by selected_game_idx must go
             // through filtered_indices rather than current_platform.games directly.
-            std::vector<size_t> filtered_indices;
-            char target_letter = ' ';
-            if (selected_letter_idx > 0) {
-                target_letter = 'A' + (char)(selected_letter_idx - 1);
-            }
-            for (size_t i = 0; i < current_platform.games.size(); ++i) {
-                const auto& game = current_platform.games[i];
-                if (target_letter == ' ') {
-                    filtered_indices.push_back(i);
-                } else if (!game.title.empty()) {
-                    char first_char = (char)std::toupper((unsigned char)game.title[0]);
-                    if (first_char == target_letter) {
-                        filtered_indices.push_back(i);
-                    }
-                }
-            }
+            std::vector<size_t> filtered_indices = romm::model::FilterGamesByLetter(current_platform.games, selected_letter_idx);
             size_t filtered_count = filtered_indices.size();
 
             // Y opens the library menu (Search / Sort / View Mode) regardless of
@@ -477,7 +521,7 @@ namespace romm::navigation {
                     }
                 }
                 else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                    if (selected_letter_idx < 26) {
+                    if (selected_letter_idx + 1 < romm::ui::AlphabetBar::GetLetterCount()) {
                         selected_letter_idx++;
                         selected_game_idx = 0;
                         state_changed = true;
@@ -502,8 +546,11 @@ namespace romm::navigation {
                 }
             }
             else if (library_focus == LibraryFocus::Grid) {
-                // Column count must match the active platform's CoverProfile
-                int cols = romm::ui::GetCoverProfile(current_platform).columns;
+                // Column count comes from GameGrid — the layout that actually
+                // rendered the tiles — rather than re-deriving it here, so
+                // navigation math can never drift out of sync with what's on
+                // screen.
+                int cols = library_layout->GetGameGrid()->GetColumns();
                 int row = (int)(selected_game_idx / cols);
                 int col = (int)(selected_game_idx % cols);
 
@@ -626,7 +673,7 @@ namespace romm::navigation {
                     }
                 }
                 else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                    if (selected_detail_tab_idx < 3) {
+                    if (selected_detail_tab_idx + 1 < romm::ui::DetailCard::GetTabCount()) {
                         selected_detail_tab_idx++;
                         state_changed = true;
                         std::cout << "[NAV] [DETAIL TAB CHANGE] Selected detail tab: " << selected_detail_tab_idx << std::endl;
@@ -771,7 +818,7 @@ namespace romm::navigation {
                     }
                 }
                 else if ((keys_effective & HidNpadButton_Down) || (keys_effective & HidNpadButton_StickLDown)) {
-                    if (selected_settings_category_idx < 6) {
+                    if (selected_settings_category_idx + 1 < romm::ui::SettingsLayout::GetCategoriesCount()) {
                         selected_settings_category_idx++;
                         selected_settings_option_idx = 0;
                         state_changed = true;
@@ -807,7 +854,7 @@ namespace romm::navigation {
                             }
                         }
                         else if ((keys_effective & HidNpadButton_Down) || (keys_effective & HidNpadButton_StickLDown)) {
-                            if (selected_rom_path_row_idx < 1) { // Clamped to selectable rows 0 and 1
+                            if (selected_rom_path_row_idx + 1 < romm::ui::SettingsLayout::GetSelectableRomPathRowCount()) {
                                 selected_rom_path_row_idx++;
                                 state_changed = true;
                             }
@@ -888,6 +935,41 @@ namespace romm::navigation {
                             state_changed = true;
                         }
                     }
+                    // Left/Right on the Startup Sound / Startup Volume / Menu
+                    // Ambience / Menu Ambience Volume rows, same as the ROM
+                    // Paths platform-tab pattern. No-op on every other
+                    // row/category (Download Sound Pack is now a single
+                    // A-press action, not browsable).
+                    else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
+                        if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                            settings_layout->CycleStartupSound(-1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {
+                            settings_layout->CycleStartupVolume(-1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 4 && settings_layout) {
+                            settings_layout->CycleThemeSound(-1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 5 && settings_layout) {
+                            settings_layout->CycleAmbientVolume(-1);
+                            state_changed = true;
+                        }
+                    }
+                    else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
+                        if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                            settings_layout->CycleStartupSound(1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {
+                            settings_layout->CycleStartupVolume(1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 4 && settings_layout) {
+                            settings_layout->CycleThemeSound(1);
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 5 && settings_layout) {
+                            settings_layout->CycleAmbientVolume(1);
+                            state_changed = true;
+                        }
+                    }
                     else if (keys_down & HidNpadButton_A) {
                         if (settings_layout) {
                             settings_layout->HandleOptionAction(selected_settings_category_idx, selected_settings_option_idx);
@@ -940,11 +1022,12 @@ namespace romm::navigation {
             const auto& platforms = model->GetPlatforms();
             if (loaded_platform_idx < platforms.size()) {
                 const auto& plat = platforms.at(loaded_platform_idx);
-                if (plat.slug == "nds" || plat.slug == "nintendo-ds" || 
+                if (plat.slug == "nds" || plat.slug == "nintendo-ds" ||
                     plat.slug == "nintendo_ds" || plat.slug == "Nintendo DS" ||
                     plat.slug == "gb" || plat.slug == "game-boy" || plat.slug == "gameboy" || plat.slug == "nintendo-game-boy" ||
                     plat.slug == "gbc" || plat.slug == "game-boy-color" || plat.slug == "gameboy-color" || plat.slug == "nintendo-game-boy-color" ||
-                    plat.slug == "gba" || plat.slug == "game-boy-advance" || plat.slug == "gameboy-advance" || plat.slug == "nintendo-game-boy-advance") {
+                    plat.slug == "gba" || plat.slug == "game-boy-advance" || plat.slug == "gameboy-advance" || plat.slug == "nintendo-game-boy-advance" ||
+                    plat.slug == "3ds" || plat.slug == "nintendo-3ds" || plat.slug == "n3ds" || plat.slug == "nintendo_3ds") {
                     return false;
                 }
             }

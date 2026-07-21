@@ -45,6 +45,7 @@ namespace romm::model {
         rom_paths["gb"] = "sdmc:/roms/gb/";
         rom_paths["gbc"] = "sdmc:/roms/gbc/";
         rom_paths["gba"] = "sdmc:/roms/gba/";
+        rom_paths["3ds"] = "sdmc:/roms/3ds/";
     }
 
     namespace {
@@ -193,14 +194,37 @@ namespace romm::model {
         jsonExtractBool(content, "screen_always_on", screen_always_on);
         jsonExtractBool(content, "filebrowser_write_anywhere", filebrowser_write_anywhere);
 
+        jsonExtractString(content, "startup_sound", startup_sound);
+        jsonExtractString(content, "theme_sound", theme_sound);
+        jsonExtractString(content, "audio_base_url", audio_base_url);
+        {
+            // Guard against a hand-edited config.json pointing at a track
+            // that doesn't exist in romfs:/audio/ — fall back to silent
+            // rather than let AudioManager repeatedly fail to load it.
+            static const std::vector<std::string> kValidStartup = {"none", "ps1", "ps2", "ps3", "ps3-old", "ps4", "ps5", "psp"};
+            static const std::vector<std::string> kValidTheme = {"none", "ps2-remix", "ps4", "ps5", "psvita"};
+            if (std::find(kValidStartup.begin(), kValidStartup.end(), startup_sound) == kValidStartup.end()) {
+                startup_sound = "none";
+            }
+            if (std::find(kValidTheme.begin(), kValidTheme.end(), theme_sound) == kValidTheme.end()) {
+                theme_sound = "none";
+            }
+        }
+
+        jsonExtractInt(content, "startup_volume", startup_volume);
+        jsonExtractInt(content, "ambient_volume", ambient_volume);
+        startup_volume = std::max(0, std::min(100, startup_volume));
+        ambient_volume = std::max(0, std::min(100, ambient_volume));
+
         jsonExtractString(content, "update_manifest_url", update_manifest_url);
         jsonExtractString(content, "update_channel", update_channel);
         jsonExtractBool(content, "check_updates_on_startup", check_updates_on_startup);
+        jsonExtractString(content, "dismissed_update_version", dismissed_update_version);
 
         // Per-platform grid view mode overrides (set via the in-game Y-Menu;
         // independent of the global grid_view_mode default above).
         platform_grid_view_mode.clear();
-        std::vector<std::string> view_mode_platforms = {"psx", "ps2", "psp", "nds", "gb", "gbc", "gba"};
+        std::vector<std::string> view_mode_platforms = {"psx", "ps2", "psp", "nds", "gb", "gbc", "gba", "3ds"};
         for (const auto& plat : view_mode_platforms) {
             std::string mode_str = extractPlatformPath(content, "platform_grid_view_mode", plat);
             if (!mode_str.empty()) {
@@ -229,7 +253,7 @@ namespace romm::model {
         rom_paths["psx"] = psx_download_dir;
 
         // Extract any other platforms if they exist
-        std::vector<std::string> known_platforms = {"ps2", "psp", "nds", "gb", "gbc", "gba"};
+        std::vector<std::string> known_platforms = {"ps2", "psp", "nds", "gb", "gbc", "gba", "3ds"};
         for (const auto& plat : known_platforms) {
             std::string plat_path = extractPlatformPath(content, "rom_paths", plat);
             if (plat_path.empty()) {
@@ -326,9 +350,15 @@ namespace romm::model {
         content += "  \"show_installed_badge\": " + std::string(show_installed_badge ? "true" : "false") + ",\n";
         content += "  \"screen_always_on\": " + std::string(screen_always_on ? "true" : "false") + ",\n";
         content += "  \"filebrowser_write_anywhere\": " + std::string(filebrowser_write_anywhere ? "true" : "false") + ",\n";
+        content += "  \"startup_sound\": \"" + startup_sound + "\",\n";
+        content += "  \"theme_sound\": \"" + theme_sound + "\",\n";
+        content += "  \"startup_volume\": " + std::to_string(startup_volume) + ",\n";
+        content += "  \"ambient_volume\": " + std::to_string(ambient_volume) + ",\n";
+        content += "  \"audio_base_url\": \"" + audio_base_url + "\",\n";
         content += "  \"update_manifest_url\": \"" + update_manifest_url + "\",\n";
         content += "  \"update_channel\": \"" + update_channel + "\",\n";
-        content += "  \"check_updates_on_startup\": " + std::string(check_updates_on_startup ? "true" : "false") + "\n";
+        content += "  \"check_updates_on_startup\": " + std::string(check_updates_on_startup ? "true" : "false") + ",\n";
+        content += "  \"dismissed_update_version\": \"" + dismissed_update_version + "\"\n";
         content += "}\n";
 
         size_t written = fwrite(content.c_str(), 1, content.size(), f);

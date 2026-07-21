@@ -11,10 +11,12 @@
 #include "LibraryLayout.hpp"
 #include "MainApplication.hpp"
 #include "GlobalProgressBar.hpp"
+#include "../model/AudioManager.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <cstdio>
 #include <sys/stat.h>
+#include <algorithm>
 
 namespace romm::ui {
 
@@ -39,7 +41,8 @@ namespace romm::ui {
             {"DS", "Nintendo DS", "nds", "nds", true, true, false, false, false},
             {"GB", "Game Boy", "gb", "gb", true, true, false, false, false},
             {"GBC", "Game Boy Color", "gbc", "gbc", true, true, false, false, false},
-            {"GBA", "Game Boy Advance", "gba", "gba", true, true, false, false, false}
+            {"GBA", "Game Boy Advance", "gba", "gba", true, true, false, false, false},
+            {"3DS", "Nintendo 3DS", "3ds", "3ds", true, true, false, false, false}
         };
 
         std::string GetCoverCachePath(const std::string& internal_slug) {
@@ -48,6 +51,82 @@ namespace romm::ui {
             }
             return "sdmc:/switch/romm-nx/cache/covers/" + internal_slug + "/";
         }
+
+        // Ordered so cycling (A to advance) has a stable, predictable order —
+        // must match ConfigManager's validation lists.
+        const std::vector<std::string> kStartupSoundKeys = {"none", "ps1", "ps2", "ps3", "ps3-old", "ps4", "ps5", "psp"};
+        const std::vector<std::string> kThemeSoundKeys = {"none", "ps2-remix", "ps4", "ps5", "psvita"};
+
+        std::string StartupSoundDisplayName(const std::string& key) {
+            if (key == "none") return "None";
+            if (key == "ps1") return "PlayStation 1";
+            if (key == "ps2") return "PlayStation 2";
+            if (key == "ps3") return "PlayStation 3 (New)";
+            if (key == "ps3-old") return "PlayStation 3 (Old)";
+            if (key == "ps4") return "PlayStation 4";
+            if (key == "ps5") return "PlayStation 5";
+            if (key == "psp") return "PlayStation Portable";
+            return key;
+        }
+
+        std::string ThemeSoundDisplayName(const std::string& key) {
+            if (key == "none") return "None";
+            if (key == "ps2-remix") return "PS2 Remix (by Meech)";
+            if (key == "ps4") return "PlayStation 4";
+            if (key == "ps5") return "PlayStation 5";
+            if (key == "psvita") return "PlayStation Vita";
+            return key;
+        }
+
+        // The full catalogue of downloadable packs (startup chimes + ambience
+        // loops) — "Download Sound Pack" fetches every one of these that
+        // isn't already cached, in a single batch. "none" is excluded —
+        // there's nothing to download for it.
+        struct SoundPackEntry { std::string kind; std::string key; };
+        const std::vector<SoundPackEntry> kSoundPacks = {
+            {"startup", "ps1"}, {"startup", "ps2"}, {"startup", "ps3"}, {"startup", "ps3-old"},
+            {"startup", "ps4"}, {"startup", "ps5"}, {"startup", "psp"},
+            {"theme", "ps2-remix"}, {"theme", "ps4"}, {"theme", "ps5"}, {"theme", "psvita"},
+        };
+
+        // Startup Sound / Menu Ambience only ever cycle through packs that
+        // are actually on the SD card (plus "none", always available) — an
+        // undownloaded pack is filtered out rather than shown as a dead end
+        // that silently does nothing when picked.
+        std::vector<std::string> SelectableKeys(const std::vector<std::string>& all_keys, const std::string& kind) {
+            auto& audio_mgr = romm::model::AudioManager::Instance();
+            std::vector<std::string> out;
+            for (const auto& k : all_keys) {
+                if (k == "none" || audio_mgr.IsCached(kind, k)) {
+                    out.push_back(k);
+                }
+            }
+            return out;
+        }
+
+        // Advances `current` to the entry `direction` steps away in `keys`
+        // (1 = next, -1 = previous), wrapping around in either direction.
+        std::string CycleKey(const std::vector<std::string>& keys, const std::string& current, int direction = 1) {
+            auto it = std::find(keys.begin(), keys.end(), current);
+            long idx = (it == keys.end()) ? 0 : (long)(it - keys.begin());
+            long n = (long)keys.size();
+            idx = ((idx + direction) % n + n) % n;
+            return keys[(size_t)idx];
+        }
+
+        int ClampVolume(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
+
+        // Single source of truth for the category list — OnRender's list and
+        // NavigationManager's Down-navigation clamp (via GetCategoriesCount())
+        // both read this instead of independently hardcoding the same count.
+        const std::vector<std::string> kSettingsCategories = {"General", "Theme", "Connection", "ROM Paths", "Advanced", "Updates", "Debug"};
+
+        // Which ROM Paths rows are selectable (BIOS/Save data are "Coming
+        // later" placeholders) — OnRender's rows_data and NavigationManager's
+        // row-navigation clamp both read this instead of independently
+        // hardcoding the same count. Assumes enabled rows are a contiguous
+        // prefix (true today: ROMs, Cover cache enabled; BIOS, Save data not).
+        const std::vector<bool> kRomPathRowDisabled = {false, false, true, true};
     }
 
     // --- SettingsConfirmModal Implementation ---
@@ -246,7 +325,7 @@ namespace romm::ui {
         drawer->RenderRoundedRectangleFill(border_color, x_coord, y_coord, cat_panel_w, h, 16);
         drawer->RenderRoundedRectangleFill(fill_color, x_coord + 4, y_coord + 4, cat_panel_w - 8, h - 8, 12);
 
-        std::vector<std::string> categories = {"General", "Theme", "Connection", "ROM Paths", "Advanced", "Updates", "Debug"};
+        const std::vector<std::string>& categories = kSettingsCategories;
         s32 start_y = y_coord + 40;
         s32 row_h = 75;
         s32 row_spacing = 20;
@@ -288,6 +367,12 @@ namespace romm::ui {
                 drawer->RenderTexture(tex, rx + 30, ry + (row_h - th) / 2);
                 pu::ui::render::DeleteTexture(tex);
             }
+
+            if (categories[i] == "Updates" &&
+                romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) {
+                s32 dot_radius = 7;
+                drawer->RenderCircleFill(pu::ui::Color(231, 76, 60, 255), rx + rw - dot_radius - 12, ry + dot_radius + 12, dot_radius);
+            }
         }
 
         // 2. Draw Right Option Panel
@@ -312,7 +397,28 @@ namespace romm::ui {
             options.push_back({"Default View Mode", config.GetGridViewModeString() + " (per-platform via Y-Menu)"});
         }
         else if (active_cat == 1) { // Theme
+            auto& audio_mgr = romm::model::AudioManager::Instance();
             options.push_back({"Theme", "RomM Brand"});
+
+            if (audio_mgr.IsBatchDownloading()) {
+                options.push_back({"Download Sound Pack",
+                    "Downloading... (" + std::to_string(audio_mgr.GetBatchRemaining()) + " left)"});
+            } else {
+                size_t downloaded = 0;
+                for (const auto& pack : kSoundPacks) {
+                    if (audio_mgr.IsCached(pack.kind, pack.key)) downloaded++;
+                }
+                std::string status = (downloaded == kSoundPacks.size()) ? "All downloaded" :
+                    (std::to_string(downloaded) + "/" + std::to_string(kSoundPacks.size()) + " downloaded");
+                options.push_back({"Download Sound Pack", status});
+            }
+
+            // Only "none" plus already-downloaded packs are reachable here —
+            // fetch new ones via "Download Sound Pack" above first.
+            options.push_back({"Startup Sound", StartupSoundDisplayName(config.GetStartupSound())});
+            options.push_back({"Startup Volume", "", false, config.GetStartupVolume()});
+            options.push_back({"Menu Ambience", ThemeSoundDisplayName(config.GetThemeSound())});
+            options.push_back({"Menu Ambience Volume", "", false, config.GetAmbientVolume()});
         }
         else if (active_cat == 2) { // Connection
             options.push_back({"RomM Server URL", truncatePath(config.GetRommHost())});
@@ -349,8 +455,9 @@ namespace romm::ui {
             options.push_back({"Current version code", std::to_string(romm::ROMM_NX_VERSION_CODE)});
             options.push_back({"Update channel", config.GetUpdateChannel()});
             options.push_back({"Manifest URL", config.GetUpdateManifestUrl()});
+            options.push_back({"Check on startup", config.CheckUpdatesOnStartup() ? "ON" : "OFF"});
             options.push_back({"Check for updates", "Trigger Check", true});
-            
+
             auto& um = romm::model::UpdateManager::Instance();
             auto state = um.GetState();
             std::string status_str = "Idle";
@@ -375,8 +482,7 @@ namespace romm::ui {
 
             if (state == romm::model::UpdateState::UpdateAvailable) {
                 auto manifest = um.GetRemoteManifest();
-                options.push_back({"New version", manifest.version + " (code " + std::to_string(manifest.version_code) + ")"});
-                options.push_back({"Download & install", "Trigger Install", true});
+                options.push_back({"Update available", "v" + manifest.version + " (code " + std::to_string(manifest.version_code) + ") — Install", true});
             }
 
             if (um.CanRestoreBackup()) {
@@ -442,7 +548,46 @@ namespace romm::ui {
                 }
 
                 // 2. Draw Option Value - Use registered "Ubuntu@24"
-                if (!options[j].value.empty()) {
+                if (options[j].volume_percent >= 0) {
+                    // HorizonOS-style slider: thin track, proportional fill,
+                    // round handle riding the fill/track boundary, percentage
+                    // printed after it.
+                    int percent = options[j].volume_percent;
+                    pu::ui::Color track_color(70, 74, 84, 255);    // Visible grey line
+                    pu::ui::Color fill_color(230, 199, 167, 255);  // Cream accent
+                    pu::ui::Color handle_color(237, 229, 251, 255); // Bright lavender-white
+                    pu::ui::Color pct_color(190, 180, 225, 255);
+
+                    std::string pct_text = std::to_string(percent) + "%";
+                    auto pct_tex = pu::ui::render::RenderText("Ubuntu@24", pct_text, pct_color);
+                    s32 pct_w = pct_tex ? pu::ui::render::GetTextureWidth(pct_tex) : 0;
+                    s32 pct_x = rx + opt_row_w - 25 - pct_w;
+
+                    s32 bar_w = 480;
+                    s32 bar_h = 6;
+                    s32 handle_d = 26;
+                    s32 assembly_right = pct_x - 20;
+                    s32 bar_x = assembly_right - handle_d / 2 - bar_w;
+                    s32 bar_y = ry + (opt_row_h - bar_h) / 2;
+
+                    drawer->RenderRoundedRectangleFill(track_color, bar_x, bar_y, bar_w, bar_h, bar_h / 2);
+                    s32 fill_w = (bar_w * percent) / 100;
+                    if (fill_w > 0) {
+                        s32 fill_radius = std::min(bar_h / 2, fill_w / 2);
+                        drawer->RenderRoundedRectangleFill(fill_color, bar_x, bar_y, fill_w, bar_h, fill_radius);
+                    }
+
+                    s32 handle_cx = bar_x + fill_w;
+                    s32 handle_cy = ry + opt_row_h / 2;
+                    drawer->RenderRoundedRectangleFill(handle_color, handle_cx - handle_d / 2, handle_cy - handle_d / 2, handle_d, handle_d, handle_d / 2);
+
+                    if (pct_tex) {
+                        s32 th = pu::ui::render::GetTextureHeight(pct_tex);
+                        drawer->RenderTexture(pct_tex, pct_x, ry + (opt_row_h - th) / 2);
+                        pu::ui::render::DeleteTexture(pct_tex);
+                    }
+                }
+                else if (!options[j].value.empty()) {
                     pu::ui::Color val_color = options[j].is_action ? pu::ui::Color(230, 199, 167, 255) : pu::ui::Color(190, 180, 225, 255);
 
                     if (options[j].label == "Test Connection") {
@@ -511,8 +656,33 @@ namespace romm::ui {
             bool is_rows_focused = nav->IsRomPathRowsFocused();
             bool is_option_list_focused = (!is_cat_focused);
 
-            for (size_t i = 0; i < SUPPORTED_PLATFORMS.size(); ++i) {
-                s32 tx = tab_start_x + i * (tab_w + tab_spacing);
+            // The platform count is open-ended (started at 7, now 8 with
+            // 3DS, more will follow), and a fixed-width tab bar can't grow
+            // to fit an unbounded list without eventually overlapping the
+            // panel edge or shrinking tabs into illegibility. Instead this
+            // scrolls a fixed-size window — same approach as the file
+            // browser's and queue's row lists — so tabs always stay a
+            // legible, constant 160px regardless of how many platforms
+            // exist; L/R past the visible edge scrolls the window with the
+            // selection, and small arrow glyphs in the side margins signal
+            // there's more off-screen.
+            size_t plat_count = SUPPORTED_PLATFORMS.size();
+            s32 available_w = opt_panel_w - 100; // symmetric 50px margins
+            size_t visible_count = (size_t)std::max(1, (available_w + tab_spacing) / (tab_w + tab_spacing));
+            if (visible_count > plat_count) visible_count = plat_count;
+
+            if (selected_tab < rom_path_tab_scroll_offset) {
+                rom_path_tab_scroll_offset = selected_tab;
+            } else if (selected_tab >= rom_path_tab_scroll_offset + visible_count) {
+                rom_path_tab_scroll_offset = selected_tab - visible_count + 1;
+            }
+            // Clamp defensively (e.g. platform count shrank under us).
+            if (rom_path_tab_scroll_offset + visible_count > plat_count) {
+                rom_path_tab_scroll_offset = (plat_count > visible_count) ? (plat_count - visible_count) : 0;
+            }
+
+            for (size_t i = rom_path_tab_scroll_offset; i < rom_path_tab_scroll_offset + visible_count; ++i) {
+                s32 tx = tab_start_x + (s32)(i - rom_path_tab_scroll_offset) * (tab_w + tab_spacing);
                 bool is_current_tab = (i == selected_tab);
 
                 pu::ui::Color t_bg;
@@ -546,6 +716,27 @@ namespace romm::ui {
                 }
             }
 
+            // Scroll arrows in the side margins, only when there's more off-screen
+            {
+                pu::ui::Color arrow_clr(190, 180, 225, 200);
+                s32 arrow_y = tab_y + (tab_h / 2) - 12;
+                if (rom_path_tab_scroll_offset > 0) {
+                    auto lt = pu::ui::render::RenderText("Orbitron@24", "<", arrow_clr);
+                    if (lt) {
+                        drawer->RenderTexture(lt, opt_panel_x + 15, arrow_y);
+                        pu::ui::render::DeleteTexture(lt);
+                    }
+                }
+                if (rom_path_tab_scroll_offset + visible_count < plat_count) {
+                    auto rt = pu::ui::render::RenderText("Orbitron@24", ">", arrow_clr);
+                    if (rt) {
+                        s32 rtw = pu::ui::render::GetTextureWidth(rt);
+                        drawer->RenderTexture(rt, opt_panel_x + opt_panel_w - 15 - rtw, arrow_y);
+                        pu::ui::render::DeleteTexture(rt);
+                    }
+                }
+            }
+
             // 2. Draw Selected Platform Name
             s32 plat_title_y = tab_y + tab_h + 30;
             const auto& active_plat = SUPPORTED_PLATFORMS[selected_tab];
@@ -569,10 +760,10 @@ namespace romm::ui {
             };
 
             std::vector<RowData> rows_data = {
-                {"ROMs / Downloads", truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, false},
-                {"Cover cache", truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, false},
-                {"BIOS", "Coming later", cached_statuses[selected_tab].bios_status, true},
-                {"Save data", "Coming later", cached_statuses[selected_tab].save_status, true}
+                {"ROMs / Downloads", truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, kRomPathRowDisabled[0]},
+                {"Cover cache", truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, kRomPathRowDisabled[1]},
+                {"BIOS", "Coming later", cached_statuses[selected_tab].bios_status, kRomPathRowDisabled[2]},
+                {"Save data", "Coming later", cached_statuses[selected_tab].save_status, kRomPathRowDisabled[3]}
             };
 
             size_t selected_row = nav->GetSelectedRomPathRowIdx();
@@ -773,6 +964,37 @@ namespace romm::ui {
                 config.Save();
             }
         }
+        else if (cat_idx == 1) { // Theme
+            if (opt_idx == 1) { // Download Sound Pack
+                // Downloads the whole catalogue in one go (whatever's not
+                // already cached) rather than one track at a time. Once it
+                // lands, those packs become selectable in Startup Sound /
+                // Menu Ambience below. No-op if a batch is already running
+                // or everything's already downloaded.
+                auto& audio_mgr = romm::model::AudioManager::Instance();
+                if (!audio_mgr.IsBatchDownloading()) {
+                    size_t missing = 0;
+                    for (const auto& pack : kSoundPacks) {
+                        if (!audio_mgr.IsCached(pack.kind, pack.key)) missing++;
+                    }
+                    if (missing > 0) {
+                        confirm_modal->Show(
+                            "Download sound pack?",
+                            "Downloads the " + std::to_string(missing) + " missing startup/ambience track(s) for offline use. May take a while depending on your connection.",
+                            ConfirmAction::DownloadSoundPack,
+                            []() {
+                                std::vector<std::pair<std::string, std::string>> packs;
+                                for (const auto& p : kSoundPacks) packs.push_back({p.kind, p.key});
+                                romm::model::AudioManager::Instance().DownloadMissingSoundPacks(packs);
+                            }
+                        );
+                    }
+                }
+            }
+            // opt_idx 2 (Startup Sound), 3 (Startup Volume), 4 (Menu
+            // Ambience), 5 (Menu Ambience Volume): all four are Left/Right-
+            // only (NavigationManager) — A does nothing on any of them.
+        }
         else if (cat_idx == 2) { // Connection
             if (opt_idx == 0) {
                 std::string current = config.GetRommHost();
@@ -866,8 +1088,9 @@ namespace romm::ui {
             options.push_back({"Current version code", std::to_string(romm::ROMM_NX_VERSION_CODE)});
             options.push_back({"Update channel", config.GetUpdateChannel()});
             options.push_back({"Manifest URL", config.GetUpdateManifestUrl()});
+            options.push_back({"Check on startup", config.CheckUpdatesOnStartup() ? "ON" : "OFF"});
             options.push_back({"Check for updates", "Trigger Check", true});
-            
+
             auto& um = romm::model::UpdateManager::Instance();
             auto state = um.GetState();
             std::string status_str = "Idle";
@@ -882,9 +1105,7 @@ namespace romm::ui {
             options.push_back({"Status", status_str});
 
             if (state == romm::model::UpdateState::UpdateAvailable) {
-                auto manifest = um.GetRemoteManifest();
-                options.push_back({"New version", manifest.version});
-                options.push_back({"Download & install", "Trigger Install", true});
+                options.push_back({"Update available", "Trigger Install", true});
             }
 
             if (um.CanRestoreBackup()) {
@@ -893,10 +1114,14 @@ namespace romm::ui {
 
             if (opt_idx < options.size()) {
                 std::string label = options[opt_idx].label;
-                if (label == "Check for updates") {
+                if (label == "Check on startup") {
+                    config.SetCheckUpdatesOnStartup(!config.CheckUpdatesOnStartup());
+                    config.Save();
+                }
+                else if (label == "Check for updates") {
                     um.CheckForUpdates();
                 }
-                else if (label == "Download & install") {
+                else if (label == "Update available") {
                     confirm_modal->Show(
                         "Download & Install Update?",
                         "This will download and replace romm-nx with the newer version. A restart will be required.",
@@ -944,18 +1169,61 @@ namespace romm::ui {
         }
     }
 
+    // Left/Right on the Startup Sound / Menu Ambience rows (NavigationManager)
+    // — browses only already-downloaded packs (plus "none") and saves
+    // immediately, same as the ROM Paths platform-tab pattern. Fetching a
+    // pack that isn't downloaded yet happens separately, via the "Download
+    // Sound Pack" row's confirm-then-prefetch flow.
+    void SettingsLayout::CycleStartupSound(int direction) {
+        auto& config = romm::model::ConfigManager::Instance();
+        auto selectable = SelectableKeys(kStartupSoundKeys, "startup");
+        config.SetStartupSound(CycleKey(selectable, config.GetStartupSound(), direction));
+        config.Save();
+    }
+
+    void SettingsLayout::CycleThemeSound(int direction) {
+        auto& config = romm::model::ConfigManager::Instance();
+        auto selectable = SelectableKeys(kThemeSoundKeys, "theme");
+        config.SetThemeSound(CycleKey(selectable, config.GetThemeSound(), direction));
+        config.Save();
+        // Ambience is the "current background state" — swapping it live is
+        // the whole point, so apply immediately (already-downloaded, so this
+        // never needs to fetch anything).
+        romm::model::AudioManager::Instance().ApplyThemeAmbienceFromConfig();
+    }
+
+    void SettingsLayout::CycleStartupVolume(int direction) {
+        auto& config = romm::model::ConfigManager::Instance();
+        config.SetStartupVolume(ClampVolume(config.GetStartupVolume() + direction * 10));
+        config.Save();
+        romm::model::AudioManager::Instance().RefreshVolume();
+    }
+
+    void SettingsLayout::CycleAmbientVolume(int direction) {
+        auto& config = romm::model::ConfigManager::Instance();
+        config.SetAmbientVolume(ClampVolume(config.GetAmbientVolume() + direction * 10));
+        config.Save();
+        romm::model::AudioManager::Instance().RefreshVolume();
+    }
+
+    // NavigationManager clamps Down-navigation to this count — it does NOT
+    // derive from the options vector built in OnRender, so adding/removing a
+    // row there and forgetting to update the matching case here silently
+    // makes the new row(s) unreachable (confirmed twice: General's last two
+    // rows, then all of Theme). When you add a row to a tab, update its case
+    // here in the same change.
     size_t SettingsLayout::GetOptionsCount(size_t cat_idx) {
         switch (cat_idx) {
-            case 0: return 6; // General
-            case 1: return 1; // Theme
+            case 0: return 8; // General
+            case 1: return 6; // Theme
             case 2: return 3; // Connection
             case 3: return 2; // ROM Paths (ROMs and Cover cache)
             case 4: return 7; // Advanced
             case 5: { // Updates
-                size_t count = 6; // Current version, code, channel, URL, Check for updates, Status
+                size_t count = 7; // Current version, code, channel, URL, Check on startup, Check for updates, Status
                 auto state = romm::model::UpdateManager::Instance().GetState();
                 if (state == romm::model::UpdateState::UpdateAvailable) {
-                    count += 2; // New version, Install update
+                    count += 1; // Update available
                 }
                 if (romm::model::UpdateManager::Instance().CanRestoreBackup()) {
                     count += 1; // Restore backup
@@ -967,6 +1235,19 @@ namespace romm::ui {
         }
     }
     
+    size_t SettingsLayout::GetCategoriesCount() {
+        return kSettingsCategories.size();
+    }
+
+    size_t SettingsLayout::GetSelectableRomPathRowCount() {
+        size_t count = 0;
+        for (bool disabled : kRomPathRowDisabled) {
+            if (disabled) break; // enabled rows are a contiguous prefix
+            count++;
+        }
+        return count;
+    }
+
     size_t SettingsLayout::GetSupportedPlatformsCount() {
         return SUPPORTED_PLATFORMS.size();
     }

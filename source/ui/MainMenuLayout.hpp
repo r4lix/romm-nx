@@ -44,11 +44,14 @@ namespace romm::ui {
         PU_SMART_CTOR(MenuGrid)
     };
 
+    class UpdateAvailableModal;
+
     class MainMenuLayout : public pu::ui::Layout {
     private:
         std::weak_ptr<romm::navigation::NavigationManager> nav_mgr;
 
         std::shared_ptr<MenuGrid> grid;
+        std::shared_ptr<UpdateAvailableModal> update_modal;
         pu::ui::elm::TextBlock::Ref header_text;
         pu::ui::elm::TextBlock::Ref hint_text;
 

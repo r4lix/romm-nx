@@ -1,6 +1,8 @@
 #include "MainMenuLayout.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "GlobalProgressBar.hpp"
+#include "UpdateAvailableModal.hpp"
+#include "../model/UpdateManager.hpp"
 #include "../Version.hpp"
 
 namespace romm::ui {
@@ -127,6 +129,12 @@ namespace romm::ui {
             s32 ty = card_y + (card_h_val - text_h) / 2;
 
             drawer->RenderTexture(text_tex, tx, ty);
+
+            if (item_names[i] == "Settings" &&
+                romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) {
+                s32 dot_radius = 10;
+                drawer->RenderCircleFill(pu::ui::Color(231, 76, 60, 255), card_x + card_w_val - dot_radius - 14, card_y + dot_radius + 14, dot_radius);
+            }
         }
     }
 
@@ -171,6 +179,10 @@ namespace romm::ui {
         // Global Progress Bar (moved lower to y=110 to avoid clashing with top status version text)
         auto global_progress = romm::ui::GlobalProgressBar::New(60, 110, 460, 56, nav);
         this->Add(global_progress);
+
+        // Update-available popup — added last so it renders on top of everything else
+        update_modal = UpdateAvailableModal::New(nav);
+        this->Add(update_modal);
     }
 
     void MainMenuLayout::OnSelectionUpdated() {
