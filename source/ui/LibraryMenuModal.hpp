@@ -15,6 +15,14 @@ namespace romm::ui {
             : Element::Element(), x(0), y(0), w(1920), h(1080), nav_mgr(nav) {}
         ~LibraryMenuModal() {}
 
+        // Single source of truth for the row count (Search/Sort/View Mode) —
+        // OnRender's `Row rows[N]` and NavigationManager's Down-navigation
+        // clamp both size against this instead of independently hardcoding
+        // the same number (the exact bug class that left Settings > Theme
+        // unable to scroll: two hardcoded copies of the same fact, one of
+        // them forgotten when a row was added).
+        static constexpr size_t GetRowCount() { return 3; }
+
         s32 GetX() override { return x; }
         s32 GetY() override { return y; }
         s32 GetWidth() override { return w; }

@@ -49,7 +49,7 @@ namespace romm::ui {
         std::string view_mode_label = "View Mode: " + config.GetGridViewModeString(platform_slug);
 
         struct Row { std::string main; std::string note; };
-        Row rows[3] = {
+        Row rows[LibraryMenuModal::GetRowCount()] = {
             { "Search", "Coming Soon" },
             { "Sort", "Coming Soon" },
             { view_mode_label, "" }
@@ -58,7 +58,7 @@ namespace romm::ui {
         size_t selected = nav->GetLibraryMenuSelectedIdx();
         s32 list_y = panel_y + 100;
 
-        for (size_t i = 0; i < 3; ++i) {
+        for (size_t i = 0; i < LibraryMenuModal::GetRowCount(); ++i) {
             s32 row_y = list_y + (s32)i * ROW_H;
             bool is_selected = (i == selected);
 

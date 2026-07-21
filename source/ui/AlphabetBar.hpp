@@ -23,6 +23,12 @@ namespace romm::ui {
         AlphabetBar(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav);
         ~AlphabetBar() override;
 
+        // Single source of truth for the letter count ("ALL" + A-Z) — the
+        // constructor's populate loop and NavigationManager's Right-
+        // navigation clamp both size against this instead of independently
+        // hardcoding the same number.
+        static constexpr size_t GetLetterCount() { return 27; }
+
         s32 GetX() override { return x; }
         s32 GetY() override { return y; }
         s32 GetWidth() override { return w; }
