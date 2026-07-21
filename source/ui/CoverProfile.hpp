@@ -19,7 +19,8 @@ namespace romm::ui {
         GameBoy,
         GameBoyColor,
         GameBoyAdvance,
-        PS2Portrait
+        PS2Portrait,
+        Nintendo3DS
     };
 
     struct CoverProfile {
@@ -27,6 +28,8 @@ namespace romm::ui {
         std::string name = "DefaultPortrait";
         int columns = 6;
         int visibleRows = 3;
+        // Pixel geometry below is unset by GetCoverProfile() — it's always
+        // recomputed by GameGrid::AdjustProfileForHeight before first render.
         int coverW = 180;
         int coverH = 270;
         int gapX = 84;

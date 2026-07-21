@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cctype>
 
 namespace romm::model {
 
@@ -33,6 +34,8 @@ namespace romm::model {
             return "ps2";
         } else if (slug == "ps3" || slug == "playstation-3" || slug == "playstation3" || slug == "sony-playstation-3") {
             return "ps3";
+        } else if (slug == "3ds" || slug == "nintendo-3ds" || slug == "n3ds" || slug == "nintendo_3ds") {
+            return "3ds";
         }
         return slug;
     }
@@ -49,6 +52,31 @@ namespace romm::model {
         std::string cover_path;       // path_cover_small — thumbnail for fast initial load
         std::string cover_path_large;  // path_cover_large — HD cover for grid display
     };
+
+    // Indices into `games` whose title starts with the letter selected by
+    // letter_idx (0 = no filter / show all, 1-26 = A-Z). Shared by GameGrid
+    // (render list) and NavigationManager (selection/input math) so both
+    // stay derived from exactly one predicate instead of two hand-written
+    // copies that could silently drift apart.
+    inline std::vector<size_t> FilterGamesByLetter(const std::vector<Game>& games, size_t letter_idx) {
+        std::vector<size_t> indices;
+        char target_letter = ' ';
+        if (letter_idx > 0) {
+            target_letter = 'A' + (char)(letter_idx - 1);
+        }
+        for (size_t i = 0; i < games.size(); ++i) {
+            const auto& game = games[i];
+            if (target_letter == ' ') {
+                indices.push_back(i);
+            } else if (!game.title.empty()) {
+                char first_char = (char)std::toupper((unsigned char)game.title[0]);
+                if (first_char == target_letter) {
+                    indices.push_back(i);
+                }
+            }
+        }
+        return indices;
+    }
 
     struct Platform {
         std::string name;

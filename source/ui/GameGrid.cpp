@@ -214,22 +214,8 @@ namespace romm::ui {
             }
 
             filtered_games.clear();
-            char target_letter = ' ';
-            if (letter_idx > 0) {
-                target_letter = 'A' + (letter_idx - 1);
-            }
-
-            for (const auto& game : current_platform.games) {
-                if (target_letter == ' ') {
-                    filtered_games.push_back(game);
-                } else {
-                    if (!game.title.empty()) {
-                        char first_char = std::toupper(game.title[0]);
-                        if (first_char == target_letter) {
-                            filtered_games.push_back(game);
-                        }
-                    }
-                }
+            for (size_t idx : romm::model::FilterGamesByLetter(current_platform.games, letter_idx)) {
+                filtered_games.push_back(current_platform.games[idx]);
             }
 
             scroll_row_offset = 0;

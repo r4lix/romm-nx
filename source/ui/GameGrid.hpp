@@ -74,6 +74,11 @@ namespace romm::ui {
         // Called by LibraryLayout whenever selection/state changes
         void OnSelectionUpdated();
 
+        // Authoritative column count for the currently-rendered grid — the
+        // single source NavigationManager's row/col navigation math reads,
+        // instead of independently re-deriving it from CoverProfile.
+        int GetColumns() const { return current_profile.columns; }
+
         void OnRender(pu::ui::render::Renderer::Ref& drawer,
                       const s32 x, const s32 y) override;
         void OnInput(const u64, const u64, const u64, const pu::ui::TouchPoint) override {}
