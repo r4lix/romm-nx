@@ -34,6 +34,12 @@ namespace romm::ui {
 
         std::vector<Tab> tabs;
         size_t active_tab = 0;
+        // Index of the first visible tab. OnRender used to always draw
+        // indices [0, min(size,8)) regardless of active_tab — fine only by
+        // coincidence while the platform count was <= 8; a 9th platform would
+        // have made the selected tab unreachable (never drawn, never
+        // scrolled into view). This tracks a real scrolling window instead.
+        size_t scroll_offset = 0;
 
     public:
         InstalledTabBar(s32 x, s32 y, s32 w, s32 h);

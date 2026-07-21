@@ -58,7 +58,8 @@ namespace romm::ui {
         if (is_big) {
             if (profile_type == CoverProfileType::PSPPortrait) {
                 w = 340; h = 560;
-            } else if (profile_type == CoverProfileType::NintendoDS) {
+            } else if (profile_type == CoverProfileType::NintendoDS ||
+                       profile_type == CoverProfileType::Nintendo3DS) {
                 w = 340; h = 308;
             } else if (profile_type == CoverProfileType::PS1Square) {
                 w = 340; h = 340;
@@ -71,6 +72,7 @@ namespace romm::ui {
             }
         } else {
             if (profile_type == CoverProfileType::NintendoDS ||
+                profile_type == CoverProfileType::Nintendo3DS ||
                 profile_type == CoverProfileType::GameBoy ||
                 profile_type == CoverProfileType::GameBoyColor ||
                 profile_type == CoverProfileType::GameBoyAdvance) {
@@ -396,6 +398,7 @@ namespace romm::ui {
             if (entry.download_result->success) {
                 const bool resize_handheld = !entry.is_big &&
                                              (entry.profile_type == CoverProfileType::NintendoDS ||
+                                              entry.profile_type == CoverProfileType::Nintendo3DS ||
                                               entry.profile_type == CoverProfileType::GameBoy ||
                                               entry.profile_type == CoverProfileType::GameBoyColor ||
                                               entry.profile_type == CoverProfileType::GameBoyAdvance);

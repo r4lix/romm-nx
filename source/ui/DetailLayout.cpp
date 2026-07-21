@@ -121,7 +121,7 @@ namespace romm::ui {
         s32 cover_w = 430;
         s32 cover_h = 560;
 
-        if (norm_slug == "nds") {
+        if (norm_slug == "nds" || norm_slug == "3ds") {
             actual_cover_w = 340;
             actual_cover_h = 308;
         } else if (norm_slug == "gb" || norm_slug == "gbc" || norm_slug == "gba" || ctx.is_ps1) {
@@ -247,19 +247,20 @@ namespace romm::ui {
         
         bool is_psp = (norm_slug == "psp");
         bool is_nds = (norm_slug == "nds" || norm_slug == "nintendo-ds" || norm_slug == "nintendo_ds" || norm_slug == "Nintendo DS");
+        bool is_3ds = (norm_slug == "3ds");
         bool is_gb = (norm_slug == "gb" || norm_slug == "game-boy" || norm_slug == "gameboy" || norm_slug == "nintendo-game-boy");
         bool is_gbc = (norm_slug == "gbc" || norm_slug == "game-boy-color" || norm_slug == "gameboy-color" || norm_slug == "nintendo-game-boy-color");
         bool is_gba = (norm_slug == "gba" || norm_slug == "game-boy-advance" || norm_slug == "gameboy-advance" || norm_slug == "nintendo-game-boy-advance");
         bool is_gameboy_family = (is_gb || is_gbc || is_gba);
         bool is_ps1 = ctx.is_ps1;
-        
+
         int big_w = 360, big_h = 480;
         if (is_psp) { big_w = 340; big_h = 560; }
-        else if (is_nds) { big_w = 340; big_h = 308; }
+        else if (is_nds || is_3ds) { big_w = 340; big_h = 308; }
         else if (is_gameboy_family || is_ps1) { big_w = 340; big_h = 340; }
-        
+
         int small_w = 180, small_h = 270;
-        if (is_nds || is_gameboy_family) { small_w = 380; small_h = 344; }
+        if (is_nds || is_3ds || is_gameboy_family) { small_w = 380; small_h = 344; }
         else if (is_psp) { small_w = 247; small_h = 378; }
         else if (is_ps1) { small_w = 240; small_h = 240; }
         
@@ -369,6 +370,7 @@ namespace romm::ui {
         std::string norm_slug = romm::model::NormalizePlatformSlug(ctx.platform_slug);
         bool is_psp = (norm_slug == "psp");
         bool is_nds = (norm_slug == "nds" || norm_slug == "nintendo-ds" || norm_slug == "nintendo_ds" || norm_slug == "Nintendo DS");
+        bool is_3ds = (norm_slug == "3ds");
         bool is_gb = (norm_slug == "gb" || norm_slug == "game-boy" || norm_slug == "gameboy" || norm_slug == "nintendo-game-boy");
         bool is_gbc = (norm_slug == "gbc" || norm_slug == "game-boy-color" || norm_slug == "gameboy-color" || norm_slug == "nintendo-game-boy-color");
         bool is_gba = (norm_slug == "gba" || norm_slug == "game-boy-advance" || norm_slug == "gameboy-advance" || norm_slug == "nintendo-game-boy-advance");
@@ -377,12 +379,12 @@ namespace romm::ui {
 
         if (variant == "miximage_v2" || variant == "big") {
             if (is_psp) { w = 340; h = 560; }
-            else if (is_nds) { w = 340; h = 308; }
+            else if (is_nds || is_3ds) { w = 340; h = 308; }
             else if (is_gameboy_family || is_ps1) { w = 340; h = 340; }
             else { w = 360; h = 480; }
         } else {
             // "small"
-            if (is_nds || is_gameboy_family) { w = 380; h = 344; }
+            if (is_nds || is_3ds || is_gameboy_family) { w = 380; h = 344; }
             else if (is_psp) { w = 247; h = 378; }
             else if (is_ps1) { w = 240; h = 240; }
             else { w = 180; h = 270; }
@@ -706,10 +708,10 @@ namespace romm::ui {
             } else if (current_action_state == DownloadActionState::Failed) {
                 active_btn_tex = tex_btn_failed;
             } else if (current_action_state == DownloadActionState::AddToQueue) {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2") active_btn_tex = tex_btn_unsupported;
+                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
                 else active_btn_tex = tex_btn_add_to_queue;
             } else {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2") active_btn_tex = tex_btn_unsupported;
+                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
                 else active_btn_tex = tex_btn_download;
             }
             
@@ -761,7 +763,7 @@ namespace romm::ui {
         bool tabs_focused = (nav->GetDetailFocus() == romm::navigation::DetailFocus::Tabs);
         size_t selected_tab_idx = nav->GetSelectedDetailTabIdx();
 
-        for (size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < DetailCard::GetTabCount(); ++i) {
             s32 tx = tab_x_start + i * (tab_w + tab_spacing);
             bool is_active_tab = (i == selected_tab_idx);
 

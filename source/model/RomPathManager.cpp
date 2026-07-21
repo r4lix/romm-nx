@@ -22,6 +22,8 @@ namespace romm::model {
             return "sdmc:/roms/gbc/";
         } else if (platform_slug == "gba" || platform_slug == "game-boy-advance" || platform_slug == "gameboy-advance" || platform_slug == "nintendo-game-boy-advance") {
             return "sdmc:/roms/gba/";
+        } else if (platform_slug == "3ds" || platform_slug == "nintendo-3ds" || platform_slug == "n3ds" || platform_slug == "nintendo_3ds") {
+            return "sdmc:/roms/3ds/";
         }
         return "sdmc:/roms/" + platform_slug + "/";
     }

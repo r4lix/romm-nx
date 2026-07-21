@@ -185,7 +185,7 @@ namespace romm::ui {
         if (normalized == "sdmc:/roms" || normalized.rfind("sdmc:/roms/", 0) == 0) {
             return true;
         }
-        static const char* kRomSlugs[] = {"psx", "psp", "nds", "gb", "gbc", "gba", "ps2"};
+        static const char* kRomSlugs[] = {"psx", "psp", "nds", "gb", "gbc", "gba", "ps2", "3ds"};
         for (const char* slug : kRomSlugs) {
             std::string root = config.GetRomPath(slug);
             if (root.empty()) continue;

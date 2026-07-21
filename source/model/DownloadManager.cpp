@@ -237,7 +237,8 @@ namespace romm::model {
         int gbc_kept = 0, gbc_removed = 0, gbc_added_raw = 0;
         int gba_kept = 0, gba_removed = 0, gba_added_raw = 0;
         int ps2_kept = 0, ps2_removed = 0, ps2_added_raw = 0;
-        
+        int n3ds_kept = 0, n3ds_removed = 0, n3ds_added_raw = 0;
+
         std::map<std::string, InstalledIndexEntry> normalized_index;
 
         {
@@ -272,6 +273,7 @@ namespace romm::model {
                     else if (entry.platform_slug == "gbc") gbc_kept++;
                     else if (entry.platform_slug == "gba") gba_kept++;
                     else if (entry.platform_slug == "ps2") ps2_kept++;
+                    else if (entry.platform_slug == "3ds") n3ds_kept++;
                     else ps1_kept++;
                 } else {
                     if (entry.platform_slug == "psp") psp_removed++;
@@ -280,6 +282,7 @@ namespace romm::model {
                     else if (entry.platform_slug == "gbc") gbc_removed++;
                     else if (entry.platform_slug == "gba") gba_removed++;
                     else if (entry.platform_slug == "ps2") ps2_removed++;
+                    else if (entry.platform_slug == "3ds") n3ds_removed++;
                     else ps1_removed++;
                 }
             }
@@ -574,19 +577,58 @@ namespace romm::model {
             }
         }
 
-        std::cout << "[INDEX] Reconciled kept=" << (ps1_kept + psp_kept + nds_kept + gb_kept + gbc_kept + gba_kept + ps2_kept) 
-                  << " removed=" << (ps1_removed + psp_removed + nds_removed + gb_removed + gbc_removed + gba_removed + ps2_removed) 
-                  << " added_raw=" << (ps1_added_raw + psp_added_raw + nds_added_raw + gb_added_raw + gbc_added_raw + gba_added_raw + ps2_added_raw) << std::endl;
+        // Scan 3ds for raw files
+        std::string n3ds_root = ConfigManager::Instance().GetRomPath("3ds");
+        DIR* n3ds_dir = opendir(n3ds_root.c_str());
+        if (n3ds_dir) {
+            struct dirent* ent;
+            std::vector<std::string> files;
+            while ((ent = readdir(n3ds_dir)) != NULL) {
+                if (ent->d_type == DT_REG) {
+                    files.push_back(ent->d_name);
+                }
+            }
+            closedir(n3ds_dir);
+
+            std::lock_guard<std::mutex> lock(index_mutex);
+            for (const auto& fname : files) {
+                std::string ext = "";
+                size_t dot = fname.find_last_of('.');
+                if (dot != std::string::npos) ext = fname.substr(dot);
+
+                std::string ext_lower = ext;
+                std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), ::tolower);
+
+                if (ext_lower == ".3ds" || ext_lower == ".cia" || ext_lower == ".cci") {
+                    std::string key = "3ds|" + fname;
+                    if (installed_index.find(key) == installed_index.end()) {
+                        InstalledIndexEntry raw;
+                        raw.platform_slug = "3ds";
+                        raw.title = fname;
+                        raw.original_filename = fname;
+                        raw.install_path = n3ds_root + fname;
+                        raw.cover_path = FindLocalCover("3ds", fname);
+                        installed_index[key] = raw;
+                        n3ds_added_raw++;
+                    }
+                }
+            }
+        }
+
+        std::cout << "[INDEX] Reconciled kept=" << (ps1_kept + psp_kept + nds_kept + gb_kept + gbc_kept + gba_kept + ps2_kept + n3ds_kept)
+                  << " removed=" << (ps1_removed + psp_removed + nds_removed + gb_removed + gbc_removed + gba_removed + ps2_removed + n3ds_removed)
+                  << " added_raw=" << (ps1_added_raw + psp_added_raw + nds_added_raw + gb_added_raw + gbc_added_raw + gba_added_raw + ps2_added_raw + n3ds_added_raw) << std::endl;
         std::cout << "[INDEX] Reconcile platform=psp path=" << psp_root << " kept=" << psp_kept << " removed=" << psp_removed << " added_raw=" << psp_added_raw << std::endl;
         std::cout << "[INDEX] Reconcile platform=nds path=" << nds_root << " kept=" << nds_kept << " removed=" << nds_removed << " added_raw=" << nds_added_raw << std::endl;
         std::cout << "[INDEX] Reconcile platform=gb path=" << gb_root << " kept=" << gb_kept << " removed=" << gb_removed << " added_raw=" << gb_added_raw << std::endl;
         std::cout << "[INDEX] Reconcile platform=gbc path=" << gbc_root << " kept=" << gbc_kept << " removed=" << gbc_removed << " added_raw=" << gbc_added_raw << std::endl;
         std::cout << "[INDEX] Reconcile platform=gba path=" << gba_root << " kept=" << gba_kept << " removed=" << gba_removed << " added_raw=" << gba_added_raw << std::endl;
         std::cout << "[INDEX] Reconcile platform=ps2 path=" << ps2_root << " kept=" << ps2_kept << " removed=" << ps2_removed << " added_raw=" << ps2_added_raw << std::endl;
-        
+        std::cout << "[INDEX] Reconcile platform=3ds path=" << n3ds_root << " kept=" << n3ds_kept << " removed=" << n3ds_removed << " added_raw=" << n3ds_added_raw << std::endl;
+
         if (ps1_removed > 0 || ps1_added_raw > 0 || psp_removed > 0 || psp_added_raw > 0 || nds_removed > 0 || nds_added_raw > 0 ||
             gb_removed > 0 || gb_added_raw > 0 || gbc_removed > 0 || gbc_added_raw > 0 || gba_removed > 0 || gba_added_raw > 0 ||
-            ps2_removed > 0 || ps2_added_raw > 0) {
+            ps2_removed > 0 || ps2_added_raw > 0 || n3ds_removed > 0 || n3ds_added_raw > 0) {
             SaveInstalledIndex();
         }
     }
@@ -684,7 +726,7 @@ namespace romm::model {
 
         if (resolved_slug != "psx" && resolved_slug != "psp" && resolved_slug != "nds" &&
             resolved_slug != "gb" && resolved_slug != "gbc" && resolved_slug != "gba" &&
-            resolved_slug != "ps2") {
+            resolved_slug != "ps2" && resolved_slug != "3ds") {
             std::cerr << "[Download] Downloads are not implemented for platform: " << resolved_slug << std::endl;
             return;
         }

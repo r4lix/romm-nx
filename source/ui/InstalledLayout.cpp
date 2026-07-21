@@ -33,6 +33,7 @@ namespace romm::ui {
         if (slug == "gb")   return "Game Boy";
         if (slug == "gbc")  return "Game Boy Color";
         if (slug == "gba")  return "Game Boy Advance";
+        if (slug == "3ds")  return "Nintendo 3DS";
         if (!slug.empty()) {
             std::string s = slug;
             s[0] = (char)toupper((unsigned char)s[0]);
@@ -49,6 +50,7 @@ namespace romm::ui {
         if (slug == "gb")  return 4;
         if (slug == "gbc") return 5;
         if (slug == "gba") return 6;
+        if (slug == "3ds") return 7;
         return 99;
     }
 
@@ -61,6 +63,7 @@ namespace romm::ui {
         else if (slug == "gb")  fake.slug = "gb";
         else if (slug == "gbc") fake.slug = "gbc";
         else if (slug == "gba") fake.slug = "gba";
+        else if (slug == "3ds") fake.slug = "3ds";
         else fake.slug = slug;
         return GetCoverProfile(fake);
     }
@@ -91,6 +94,7 @@ namespace romm::ui {
         }
         tabs.clear();
         active_tab = 0;
+        scroll_offset = 0;
 
         pu::ui::Color clr_active(237, 229, 251, 255);
         pu::ui::Color clr_inactive(130, 120, 165, 255);
@@ -127,13 +131,24 @@ namespace romm::ui {
         pu::ui::Color bar_bg(20, 22, 30, 255);
         drawer->RenderRoundedRectangleFill(bar_bg, x_coord, y_coord, w, h, 10);
 
-        // Tab widths: divide width evenly, max 8 tabs visible
+        // Tab widths: divide width evenly, max 8 tabs visible at once —
+        // scrolled as a window so active_tab is always among them, however
+        // many platforms exist.
         size_t visible = std::min(tabs.size(), (size_t)8);
         s32 tab_w = w / (s32)visible;
 
-        for (size_t i = 0; i < visible; ++i) {
+        if (active_tab < scroll_offset) {
+            scroll_offset = active_tab;
+        } else if (active_tab >= scroll_offset + visible) {
+            scroll_offset = active_tab - visible + 1;
+        }
+        if (scroll_offset + visible > tabs.size()) {
+            scroll_offset = (tabs.size() > visible) ? (tabs.size() - visible) : 0;
+        }
+
+        for (size_t i = scroll_offset; i < scroll_offset + visible; ++i) {
             auto& tab = tabs[i];
-            s32 tx = x_coord + (s32)i * tab_w;
+            s32 tx = x_coord + (s32)(i - scroll_offset) * tab_w;
             bool is_active = (i == active_tab);
 
             if (is_active) {
@@ -163,7 +178,11 @@ namespace romm::ui {
         // Scroll indicators if more tabs than visible
         if (tabs.size() > visible) {
             pu::ui::Color arrow_clr(190, 180, 225, 180);
-            if (active_tab + 1 < tabs.size()) {
+            if (scroll_offset > 0) {
+                // Left arrow ◀
+                drawer->RenderCircleFill(arrow_clr, x_coord + 12, y_coord + h / 2, 8);
+            }
+            if (scroll_offset + visible < tabs.size()) {
                 // Right arrow ▶
                 s32 ax = x_coord + w - 20;
                 s32 ay = y_coord + h / 2;
@@ -306,6 +325,13 @@ namespace romm::ui {
         std::string display_title = CleanDisplayTitle(g.title);
         info_title_tex = pu::ui::render::RenderText("Orbitron@30", display_title, title_clr, 680);
         
+        // NOTE: this is intentionally its OWN table, not a call to the
+        // shared PlatformDisplayName() above — that one returns the short
+        // "PSP" (right for a tab label), while this info panel wants the
+        // long "PLAYSTATION PORTABLE". They're two genuinely different
+        // display conventions, not just duplicated code; only "3DS" was
+        // actually missing here (fell through unchanged, unlike every other
+        // platform which got its full name).
         std::string plat_display = platform_slug;
         std::transform(plat_display.begin(), plat_display.end(), plat_display.begin(), ::toupper);
         if (plat_display == "PSX") plat_display = "PLAYSTATION";
@@ -315,6 +341,7 @@ namespace romm::ui {
         else if (plat_display == "GB") plat_display = "GAME BOY";
         else if (plat_display == "GBC") plat_display = "GAME BOY COLOR";
         else if (plat_display == "GBA") plat_display = "GAME BOY ADVANCE";
+        else if (plat_display == "3DS") plat_display = "NINTENDO 3DS";
 
         info_platform_tex = pu::ui::render::RenderText("Ubuntu@24", plat_display, text_clr);
 
