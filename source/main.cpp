@@ -7,6 +7,7 @@
 #include "model/CacheManager.hpp"
 #include "model/UpdateManager.hpp"
 #include "model/ScreenWakeManager.hpp"
+#include "model/AudioManager.hpp"
 #include "Version.hpp"
 
 namespace {
@@ -98,6 +99,12 @@ int main(int argc, char* argv[]) {
     // Instantiate renderer
     auto renderer = pu::ui::render::Renderer::New(renderer_opts);
 
+    // Audio (boot chime + looping menu ambience) needs SDL_INIT_AUDIO, which
+    // the renderer above just brought up via SDL_INIT_EVERYTHING — must come
+    // after it, not before.
+    romm::model::AudioManager::Instance().Init();
+    romm::model::AudioManager::Instance().PlayStartupSound();
+
     // Create main application from the renderer
     auto app = romm::ui::MainApplication::New(renderer);
 
@@ -115,6 +122,8 @@ int main(int argc, char* argv[]) {
 
     // Restore screen sleep behavior
     romm::model::ScreenWakeManager::Instance().Restore();
+
+    romm::model::AudioManager::Instance().Shutdown();
 
     // 2. Cleanups
     if (socket_ok) {
