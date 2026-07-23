@@ -207,21 +207,45 @@ namespace romm::model {
                     }
                     if (array_start != std::string::npos && array_end != std::string::npos && array_end > array_start) {
                         std::string files_json = http_res.body.substr(array_start, array_end - array_start + 1);
-                        
-                        int count = 0;
-                        size_t pos = 0;
-                        while ((pos = files_json.find("\"file_name\"", pos)) != std::string::npos) {
-                            count++;
-                            pos += 11;
-                        }
-                        detail.files_count = count;
-                        
-                        size_t first_id_pos = files_json.find("\"id\"");
-                        if (first_id_pos != std::string::npos) {
-                            size_t colon_pos = files_json.find(':', first_id_pos);
-                            if (colon_pos != std::string::npos) {
-                                detail.file_id = std::atoi(files_json.substr(colon_pos + 1).c_str());
+
+                        // Walk each top-level object in the files array and pull out
+                        // its id, file_name and per-file size. String-aware brace
+                        // matching so a '{' inside a filename can't throw off the scan.
+                        auto matchBrace = [](const std::string& s, size_t start) -> size_t {
+                            int depth = 0;
+                            bool in_str = false;
+                            for (size_t i = start; i < s.size(); ++i) {
+                                char c = s[i];
+                                if (c == '"' && (i == 0 || s[i - 1] != '\\')) { in_str = !in_str; continue; }
+                                if (in_str) continue;
+                                if (c == '{') depth++;
+                                else if (c == '}') { depth--; if (depth == 0) return i; }
                             }
+                            return std::string::npos;
+                        };
+
+                        size_t obj_pos = 0;
+                        while ((obj_pos = files_json.find('{', obj_pos)) != std::string::npos) {
+                            size_t obj_end = matchBrace(files_json, obj_pos);
+                            if (obj_end == std::string::npos) break;
+                            std::string obj = files_json.substr(obj_pos, obj_end - obj_pos + 1);
+
+                            romm::model::RomFileEntry rf;
+                            romm::model::jsonExtractInt(obj, "id", rf.id);
+                            romm::model::jsonExtractString(obj, "file_name", rf.file_name);
+                            long long fsz = 0;
+                            if (romm::model::jsonExtractLongLong(obj, "file_size_bytes", fsz)) {
+                                rf.file_size_bytes = fsz;
+                            }
+                            if (rf.id != 0 && !rf.file_name.empty()) {
+                                detail.files.push_back(rf);
+                            }
+                            obj_pos = obj_end + 1;
+                        }
+
+                        detail.files_count = (int)detail.files.size();
+                        if (!detail.files.empty()) {
+                            detail.file_id = detail.files.front().id;
                         }
                     }
                 }

@@ -646,15 +646,26 @@ namespace romm::ui {
                 final_file_exists = false;
                 part_file_exists = false;
                 const auto* detail_pre = model->GetCachedDetail(rom_id);
-                if (detail_pre && !detail_pre->file_name.empty()) {
-                    dl_mgr.RefreshInstallCache(platform_slug, detail_pre->file_name);
+                if (detail_pre) {
+                    // Multi-disc games are identified on disk by their root .m3u, not
+                    // the top-level fs_name (a folder) — resolve the right check name.
+                    std::string check_name = dl_mgr.InstallIdentityFilename(
+                        platform_slug, detail_pre->files, detail_pre->file_name);
+                    if (!check_name.empty()) {
+                        dl_mgr.RefreshInstallCache(platform_slug, check_name);
+                    }
                 }
             }
 
             {
                 const auto* detail = model->GetCachedDetail(rom_id);
-                if (detail && !detail->file_name.empty()) {
-                    final_file_exists = dl_mgr.GetCachedInstallState(platform_slug, detail->file_name);
+                std::string check_name;
+                if (detail) {
+                    check_name = dl_mgr.InstallIdentityFilename(
+                        platform_slug, detail->files, detail->file_name);
+                }
+                if (!check_name.empty()) {
+                    final_file_exists = dl_mgr.GetCachedInstallState(platform_slug, check_name);
                 } else {
                     final_file_exists = false;
                 }

@@ -753,7 +753,10 @@ namespace romm::navigation {
                                     p.rom_id = rom_id;
                                     p.platform_slug = detail_layout->ctx.platform_slug;
                                     p.title = detail_layout->ctx.title;
-                                    p.filename = detail->file_name;
+                                    // Multi-disc: pass the root .m3u identity; UninstallGame
+                                    // sweeps the subfolder discs and playlist from there.
+                                    p.filename = dl_mgr.InstallIdentityFilename(
+                                        detail_layout->ctx.platform_slug, detail->files, detail->file_name);
                                     p.cover_path = detail_layout->ctx.cover_path;
                                     p.source_screen = current_screen;
                                     ShowUninstallModal(p);

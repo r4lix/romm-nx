@@ -35,6 +35,17 @@ namespace romm::model {
         Cancelled
     };
 
+    // One physical file to fetch as part of a task. A single-disc game has one of
+    // these; a multi-disc game has several, all under the same task/rom_id.
+    struct DownloadFile {
+        int file_id = 0;
+        std::string filename;          // sanitized, as written to disk
+        std::string original_filename; // as sent to the RomM content endpoint
+        std::string final_path;
+        std::string part_path;
+        long long total_bytes = 0;
+    };
+
     struct DownloadTask {
         int rom_id = 0;
         int file_id = 0;
@@ -42,19 +53,25 @@ namespace romm::model {
         std::string original_filename;
         std::string final_path;
         std::string part_path;
-        
+
+        // Every physical file this task installs. Always populated (size 1 for a
+        // single-disc game). The scalar fields above mirror whichever file the
+        // worker is currently processing, for the cover/index/UI code that still
+        // reasons about one representative file.
+        std::vector<DownloadFile> files;
+
         std::string cover_url;
         std::string cover_cache_path;
         std::string cover_path_rel;
         std::string title;
         std::string platform_slug;
-        
+
         long long total_bytes = 0;
         std::atomic<long long> downloaded_bytes{0};
         std::atomic<size_t> download_speed_bps{0}; // Bytes per second
         std::atomic<DownloadState> state{DownloadState::Queued};
         std::string error_message;
- 
+
         DownloadTask() = default;
         DownloadTask(const DownloadTask& other) {
             rom_id = other.rom_id;
@@ -63,6 +80,7 @@ namespace romm::model {
             original_filename = other.original_filename;
             final_path = other.final_path;
             part_path = other.part_path;
+            files = other.files;
             cover_url = other.cover_url;
             cover_cache_path = other.cover_cache_path;
             cover_path_rel = other.cover_path_rel;
@@ -81,6 +99,7 @@ namespace romm::model {
             original_filename = other.original_filename;
             final_path = other.final_path;
             part_path = other.part_path;
+            files = other.files;
             cover_url = other.cover_url;
             cover_cache_path = other.cover_cache_path;
             cover_path_rel = other.cover_path_rel;
@@ -123,6 +142,14 @@ namespace romm::model {
         bool IsGameInstalled(const std::string& platform_slug, const std::string& filename);
         void UninstallGame(const std::string& platform_slug, const std::string& filename, const std::string& cover_path);
 
+        // The filename whose on-disk presence represents this ROM being installed.
+        // For a multi-disc PS1 set that's the root ".m3u"; otherwise the first file.
+        // Used by the detail view (install badge) and uninstall so both agree with
+        // how EnqueueDownload/the worker lay a multi-disc game out on disk.
+        std::string InstallIdentityFilename(const std::string& platform_slug,
+                                            const std::vector<RomFileEntry>& files,
+                                            const std::string& fallback);
+
         // Install state cache (avoids hitting the filesystem every frame)
         // Call after selection changes; safe to call from any thread.
         void InvalidateInstallCache();
@@ -143,6 +170,19 @@ namespace romm::model {
 
         void DownloadWorker();
 
+        // Result of fetching one physical file within a task.
+        struct FileDownloadOutcome {
+            bool success = false;
+            bool cancelled = false;
+            long long final_size = 0;
+            std::string error_message;
+        };
+        // Downloads a single file (df) belonging to task. base_bytes is the number
+        // of bytes already completed by earlier files in the same task, so the
+        // shared progress counter reads cumulatively across a multi-disc set.
+        FileDownloadOutcome DownloadFilePhysical(int rom_id, DownloadTask& task,
+                                                 const DownloadFile& df, long long base_bytes);
+
         std::string NormalizePath(const std::string& path);
         bool IsInsideAllowedRoot(const std::string& path, const std::string& root);
 
@@ -161,6 +201,9 @@ namespace romm::model {
         std::mutex index_mutex;
         std::atomic<bool> cancel_requested{false};
         std::atomic<bool> worker_running{false};
+        // Bytes completed by earlier files of the in-flight multi-disc task; added
+        // to curl's per-file dlnow so the shared progress counter stays cumulative.
+        std::atomic<long long> active_base_bytes{0};
         
         std::map<std::string, InstalledIndexEntry> installed_index;
 

@@ -93,6 +93,15 @@ namespace romm::model {
         Failed
     };
 
+    // One physical file belonging to a ROM. Single-disc games have exactly one;
+    // multi-disc games (e.g. a PS1 title stored on RomM as folder > discs) have
+    // one entry per disc, each downloadable individually by its own file id.
+    struct RomFileEntry {
+        int id = 0;
+        std::string file_name;
+        long long file_size_bytes = 0;
+    };
+
     struct GameDetail {
         int rom_id = 0;
         std::string description;
@@ -108,6 +117,7 @@ namespace romm::model {
         long long file_size_bytes = 0;
         int file_id = 0;
         int files_count = 0;
+        std::vector<RomFileEntry> files; // every physical file (>1 = multi-disc)
         std::string path_cover_large;
         std::string path_cover_small;
         std::string miximage_v2_url;
