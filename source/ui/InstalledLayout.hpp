@@ -97,6 +97,9 @@ namespace romm::ui {
         struct RowTextures {
             pu::sdl2::Texture sel = nullptr;
             pu::sdl2::Texture unsel = nullptr;
+            // Tracked separately from the pointers: a row whose text renders to
+            // null must not be retried every frame.
+            bool built = false;
         };
         std::vector<RowTextures> row_texs;
         void ClearRowTextures();

@@ -37,6 +37,11 @@ namespace romm::ui {
         int offsetX = 20;
         int offsetY = 15;
         FitMode fitMode = FitMode::Contain;
+        // Detail view mode: render as a single-column title list with a live
+        // detail panel, rather than a cover grid. Carried on the profile so
+        // GameGrid doesn't have to re-read the setting and risk consulting the
+        // global default where GetCoverProfile used the per-platform override.
+        bool isDetailList = false;
     };
 
     // Helper to scale 720p coordinates to 1080p virtual Plutonium coordinates

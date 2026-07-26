@@ -13,7 +13,11 @@ namespace romm::model {
         Success,
         FailedConnect,
         Unauthorized,
-        NoData
+        NoData,
+        // Config is fine and nothing has failed — the console just isn't on a
+        // network yet. Distinct from FailedConnect so the UI can say so and the
+        // fetch can start by itself once the connection comes up.
+        WaitingNetwork
     };
 
     inline std::string NormalizePlatformSlug(const std::string& platform_slug) {
@@ -58,7 +62,20 @@ namespace romm::model {
     // (render list) and NavigationManager (selection/input math) so both
     // stay derived from exactly one predicate instead of two hand-written
     // copies that could silently drift apart.
-    inline std::vector<size_t> FilterGamesByLetter(const std::vector<Game>& games, size_t letter_idx) {
+    inline std::string ToLowerAscii(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s) {
+            out.push_back((char)std::tolower((unsigned char)c));
+        }
+        return out;
+    }
+
+    // Letter filter and search compose: a search narrows whatever the A-Z bar
+    // has already selected, so neither has to be cleared to use the other.
+    // query is matched case-insensitively as a substring, and is expected to
+    // already be lowercased by the caller (it's hoisted out of the loop).
+    inline std::vector<size_t> FilterGames(const std::vector<Game>& games, size_t letter_idx, const std::string& lowered_query) {
         std::vector<size_t> indices;
         char target_letter = ' ';
         if (letter_idx > 0) {
@@ -66,16 +83,22 @@ namespace romm::model {
         }
         for (size_t i = 0; i < games.size(); ++i) {
             const auto& game = games[i];
-            if (target_letter == ' ') {
-                indices.push_back(i);
-            } else if (!game.title.empty()) {
+            if (target_letter != ' ') {
+                if (game.title.empty()) continue;
                 char first_char = (char)std::toupper((unsigned char)game.title[0]);
-                if (first_char == target_letter) {
-                    indices.push_back(i);
-                }
+                if (first_char != target_letter) continue;
             }
+            if (!lowered_query.empty() &&
+                ToLowerAscii(game.title).find(lowered_query) == std::string::npos) {
+                continue;
+            }
+            indices.push_back(i);
         }
         return indices;
+    }
+
+    inline std::vector<size_t> FilterGamesByLetter(const std::vector<Game>& games, size_t letter_idx) {
+        return FilterGames(games, letter_idx, "");
     }
 
     struct Platform {

@@ -34,7 +34,10 @@ namespace romm::navigation {
     enum class LibraryFocus {
         Sidebar,
         Alphabet,
-        Grid
+        Grid,
+        // Detail view mode only: the right-hand panel's action row. Reached
+        // with Right/A from the list, left with B.
+        Panel
     };
 
     enum class DetailFocus {
@@ -72,7 +75,32 @@ namespace romm::navigation {
         size_t selected_game_idx;     // Library active game index
         
         size_t selected_letter_idx;   // Alphabet slider selection (0 = ALL, 1-26 = A-Z)
-        
+
+        // Case-insensitive title substring filter for the loaded platform.
+        // Stored lowercased so the per-game comparison doesn't re-fold it;
+        // search_query_display keeps what the user actually typed, for the UI.
+        std::string search_query;
+        std::string search_query_display;
+
+        // Bulk-download selection, by ROM id. Scoped to the loaded platform and
+        // cleared when it changes: the ids would still be valid, but the user
+        // can no longer see or unselect them, and silently queueing games from
+        // a platform they've left is not what R was meant to do.
+        std::unordered_set<int> bulk_selection;
+
+        // Detail-mode panel: description scroll offset in pixels, and the
+        // screen the fullscreen viewer should return to. The viewer used to
+        // hardcode a return to the Detail screen, which is wrong once it can be
+        // opened from the library panel.
+        s32 panel_desc_scroll = 0;
+        Screen fullscreen_return_screen = Screen::Detail;
+
+        // Which part of the Detail-mode panel has the cursor. Entering the
+        // panel lands on the cover so A immediately opens it fullscreen;
+        // Down moves to the action button.
+        bool panel_on_cover = true;
+
+
         DetailFocus detail_focus;
         size_t selected_detail_tab_idx;    // Active detail tab (0 = DETAILS, 1 = SAVE DATA, 2 = MODS, 3 = CHEATS)
         size_t selected_detail_action_idx; // Active detail action (0 = Download)
@@ -130,6 +158,20 @@ namespace romm::navigation {
         size_t GetSelectedGameIdx() const { return selected_game_idx; }
         
         size_t GetSelectedLetterIdx() const { return selected_letter_idx; }
+        const std::string& GetSearchQuery() const { return search_query; }
+        const std::string& GetSearchQueryDisplay() const { return search_query_display; }
+        // Prompts for a query and applies it. Returns true if it changed.
+        bool PromptForSearch();
+        void ClearSearch();
+
+        bool IsBulkSelected(int rom_id) const { return bulk_selection.count(rom_id) > 0; }
+        size_t GetBulkSelectionCount() const { return bulk_selection.size(); }
+        void ToggleBulkSelection(int rom_id);
+        void ClearBulkSelection() { bulk_selection.clear(); }
+
+        bool IsPanelOnCover() const { return panel_on_cover; }
+        s32 GetPanelDescScroll() const { return panel_desc_scroll; }
+        void SetPanelDescScrollMax(s32 max) { if (panel_desc_scroll > max) panel_desc_scroll = max; }
         DetailFocus GetDetailFocus() const { return detail_focus; }
         size_t GetSelectedDetailTabIdx() const { return selected_detail_tab_idx; }
         size_t GetSelectedDetailActionIdx() const { return selected_detail_action_idx; }

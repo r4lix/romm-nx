@@ -14,7 +14,7 @@ namespace romm::model {
     enum class GridViewMode {
         Default,
         Big,
-        Detail // Not implemented yet — grid rendering treats this the same as Default.
+        Detail // Single-column title list with a live detail panel beside it.
     };
 
     class ConfigManager {

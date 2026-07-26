@@ -69,6 +69,20 @@ namespace romm::ui {
         std::shared_ptr<CoverDecodeResult> decode_result;
         std::string cache_path;
 
+        // Where this cover would be fetched from, kept for the entry's whole
+        // life rather than consumed on first use. An entry can sit in Missing
+        // for a while — the download slots were all taken, or it was first
+        // requested with allow_download=false — and needs to be startable
+        // later without redoing the disk-cache probe.
+        std::string download_url;
+        bool download_needs_auth = false;
+
+        // True only between StartDownload and ReleaseInflight. Tracked
+        // explicitly instead of inferred from download_result, because the
+        // disk-cache-hit path also parks a (pre-completed) result there
+        // without ever having taken a slot.
+        bool holds_download_slot = false;
+
         CoverProfileType profile_type = CoverProfileType::DefaultPortrait;
         bool is_big = false;
         int original_rom_id = 0;
@@ -91,13 +105,32 @@ namespace romm::ui {
     class CoverCache {
     public:
         static constexpr int MAX_ENTRIES = 256;
+
+        // Ceiling on cover downloads that may be queued or running at once.
+        //
+        // The grid re-requests every visible and prefetched tile each frame, so
+        // without a ceiling a scroll through a large library queues a download
+        // per tile it passes — thousands of them, none cancellable. The covers
+        // on screen then sit behind minutes of covers the user already scrolled
+        // past. Refusing to start beyond this many leaves the entry in Missing,
+        // and because the grid asks again next frame, whatever is on screen
+        // *now* claims the slots as they free up.
+        static constexpr int MAX_INFLIGHT_DOWNLOADS = 6;
+
         static const std::string COVER_CACHE_DIR;
 
         static CoverCache& Instance();
 
         // Returns CoverCacheResult. Kicks off download if Idle.
+        //
+        // decode_w/decode_h override the profile's render size as the decode
+        // target. Callers that draw far larger than the grid does — the
+        // fullscreen viewer, at up to 1080p — must pass their own size, or the
+        // profile default would shrink the image to a grid tile's worth of
+        // pixels. The target is part of the cache key, so the same cover at two
+        // display sizes is two entries backed by one downloaded file.
         CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type = CoverProfileType::DefaultPortrait, bool is_big = false, bool allow_download = true);
-        CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download = true);
+        CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download = true, int decode_w = 0, int decode_h = 0);
 
         // Drive the two-phase cover pipeline: hand completed downloads (or
         // disk-cache hits) to a worker thread for decoding, and upload
@@ -107,8 +140,6 @@ namespace romm::ui {
 
         // Release all GPU textures (keeps disk cache).
         void Clear();
- 
-        int GetPendingBigDownloadsCount() const;
 
      private:
         CoverCache() = default;
@@ -117,8 +148,17 @@ namespace romm::ui {
         void TouchLru(const std::string& key);
         void EvictIfNeeded();
 
+        // Kick off entry.download_url if a slot is free, moving the entry to
+        // Loading. Returns false (leaving it in Missing) when at capacity.
+        bool StartDownload(CoverEntry& entry);
+        // Give back the slot an entry holds, if any. Every path that drops or
+        // finishes a download must go through this or the counters drift.
+        void ReleaseInflight(CoverEntry& entry);
+
         std::unordered_map<std::string, CoverEntry> cache_;
         std::list<std::string> lru_order_;
+
+        int inflight_downloads_ = 0;
     };
 
 } // namespace romm::ui

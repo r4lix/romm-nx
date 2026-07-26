@@ -88,6 +88,40 @@ namespace romm::navigation {
         return initial_text;
     }
 
+    bool NavigationManager::PromptForSearch() {
+        // Prefilled with the active query so refining a search doesn't mean
+        // retyping it, and clearing to empty is how you cancel the filter.
+        const std::string entered = ShowKeyboard("Search", "Filter this platform by title. Leave empty to clear.", search_query_display);
+        const std::string lowered = romm::model::ToLowerAscii(entered);
+        if (lowered == search_query) {
+            return false;
+        }
+        search_query = lowered;
+        search_query_display = entered;
+        // The filtered list is about to change size; a stale index could point
+        // past the end of it.
+        selected_game_idx = 0;
+        std::cout << "[NAV] Search query set to \"" << search_query_display << "\"" << std::endl;
+        return true;
+    }
+
+    void NavigationManager::ClearSearch() {
+        if (search_query.empty()) return;
+        search_query.clear();
+        search_query_display.clear();
+        selected_game_idx = 0;
+    }
+
+    void NavigationManager::ToggleBulkSelection(int rom_id) {
+        if (rom_id <= 0) return;
+        auto it = bulk_selection.find(rom_id);
+        if (it != bulk_selection.end()) {
+            bulk_selection.erase(it);
+        } else {
+            bulk_selection.insert(rom_id);
+        }
+    }
+
     NavigationManager::NavigationManager(pu::ui::Application* app, std::shared_ptr<romm::model::DataModel> model)
         : app(app), model(model), current_screen(Screen::MainMenu), library_focus(LibraryFocus::Sidebar),
           selected_menu_idx(0), selected_platform_idx(0), loaded_platform_idx(0), selected_game_idx(0),
@@ -139,8 +173,16 @@ namespace romm::navigation {
         if (keys_down & HidNpadButton_B) {
             HideUninstallModal();
         } else if (keys_down & HidNpadButton_A) {
-            romm::model::DownloadManager::Instance().UninstallGame(uninstall_modal.platform_slug, uninstall_modal.filename, uninstall_modal.cover_path);
-            
+            auto& dl_mgr = romm::model::DownloadManager::Instance();
+            dl_mgr.UninstallGame(uninstall_modal.platform_slug, uninstall_modal.filename, uninstall_modal.cover_path);
+
+            // UninstallGame doesn't touch the install-state cache, and
+            // GetCachedInstallState answers from it, so anything asking "is this
+            // installed?" would keep hearing yes. The Detail card happened to
+            // dodge this by re-checking on ForceRefresh, but the library's
+            // Detail-mode panel reads the cache directly every frame.
+            dl_mgr.RefreshInstallCache(uninstall_modal.platform_slug, uninstall_modal.filename);
+
             // Force refresh on the active layouts
             if (detail_layout && detail_layout->GetCard()) detail_layout->GetCard()->ForceRefresh();
             if (installed_layout) installed_layout->ForceRefresh();
@@ -163,7 +205,14 @@ namespace romm::navigation {
             if (library_menu_selected_idx + 1 < romm::ui::LibraryMenuModal::GetRowCount()) library_menu_selected_idx++;
         }
         else if (keys_down & HidNpadButton_A) {
-            if (library_menu_selected_idx == 2) { // View Mode: press to cycle in place
+            if (library_menu_selected_idx == 0) { // Search: prompt, then close
+                // Close before prompting: swkbd is a blocking applet, and
+                // leaving the menu drawn underneath it means it's still up when
+                // the user comes back having just acted.
+                library_menu_active = false;
+                PromptForSearch();
+            }
+            else if (library_menu_selected_idx == 2) { // View Mode: press to cycle in place
                 // Cycles only the CURRENT platform's view mode (per-platform
                 // override) — the global default (Settings > General) is a
                 // separate value, changed only from Settings.
@@ -438,12 +487,40 @@ namespace romm::navigation {
             // selected_game_idx is always an index into THIS filtered list (it's what
             // GameGrid renders/highlights), so any lookup by selected_game_idx must go
             // through filtered_indices rather than current_platform.games directly.
-            std::vector<size_t> filtered_indices = romm::model::FilterGamesByLetter(current_platform.games, selected_letter_idx);
+            std::vector<size_t> filtered_indices = romm::model::FilterGames(current_platform.games, selected_letter_idx, search_query);
             size_t filtered_count = filtered_indices.size();
 
+            // X toggles the game under the cursor in the bulk-download
+            // selection. Only meaningful once a game is actually highlighted,
+            // so it's ignored while the sidebar or alphabet bar has focus.
+            if (keys_down & HidNpadButton_X) {
+                const bool on_a_game = (library_focus == LibraryFocus::Grid ||
+                                        library_focus == LibraryFocus::Panel);
+                if (on_a_game && selected_game_idx < filtered_count) {
+                    ToggleBulkSelection(current_platform.games[filtered_indices[selected_game_idx]].id);
+                    state_changed = true;
+                }
+            }
+            // ZR queues every selected game. Chosen over A-with-modifier because
+            // it can't be hit by accident while browsing.
+            else if (keys_down & HidNpadButton_ZR) {
+                if (GetBulkSelectionCount() > 0) {
+                    auto main_app = static_cast<romm::ui::MainApplication*>(app);
+                    const std::string slug = romm::model::NormalizePlatformSlug(current_platform.slug);
+                    for (const auto& game : current_platform.games) {
+                        if (IsBulkSelected(game.id)) {
+                            main_app->EnqueueBulkDownload(game.id, slug, game.title);
+                        }
+                    }
+                    std::cout << "[NAV] [ZR] Bulk download queued for "
+                              << GetBulkSelectionCount() << " games" << std::endl;
+                    ClearBulkSelection();
+                    state_changed = true;
+                }
+            }
             // Y opens the library menu (Search / Sort / View Mode) regardless of
             // which sub-area (sidebar/alphabet/grid) currently has focus.
-            if (keys_down & HidNpadButton_Y) {
+            else if (keys_down & HidNpadButton_Y) {
                 library_menu_active = true;
                 library_menu_selected_idx = 0;
                 state_changed = true;
@@ -470,6 +547,11 @@ namespace romm::navigation {
                     loaded_platform_idx = selected_platform_idx;
                     selected_game_idx = 0;
                     selected_letter_idx = 0;
+                    // The query was scoped to the platform being left; carrying
+                    // it over would silently hide most of the new one. Same for
+                    // the bulk selection — invisible ids from another platform.
+                    ClearSearch();
+                    ClearBulkSelection();
                     std::cout << "[PERF] Platform selected: " << platforms.at(selected_platform_idx).name << std::endl;
                     std::cout << "[LIBRARY] Platform changed to " << platforms.at(selected_platform_idx).name << "/" << platforms.at(selected_platform_idx).slug << std::endl;
 
@@ -568,6 +650,12 @@ namespace romm::navigation {
                     if (selected_game_idx + 1 < filtered_count && col < cols - 1) {
                         selected_game_idx++;
                         state_changed = true;
+                    } else if (library_layout->GetGameGrid()->IsDetailList() && filtered_count > 0) {
+                        // Single-column list: there's no cell to the right, so
+                        // Right crosses into the detail panel's action row.
+                        library_focus = LibraryFocus::Panel;
+                        state_changed = true;
+                        std::cout << "[NAV] [FOCUS REGION CHANGE] Focus: Game List -> Detail Panel" << std::endl;
                     }
                 }
                 else if ((keys_effective & HidNpadButton_Up) || (keys_effective & HidNpadButton_StickLUp)) {
@@ -589,7 +677,21 @@ namespace romm::navigation {
                 }
                 // Enter game details (A) - single press only
                 else if (keys_down & HidNpadButton_A) {
-                    if (selected_game_idx < filtered_count) {
+                    // In Detail view mode the panel already shows everything the
+                    // Detail screen would, so A moves into its actions instead
+                    // of pushing a whole new layout.
+                    if (library_layout->GetGameGrid()->IsDetailList()) {
+                        if (filtered_count > 0) {
+                            library_focus = LibraryFocus::Panel;
+                            // Land on the cover, so a second A opens it
+                            // fullscreen without any further navigation.
+                            panel_on_cover = true;
+                            panel_desc_scroll = 0;
+                            state_changed = true;
+                            std::cout << "[NAV] [A PRESS] Focus: Game List -> Detail Panel" << std::endl;
+                        }
+                    }
+                    else if (selected_game_idx < filtered_count) {
                         current_screen = Screen::Detail;
                         detail_focus = DetailFocus::Tabs;
                         selected_detail_tab_idx = 0;
@@ -637,6 +739,116 @@ namespace romm::navigation {
                         std::cout << "[NAV] [FOCUS REGION CHANGE] Focus: Game Grid -> Sidebar" << std::endl;
                     }
                     state_changed = true;
+                }
+            }
+            else if (library_focus == LibraryFocus::Panel) {
+                if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft) ||
+                    (keys_down & HidNpadButton_B)) {
+                    library_focus = LibraryFocus::Grid;
+                    panel_desc_scroll = 0;
+                    state_changed = true;
+                    std::cout << "[NAV] [FOCUS REGION CHANGE] Focus: Detail Panel -> Game List" << std::endl;
+                }
+                // Down: leave the cover for the action row, then scroll the
+                // description. Up reverses it, ending back on the cover.
+                else if ((keys_effective & HidNpadButton_Down) || (keys_effective & HidNpadButton_StickLDown)) {
+                    if (panel_on_cover) {
+                        panel_on_cover = false;
+                    } else {
+                        panel_desc_scroll += 28;
+                    }
+                    state_changed = true;
+                }
+                else if ((keys_effective & HidNpadButton_Up) || (keys_effective & HidNpadButton_StickLUp)) {
+                    if (panel_desc_scroll > 0) {
+                        panel_desc_scroll -= 28;
+                        if (panel_desc_scroll < 0) panel_desc_scroll = 0;
+                    } else {
+                        panel_on_cover = true;
+                    }
+                    state_changed = true;
+                }
+                // A on the cover opens it fullscreen, where L/R cycle miximage
+                // and large cover exactly as from the Detail screen. A on the
+                // action row runs the download/uninstall action below.
+                else if ((keys_down & HidNpadButton_A) && panel_on_cover) {
+                    if (selected_game_idx < filtered_count && fullscreen_image_layout) {
+                        const auto& game = current_platform.games[filtered_indices[selected_game_idx]];
+                        const std::string slug = romm::model::NormalizePlatformSlug(current_platform.slug);
+                        const auto* detail = model->GetCachedDetail(game.id);
+
+                        romm::ui::FullscreenKeys keys;
+                        if (detail && !detail->miximage_v2_url.empty()) {
+                            keys.miximage_key.rom_id = game.id;
+                            keys.miximage_key.platform_slug = slug;
+                            keys.miximage_key.cover_source = detail->miximage_v2_url;
+                            keys.miximage_key.variant = "miximage_v2";
+                        }
+                        const std::string large_source =
+                            (detail && !detail->path_cover_large.empty()) ? detail->path_cover_large
+                                                                          : game.cover_path_large;
+                        if (!large_source.empty()) {
+                            keys.large_key.rom_id = game.id;
+                            keys.large_key.platform_slug = slug;
+                            keys.large_key.cover_source = large_source;
+                            keys.large_key.variant = "big";
+                        }
+                        if (!game.cover_path.empty()) {
+                            keys.small_key.rom_id = game.id;
+                            keys.small_key.platform_slug = slug;
+                            keys.small_key.cover_source = game.cover_path;
+                            keys.small_key.variant = "small";
+                        }
+
+                        if (keys.miximage_key.rom_id > 0 || keys.large_key.rom_id > 0 || keys.small_key.rom_id > 0) {
+                            fullscreen_return_screen = Screen::Library;
+                            current_screen = Screen::FullscreenImage;
+                            fullscreen_image_layout->SetKeys(keys);
+                            app->LoadLayout(fullscreen_image_layout);
+                            state_changed = true;
+                            std::cout << "[NAV] [LAYOUT TRANSITION] Library Panel -> Fullscreen Image" << std::endl;
+                        }
+                    }
+                }
+                else if (keys_down & HidNpadButton_A) {
+                    if (selected_game_idx >= filtered_count) {
+                        // Filter changed under us; nothing to act on.
+                    } else {
+                        const auto& game = current_platform.games[filtered_indices[selected_game_idx]];
+                        const int rom_id = game.id;
+                        const std::string slug = romm::model::NormalizePlatformSlug(current_platform.slug);
+                        const auto* detail = model->GetCachedDetail(rom_id);
+
+                        if (!detail) {
+                            // The debounced prefetch hasn't landed yet. Downloading
+                            // needs the file list (multi-disc games resolve their
+                            // on-disk identity from it), so there's nothing safe to
+                            // do but wait — the panel says as much.
+                            std::cerr << "[NAV] Panel action ignored: detail not loaded for rom " << rom_id << std::endl;
+                        } else {
+                            auto& dl_mgr = romm::model::DownloadManager::Instance();
+                            const auto action = romm::ui::ComputeDownloadActionState(rom_id, slug, detail);
+
+                            if (action == romm::ui::DownloadActionState::Uninstall) {
+                                UninstallModalPayload p;
+                                p.rom_id = rom_id;
+                                p.platform_slug = slug;
+                                p.title = game.title;
+                                p.filename = dl_mgr.InstallIdentityFilename(slug, detail->files, detail->file_name);
+                                p.cover_path = game.cover_path;
+                                p.source_screen = current_screen;
+                                ShowUninstallModal(p);
+                            } else if (action == romm::ui::DownloadActionState::Queued) {
+                                dl_mgr.RemoveFromQueue(rom_id);
+                            } else if (action == romm::ui::DownloadActionState::Failed) {
+                                dl_mgr.RetryFailed(rom_id);
+                            } else if (action == romm::ui::DownloadActionState::Download ||
+                                       action == romm::ui::DownloadActionState::AddToQueue) {
+                                dl_mgr.EnqueueDownload(*detail, slug, game.title);
+                            }
+                            state_changed = true;
+                        }
+                    }
                 }
             }
         }
@@ -710,6 +922,7 @@ namespace romm::navigation {
                                                 card->GetCoverState() != romm::ui::DetailCoverState::Failed);
                         if (has_valid_image) {
                             auto keys = card->GetFullscreenKeys();
+                            fullscreen_return_screen = Screen::Detail;
                             current_screen = Screen::FullscreenImage;
                             fullscreen_image_layout->SetKeys(keys);
                             app->LoadLayout(fullscreen_image_layout);
@@ -777,11 +990,20 @@ namespace romm::navigation {
         }
         else if (current_screen == Screen::FullscreenImage) {
             if (keys_down & HidNpadButton_B) {
-                current_screen = Screen::Detail;
-                app->LoadLayout(detail_layout);
+                // Return to whichever screen opened the viewer. Hardcoding the
+                // Detail screen here would strand a user who reached fullscreen
+                // from the library's Detail-mode panel on a screen they never
+                // navigated to.
+                if (fullscreen_return_screen == Screen::Library && library_layout) {
+                    current_screen = Screen::Library;
+                    app->LoadLayout(library_layout);
+                    std::cout << "[NAV] [B PRESS] Fullscreen -> Library" << std::endl;
+                } else {
+                    current_screen = Screen::Detail;
+                    app->LoadLayout(detail_layout);
+                    std::cout << "[NAV] [B PRESS] Fullscreen -> Detail" << std::endl;
+                }
                 state_changed = true;
-                std::cout << "[NAV] [B PRESS] B pressed in fullscreen view: returning to Detail" << std::endl;
-                std::cout << "[NAV] [LAYOUT TRANSITION] Screen transition: Fullscreen Image Screen -> Detail Screen" << std::endl;
             }
             else if (keys_down & (HidNpadButton_R | HidNpadButton_Right)) {
                 if (fullscreen_image_layout && fullscreen_image_layout->GetImageElement()) {

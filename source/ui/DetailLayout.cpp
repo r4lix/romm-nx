@@ -13,6 +13,46 @@
 
 namespace romm::ui {
 
+    DownloadActionState ComputeDownloadActionState(int rom_id,
+                                                   const std::string& platform_slug,
+                                                   const romm::model::GameDetail* detail) {
+        auto& dl_mgr = romm::model::DownloadManager::Instance();
+        const auto task_snap = dl_mgr.GetTaskSnapshot(rom_id);
+        const auto active_snap = dl_mgr.GetActiveDownloadSnapshot();
+
+        bool installed = false;
+        if (detail) {
+            // Multi-disc games are identified on disk by their root .m3u, not
+            // the top-level fs_name (a folder).
+            const std::string check_name =
+                dl_mgr.InstallIdentityFilename(platform_slug, detail->files, detail->file_name);
+            if (!check_name.empty()) {
+                installed = dl_mgr.GetCachedInstallState(platform_slug, check_name);
+            }
+        }
+
+        using DS = romm::model::DownloadState;
+        if (installed) {
+            return DownloadActionState::Uninstall;
+        }
+        if (task_snap.rom_id == rom_id) {
+            if (task_snap.state == DS::DownloadingGame || task_snap.state == DS::DownloadingCover ||
+                task_snap.state == DS::SyncingCover || task_snap.state == DS::Preparing) {
+                return DownloadActionState::Downloading;
+            }
+            if (task_snap.state == DS::Queued) {
+                return DownloadActionState::Queued;
+            }
+            if (task_snap.state == DS::Failed || task_snap.state == DS::Cancelled) {
+                return DownloadActionState::Failed;
+            }
+        }
+        if (active_snap.rom_id != 0) {
+            return DownloadActionState::AddToQueue;
+        }
+        return DownloadActionState::Download;
+    }
+
     namespace {
         constexpr s32 TAB_Y_OFFSET = 170;
         constexpr s32 TAB_HEIGHT = 60;
@@ -415,8 +455,16 @@ namespace romm::ui {
         std::string target_source = ctx.cover_path;
         std::string target_variant = "small";
 
+        // Low quality stays on small.png everywhere it browses, detail card
+        // included — upgrading here would defeat the point of the setting.
+        // The fullscreen viewer is deliberately exempt in every tier: it is an
+        // explicit, one-image-at-a-time request where a 256px source on a 1080p
+        // panel would be indefensible.
+        const bool allow_large_cover =
+            romm::model::ConfigManager::Instance().GetCoversQuality() != romm::model::CoversQuality::SD;
+
         romm::model::DetailLoadState state = model->GetDetailState(rom_id);
-        if (state == romm::model::DetailLoadState::Loaded) {
+        if (allow_large_cover && state == romm::model::DetailLoadState::Loaded) {
             const auto* detail = model->GetCachedDetail(rom_id);
             if (detail) {
                 std::string miximage_url = detail->miximage_v2_url;
@@ -431,7 +479,7 @@ namespace romm::ui {
                 mix_key.requested_width = mix_w;
                 mix_key.requested_height = mix_h;
 
-                auto mix_res = CoverCache::Instance().GetOrRequest(rom_id, ctx.platform_slug, miximage_url, currentCoverProfile.type, "miximage_v2", false);
+                auto mix_res = CoverCache::Instance().GetOrRequest(rom_id, ctx.platform_slug, miximage_url, currentCoverProfile.type, "miximage_v2", false, actual_cover_w, actual_cover_h);
 
                 if (!miximage_url.empty() && mix_res.state != CoverState::FailedPermanent) {
                     target_source = miximage_url;
@@ -445,7 +493,7 @@ namespace romm::ui {
                     large_key.requested_width = l_w;
                     large_key.requested_height = l_h;
 
-                    auto large_res = CoverCache::Instance().GetOrRequest(rom_id, ctx.platform_slug, large_url, currentCoverProfile.type, "big", false);
+                    auto large_res = CoverCache::Instance().GetOrRequest(rom_id, ctx.platform_slug, large_url, currentCoverProfile.type, "big", false, actual_cover_w, actual_cover_h);
                     if (large_res.state != CoverState::FailedPermanent) {
                         target_source = large_url;
                         target_variant = "big";
@@ -480,7 +528,13 @@ namespace romm::ui {
             expected_identity.cache_key.cover_source,
             currentCoverProfile.type,
             expected_identity.cache_key.variant,
-            allow_download
+            allow_download,
+            // Decode to the card's own viewport, not the profile default. For
+            // DefaultPortrait the card is 430x560 while the profile target is
+            // 360x480, so relying on the default would decode smaller than the
+            // card draws and visibly soften it. Every DetailCard request below
+            // passes the same override so they all address one cache entry.
+            actual_cover_w, actual_cover_h
         );
 
         // 3. Process Cache State to drive Request State and Display State
@@ -548,7 +602,8 @@ namespace romm::ui {
                 expected_identity.cache_key.cover_source,
                 currentCoverProfile.type,
                 expected_identity.cache_key.variant,
-                false // do not allow download/filesystem check
+                false, // do not allow download/filesystem check
+                actual_cover_w, actual_cover_h
             );
             current_cache_state = cache_res.state;
         }
@@ -671,19 +726,7 @@ namespace romm::ui {
                 }
             }
 
-            if (final_file_exists) {
-                current_action_state = DownloadActionState::Uninstall;
-            } else if (task_snap.rom_id == rom_id && (task_snap.state == romm::model::DownloadState::DownloadingGame || task_snap.state == romm::model::DownloadState::DownloadingCover || task_snap.state == romm::model::DownloadState::SyncingCover || task_snap.state == romm::model::DownloadState::Preparing)) {
-                current_action_state = DownloadActionState::Downloading;
-            } else if (task_snap.rom_id == rom_id && task_snap.state == romm::model::DownloadState::Queued) {
-                current_action_state = DownloadActionState::Queued;
-            } else if (task_snap.rom_id == rom_id && (task_snap.state == romm::model::DownloadState::Failed || task_snap.state == romm::model::DownloadState::Cancelled)) {
-                current_action_state = DownloadActionState::Failed;
-            } else if (active_snap.rom_id != 0) {
-                current_action_state = DownloadActionState::AddToQueue;
-            } else {
-                current_action_state = DownloadActionState::Download;
-            }
+            current_action_state = ComputeDownloadActionState(rom_id, platform_slug, model->GetCachedDetail(rom_id));
 
             bool is_ps1 = ctx.is_ps1;
 
@@ -1199,6 +1242,23 @@ namespace romm::ui {
         this->current_mode = FullscreenMode::MixImage;
     }
 
+    FullscreenImageElement::~FullscreenImageElement() {
+        if (status_tex) {
+            pu::ui::render::DeleteTexture(status_tex);
+            status_tex = nullptr;
+        }
+    }
+
+    void FullscreenImageElement::UpdateStatusText(const std::string& s) {
+        if (status_str == s && status_tex) return;
+        if (status_tex) {
+            pu::ui::render::DeleteTexture(status_tex);
+            status_tex = nullptr;
+        }
+        status_str = s;
+        status_tex = pu::ui::render::RenderText("Ubuntu@30", s, pu::ui::Color(190, 180, 225, 255));
+    }
+
     void FullscreenImageElement::SetKeys(const FullscreenKeys& new_keys) {
         keys = new_keys;
         if (keys.miximage_key.rom_id > 0 && !keys.miximage_key.cover_source.empty()) {
@@ -1226,6 +1286,15 @@ namespace romm::ui {
         std::cout << "[FULLSCREEN] Mode cycled to: " << (int)current_mode << std::endl;
     }
 
+    // This element fills the screen, so its images must decode at full source
+    // resolution rather than the grid-tile size CoverCache would otherwise pick
+    // from the profile. Passing the element's own dimensions keys these as
+    // separate cache entries from the grid's downscaled ones — same file on
+    // disk, decoded twice at two sizes, which is exactly what we want: the grid
+    // keeps its small textures and fullscreen keeps its detail.
+    static constexpr int FULLSCREEN_DECODE_W = 1920;
+    static constexpr int FULLSCREEN_DECODE_H = 1080;
+
     void FullscreenImageElement::OnRender(pu::ui::render::Renderer::Ref& drawer, const s32 x_coord, const s32 y_coord) {
         // Run central texture cache polling to complete background loading on the main thread
         CoverCache::Instance().PollCompleted();
@@ -1233,6 +1302,17 @@ namespace romm::ui {
         pu::sdl2::Texture selected_tex = nullptr;
         CoverCacheKey query_key;
         bool has_key = false;
+
+        // Track why we might end up with nothing to draw, so the fallback can
+        // say which it is instead of leaving the user on a black screen unable
+        // to tell "still downloading" from "you're offline" from "this game has
+        // no cover".
+        bool any_pending = false;
+        bool any_transient_fail = false;
+        auto note_state = [&](CoverState s) {
+            if (s == CoverState::Loading || s == CoverState::Missing) any_pending = true;
+            else if (s == CoverState::FailedTransient) any_transient_fail = true;
+        };
 
         if (current_mode == FullscreenMode::MixImage && keys.miximage_key.rom_id > 0 && !keys.miximage_key.cover_source.empty()) {
             query_key = keys.miximage_key;
@@ -1249,8 +1329,10 @@ namespace romm::ui {
                 query_key.cover_source,
                 CoverProfileType::DefaultPortrait,
                 query_key.variant,
-                true // allow download when explicitly requested
+                true, // allow download when explicitly requested
+                FULLSCREEN_DECODE_W, FULLSCREEN_DECODE_H
             );
+            note_state(res.state);
             if (res.state == CoverState::Ready && res.texture) {
                 selected_tex = res.texture;
             }
@@ -1268,8 +1350,10 @@ namespace romm::ui {
                     keys.miximage_key.cover_source,
                     CoverProfileType::DefaultPortrait,
                     keys.miximage_key.variant,
-                    false
+                    false,
+                    FULLSCREEN_DECODE_W, FULLSCREEN_DECODE_H
                 );
+                note_state(res.state);
                 if (res.state == CoverState::Ready && res.texture) {
                     display_tex = res.texture;
                 }
@@ -1282,8 +1366,10 @@ namespace romm::ui {
                     keys.large_key.cover_source,
                     CoverProfileType::DefaultPortrait,
                     keys.large_key.variant,
-                    false
+                    false,
+                    FULLSCREEN_DECODE_W, FULLSCREEN_DECODE_H
                 );
+                note_state(res.state);
                 if (res.state == CoverState::Ready && res.texture) {
                     display_tex = res.texture;
                 }
@@ -1298,8 +1384,10 @@ namespace romm::ui {
                     keys.small_key.cover_source,
                     CoverProfileType::DefaultPortrait,
                     keys.small_key.variant,
-                    true
+                    true,
+                    FULLSCREEN_DECODE_W, FULLSCREEN_DECODE_H
                 );
+                note_state(res.state);
                 if (res.state == CoverState::Ready && res.texture) {
                     display_tex = res.texture;
                 }
@@ -1319,6 +1407,35 @@ namespace romm::ui {
             opts.width = draw_w;
             opts.height = draw_h;
             drawer->RenderTexture(display_tex, draw_x, draw_y, opts);
+            return;
+        }
+
+        // Nothing to show. This layout paints an opaque black background, so
+        // without the branch below the screen is featureless and the user can't
+        // tell whether it's loading, offline, or the game simply has no art.
+        const std::string& slug = !keys.large_key.platform_slug.empty()   ? keys.large_key.platform_slug
+                                : !keys.small_key.platform_slug.empty()   ? keys.small_key.platform_slug
+                                                                          : keys.miximage_key.platform_slug;
+
+        constexpr s32 box_w = 420;
+        constexpr s32 box_h = 560;
+        const s32 box_x = (1920 - box_w) / 2;
+        const s32 box_y = (1080 - box_h) / 2 - 40;
+
+        drawer->RenderRoundedRectangleFill(pu::ui::Color(30, 34, 43, 255), box_x, box_y, box_w, box_h, 12);
+        DrawPlaceholderCover(drawer, GetPlaceholderCover(slug), box_x, box_y, box_w, box_h);
+
+        if (any_pending) {
+            UpdateStatusText("Loading cover...");
+        } else if (any_transient_fail) {
+            UpdateStatusText("Cover unavailable - check your connection");
+        } else {
+            UpdateStatusText("No cover available for this game");
+        }
+
+        if (status_tex) {
+            const s32 text_w = pu::ui::render::GetTextureWidth(status_tex);
+            drawer->RenderTexture(status_tex, (1920 - text_w) / 2, box_y + box_h + 36);
         }
     }
 

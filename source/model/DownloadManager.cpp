@@ -184,6 +184,34 @@ namespace romm::model {
         std::cout << "[INDEX] Loaded entries=" << installed_index.size() << std::endl;
     }
 
+    // Minimal JSON string escaping. Game titles routinely contain double
+    // quotes and backslashes ("Tom Clancy's ...", Windows-style paths), and
+    // writing them raw produced a file the reader then mis-parsed — the entry's
+    // title came back empty or truncated, which is why Installed rows could end
+    // up showing nothing but an SD-card icon.
+    static std::string JsonEscape(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            switch (c) {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n";  break;
+                case '\r': out += "\\r";  break;
+                case '\t': out += "\\t";  break;
+                default:
+                    if ((unsigned char)c < 0x20) {
+                        char buf[8];
+                        std::snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
+                        out += buf;
+                    } else {
+                        out += c;
+                    }
+            }
+        }
+        return out;
+    }
+
     void DownloadManager::SaveInstalledIndex() {
         std::lock_guard<std::mutex> lock(index_mutex);
         std::string json_out = "[\n";
@@ -192,13 +220,13 @@ namespace romm::model {
             if (!first) json_out += ",\n";
             first = false;
             json_out += "  {\n";
-            json_out += "    \"key\": \"" + pair.first + "\",\n";
-            json_out += "    \"platform_slug\": \"" + pair.second.platform_slug + "\",\n";
+            json_out += "    \"key\": \"" + JsonEscape(pair.first) + "\",\n";
+            json_out += "    \"platform_slug\": \"" + JsonEscape(pair.second.platform_slug) + "\",\n";
             json_out += "    \"rom_id\": " + std::to_string(pair.second.rom_id) + ",\n";
-            json_out += "    \"title\": \"" + pair.second.title + "\",\n";
-            json_out += "    \"original_filename\": \"" + pair.second.original_filename + "\",\n";
-            json_out += "    \"install_path\": \"" + pair.second.install_path + "\",\n";
-            json_out += "    \"cover_path\": \"" + pair.second.cover_path + "\"\n";
+            json_out += "    \"title\": \"" + JsonEscape(pair.second.title) + "\",\n";
+            json_out += "    \"original_filename\": \"" + JsonEscape(pair.second.original_filename) + "\",\n";
+            json_out += "    \"install_path\": \"" + JsonEscape(pair.second.install_path) + "\",\n";
+            json_out += "    \"cover_path\": \"" + JsonEscape(pair.second.cover_path) + "\"\n";
             json_out += "  }";
         }
         json_out += "\n]\n";
@@ -1639,7 +1667,13 @@ namespace romm::model {
                     InstalledIndexEntry entry;
                     entry.platform_slug = current_task.platform_slug;
                     entry.rom_id = current_task.rom_id;
-                    entry.title = current_task.original_filename.empty() ? current_task.filename : current_task.original_filename;
+                    // Prefer the real game title. This used to record a
+                    // *filename* in the index's title field, which is what the
+                    // Installed screen displays — so rows showed a stripped
+                    // filename at best, and nothing at all when it was empty.
+                    entry.title = !current_task.title.empty()   ? current_task.title
+                                : !current_task.original_filename.empty() ? current_task.original_filename
+                                                                          : current_task.filename;
                     entry.original_filename = current_task.original_filename;
                     entry.install_path = current_task.final_path;
                     entry.cover_path = current_task.cover_cache_path;

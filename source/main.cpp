@@ -8,25 +8,8 @@
 #include "model/UpdateManager.hpp"
 #include "model/ScreenWakeManager.hpp"
 #include "model/AudioManager.hpp"
+#include "model/NetworkStatus.hpp"
 #include "Version.hpp"
-
-namespace {
-
-bool waitForNetwork() {
-    for (int attempt = 0; attempt < 30; ++attempt) {
-        NifmInternetConnectionType type = (NifmInternetConnectionType)0;
-        u32 wifi = 0;
-        NifmInternetConnectionStatus status = (NifmInternetConnectionStatus)0;
-        if (R_SUCCEEDED(nifmGetInternetConnectionStatus(&type, &wifi, &status)) &&
-            status == NifmInternetConnectionStatus_Connected) {
-            return true;
-        }
-        svcSleepThread(500000000ULL);
-    }
-    return false;
-}
-
-} // namespace
 
 int main(int argc, char* argv[]) {
     // Setup unbuffered stdout/stderr to ensure log outputs are flushed immediately
@@ -61,11 +44,15 @@ int main(int argc, char* argv[]) {
         nifm_ok = R_SUCCEEDED(nifmInitialize(NifmServiceType_User));
         if (nifm_ok) {
             std::cout << "[LOG] Nifm service initialized." << std::endl;
-            if (waitForNetwork()) {
-                std::cout << "[LOG] Network is ready." << std::endl;
-            } else {
-                std::cerr << "[LOG] Network not ready after timeout." << std::endl;
-            }
+            // Deliberately does NOT wait for the connection here. This runs
+            // before the renderer exists, so any wait is time the user spends
+            // looking at a black screen with no way to tell whether the app is
+            // starting, hung, or offline. Boot the UI immediately instead and
+            // let MainApplication poll for the network, showing its state on
+            // screen and starting the platform fetch once it comes up.
+            std::cout << "[LOG] Network connected at startup: "
+                      << (romm::model::IsNetworkConnected() ? "yes" : "no (will keep checking)")
+                      << std::endl;
         } else {
             std::cerr << "[LOG] Nifm failed to initialize!" << std::endl;
         }

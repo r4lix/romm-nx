@@ -3,6 +3,7 @@
 #include <pu/Plutonium>
 #include <memory>
 #include <vector>
+#include <unordered_set>
 #include <string>
 #include <mutex>
 #include <thread>
@@ -109,6 +110,18 @@ namespace romm::ui {
         // data_mutex) and OnRender frees them on its next pass.
         std::vector<FileEntry> retired_items;
         std::vector<std::string> options_menu_items;
+        // Bulk-operation marks, keyed by absolute path. Cleared whenever the
+        // listing changes directory — a mark the user can no longer see must
+        // never end up in a delete batch.
+        std::unordered_set<std::string> marked_paths;
+        bool confirm_is_bulk = false;
+        std::string confirm_title_str;
+
+        void ToggleMark(const FileEntry& item);
+        // Deletes one path. 0 = ok, 1 = not writable, 2 = directory not empty,
+        // 3 = syscall failed.
+        int DeleteOnePath(const std::string& path);
+
         std::vector<std::string> confirm_menu_items;
 
         // Selected indices

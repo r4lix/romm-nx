@@ -4,11 +4,10 @@
 
 namespace romm::ui {
 
-    CoverProfile GetCoverProfile(const romm::model::Platform& platform) {
+    static CoverProfile GetBaseCoverProfile(const romm::model::Platform& platform, bool big) {
         // "Big" view mode trims each profile's row count (not just columns —
         // see the comment in GameGrid::AdjustProfileForHeight for why rows are
         // what actually grow the tiles on this canvas) so tiles render larger.
-        // "Detail" mode isn't implemented yet, so it renders identically to Default.
         //
         // Only .columns/.visibleRows/.fitMode are set below. The pixel geometry
         // (coverW/coverH/gapX/gapY/offsetX/offsetY) is intentionally left at the
@@ -17,8 +16,6 @@ namespace romm::ui {
         // the single place column/row counts are decided and the single place
         // (AdjustProfileForHeight) tile geometry is decided — no second set of
         // numbers to keep in sync.
-        const bool big = (romm::model::ConfigManager::Instance().GetGridViewMode(platform.slug) == romm::model::GridViewMode::Big);
-
         if (platform.slug == "ps1" || platform.slug == "psx" ||
             platform.slug == "playstation" || platform.slug == "sony-playstation") {
             // PS1Square: 6 columns x 3 rows (4 columns x 2 rows in Big mode).
@@ -117,6 +114,26 @@ namespace romm::ui {
             .visibleRows = big ? 2 : 3,
             .fitMode = FitMode::Contain
         };
+    }
+
+    CoverProfile GetCoverProfile(const romm::model::Platform& platform) {
+        const auto mode = romm::model::ConfigManager::Instance().GetGridViewMode(platform.slug);
+
+        CoverProfile profile = GetBaseCoverProfile(platform, mode == romm::model::GridViewMode::Big);
+
+        // Detail mode keeps the platform's cover type — the panel still draws a
+        // real cover and needs the right aspect handling — but collapses the
+        // grid to a single column. That one change is what makes the existing
+        // row/column navigation in NavigationManager work unmodified: Up/Down
+        // step by one entry and Left falls back to the sidebar, which is exactly
+        // list behaviour. visibleRows is recomputed from the row height in
+        // GameGrid::AdjustProfileForHeight.
+        if (mode == romm::model::GridViewMode::Detail) {
+            profile.isDetailList = true;
+            profile.columns = 1;
+            profile.visibleRows = 1;
+        }
+        return profile;
     }
 
 } // namespace romm::ui

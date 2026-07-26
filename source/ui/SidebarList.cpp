@@ -40,7 +40,12 @@ namespace romm::ui {
         pu::ui::Color unselected_clr(190, 180, 225, 255); // Light lavender (#BEB4E1)
 
         auto state = model->GetPlatformState();
-        if (state == romm::model::ApiState::Loading) {
+        if (state == romm::model::ApiState::WaitingNetwork) {
+            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Waiting for network...", selected_clr, w - 50);
+            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Waiting for network...", unselected_clr, w - 50);
+            selected_texs.push_back(sel_tex);
+            unselected_texs.push_back(unsel_tex);
+        } else if (state == romm::model::ApiState::Loading) {
             pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Loading platforms...", selected_clr, w - 50);
             pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Loading platforms...", unselected_clr, w - 50);
             selected_texs.push_back(sel_tex);

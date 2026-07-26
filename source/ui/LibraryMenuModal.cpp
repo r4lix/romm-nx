@@ -48,9 +48,12 @@ namespace romm::ui {
         }
         std::string view_mode_label = "View Mode: " + config.GetGridViewModeString(platform_slug);
 
+        const std::string& query = nav->GetSearchQueryDisplay();
+        const std::string search_note = query.empty() ? "None" : ("\"" + query + "\"");
+
         struct Row { std::string main; std::string note; };
         Row rows[LibraryMenuModal::GetRowCount()] = {
-            { "Search", "Coming Soon" },
+            { "Search", search_note },
             { "Sort", "Coming Soon" },
             { view_mode_label, "" }
         };

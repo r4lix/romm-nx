@@ -6,6 +6,7 @@
 #include "GlobalProgressBar.hpp"
 #include "LibraryMenuModal.hpp"
 #include "StatusBar.hpp"
+#include "UninstallConfirmModal.hpp"
 
 namespace romm::ui {
 
@@ -26,7 +27,7 @@ namespace romm::ui {
         this->Add(status_bar);
 
         // Create hint text block (Ubuntu, Light lavender #BEB4E1)
-        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, "A Select / Focus   |   B Back / Main Menu   |   Y Menu   |   + Exit");
+        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, "A Select   |   B Back   |   X Mark   |   ZR Download marked   |   Y Menu   |   + Exit");
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(hint_text);
@@ -47,6 +48,12 @@ namespace romm::ui {
         // Grid takes the remaining space below the alphabet bar
         grid = GameGrid::New(380, 180, 1920 - 380, 800, nav);
         this->Add(grid);
+
+        // Uninstall confirmation. Needed here because Detail view mode's panel
+        // can trigger an uninstall without ever leaving the Library screen —
+        // NavigationManager gates all input on uninstall_modal.active, so a
+        // layout that can raise the modal but not draw it would soft-lock.
+        this->Add(romm::ui::UninstallConfirmModal::New(nav));
 
         // Y-Menu overlay — added last so it renders on top of everything else
         library_menu_modal = LibraryMenuModal::New(nav);

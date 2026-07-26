@@ -180,6 +180,13 @@ public:
     // curl_global_init call) actually run several transfers concurrently.
     static constexpr int kWorkerCount = 4;
 
+    // Ordering alone isn't enough to keep interactive requests responsive: if
+    // every worker is mid-transfer on a cover, a freshly queued detail fetch
+    // still waits for one of them to finish, which on a slow link is seconds.
+    // Holding a worker back from Low work guarantees there is always one ready
+    // to pick up High/Normal immediately.
+    static constexpr int kMaxLowConcurrency = kWorkerCount - 1;
+
     TaskQueue() {
         for (int i = 0; i < kWorkerCount; ++i) {
             spawnWorker();
@@ -190,10 +197,10 @@ public:
         shutdown();
     }
 
-    void enqueue(std::function<void()> task) {
+    void enqueue(std::function<void()> task, HttpPriority priority) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            tasks_.push(std::move(task));
+            lanes_[static_cast<int>(priority)].push(std::move(task));
         }
         condition_.notify_one();
     }
@@ -231,25 +238,64 @@ private:
         return nullptr;
     }
 
+    // Highest-priority lane this worker may pull from right now, or -1 when
+    // there is nothing it is allowed to run. Caller must hold mutex_.
+    int runnableLane() const {
+        for (int lane = 0; lane < kLaneCount; ++lane) {
+            if (lanes_[lane].empty()) {
+                continue;
+            }
+            if (lane == static_cast<int>(HttpPriority::Low) && active_low_ >= kMaxLowConcurrency) {
+                continue;
+            }
+            return lane;
+        }
+        return -1;
+    }
+
     void workerLoop() {
         while (true) {
             std::function<void()> task;
+            bool is_low = false;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                condition_.wait(lock, [this] { return stopped_ || !tasks_.empty(); });
-                if (stopped_ && tasks_.empty()) {
+                condition_.wait(lock, [this] { return stopped_ || runnableLane() >= 0; });
+                // Drop whatever is still queued at shutdown rather than
+                // draining it — the app is exiting, and waiting out a backlog
+                // of cover downloads would just stall the close.
+                if (stopped_) {
                     break;
                 }
-                task = std::move(tasks_.front());
-                tasks_.pop();
+                const int lane = runnableLane();
+                if (lane < 0) {
+                    continue;
+                }
+                task = std::move(lanes_[lane].front());
+                lanes_[lane].pop();
+                is_low = (lane == static_cast<int>(HttpPriority::Low));
+                if (is_low) {
+                    active_low_++;
+                }
             }
             task();
+            if (is_low) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    active_low_--;
+                }
+                // A Low slot just freed up; a worker may have parked itself
+                // because the cap was reached, so wake one to re-check.
+                condition_.notify_one();
+            }
         }
         // Free this worker's persistent curl handle before the thread exits.
         releaseThreadCurl();
     }
 
-    std::queue<std::function<void()>> tasks_;
+    static constexpr int kLaneCount = 3;
+
+    std::queue<std::function<void()>> lanes_[kLaneCount];
+    int active_low_ = 0;
     std::mutex mutex_;
     std::condition_variable condition_;
     bool stopped_ = false;
@@ -277,12 +323,13 @@ void HttpClient::shutdown() {
 
 std::shared_ptr<HttpResult> HttpClient::getAsync(
     const std::string& url,
-    const std::map<std::string, std::string>& headers) {
+    const std::map<std::string, std::string>& headers,
+    HttpPriority priority) {
 
     auto result = std::make_shared<HttpResult>();
     queue()->enqueue([=]() {
         performRequest(false, url, headers, "", result);
-    });
+    }, priority);
     return result;
 }
 
@@ -298,15 +345,16 @@ HttpResult HttpClient::getSync(
 std::shared_ptr<HttpResult> HttpClient::downloadFileAsync(
     const std::string& url,
     const std::map<std::string, std::string>& headers,
-    const std::string& outputPath) {
+    const std::string& outputPath,
+    HttpPriority priority) {
 
     auto result = std::make_shared<HttpResult>();
     queue()->enqueue([=]() {
         performDownload(url, headers, outputPath, result);
-    });
+    }, priority);
     return result;
 }
 
-void HttpClient::runAsync(std::function<void()> task) {
-    queue()->enqueue(std::move(task));
+void HttpClient::runAsync(std::function<void()> task, HttpPriority priority) {
+    queue()->enqueue(std::move(task), priority);
 }

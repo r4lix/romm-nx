@@ -94,11 +94,20 @@ namespace romm::ui {
     // CPU-only load+resize producing a surface. Safe to run on a worker
     // thread: touches no renderer state, only SDL_image decode and surface
     // blits.
+    //
+    // Only ever shrinks. An image already at or below the target is handed back
+    // untouched: blowing it up here would burn memory and CPU to produce a
+    // nearest-neighbour upscale, when uploading the small texture and letting
+    // the GPU filter it up at draw time looks better and costs less.
     static SDL_Surface* LoadAndResizeSurface(const std::string& path, int target_w, int target_h) {
         SDL_Surface* orig = IMG_Load(path.c_str());
         if (!orig) {
             std::cerr << "[COVER] Failed to load image for resizing: " << path << std::endl;
             return nullptr;
+        }
+
+        if (orig->w <= target_w && orig->h <= target_h) {
+            return orig;
         }
 
         float scale = std::min((float)target_w / orig->w, (float)target_h / orig->h);
@@ -124,7 +133,7 @@ namespace romm::ui {
     // small-cover profiles) to a surface. Everything here is SD-card I/O and
     // CPU decode that used to run on the render thread and stall the UI while
     // covers were first downloading.
-    static void DecodeCoverTask(std::shared_ptr<CoverDecodeResult> dec, std::string path, bool resize_handheld) {
+    static void DecodeCoverTask(std::shared_ptr<CoverDecodeResult> dec, std::string path, int target_w, int target_h) {
         if (path.length() >= 4 && path.compare(path.length() - 4, 4, ".tmp") == 0) {
             const std::string ext = DetectImageExtension(path);
             const std::string final_path = path.substr(0, path.length() - 4) + "." + ext;
@@ -142,13 +151,13 @@ namespace romm::ui {
         }
         dec->final_path = path;
 
-        if (resize_handheld) {
-            dec->surface = LoadAndResizeSurface(path, 380, 344);
+        if (target_w > 0 && target_h > 0) {
+            dec->surface = LoadAndResizeSurface(path, target_w, target_h);
         } else {
             dec->surface = IMG_Load(path.c_str());
-            if (!dec->surface) {
-                std::cerr << "[COVER] Failed to load image: " << path << std::endl;
-            }
+        }
+        if (!dec->surface) {
+            std::cerr << "[COVER] Failed to load image: " << path << std::endl;
         }
         dec->completed.store(true, std::memory_order_release);
     }
@@ -179,6 +188,56 @@ namespace romm::ui {
     }
 
     // ---------------------------------------------------------------------------
+    // Download slot accounting
+    // ---------------------------------------------------------------------------
+
+    bool CoverCache::StartDownload(CoverEntry& entry) {
+        if (entry.download_url.empty() || entry.download_result) {
+            return false;
+        }
+        if (inflight_downloads_ >= MAX_INFLIGHT_DOWNLOADS) {
+            return false;
+        }
+
+        // A download can start long after the entry was created (it may have
+        // been throttled, or first requested with allow_download=false), so
+        // ensure the destination directory here rather than at request time —
+        // otherwise the fopen in performDownload fails on a path that was
+        // never created. The mkdir chain is several SD-card syscalls on the
+        // render thread, so only walk each directory once per app run.
+        const size_t last_slash = entry.cache_path.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            const std::string dir_base = entry.cache_path.substr(0, last_slash + 1);
+            static std::unordered_set<std::string> ensured_dirs;
+            if (ensured_dirs.insert(dir_base).second) {
+                EnsureDirExists(dir_base);
+            }
+        }
+
+        std::map<std::string, std::string> headers;
+        if (entry.download_needs_auth) {
+            headers["Authorization"] = "Bearer " + romm::model::ConfigManager::Instance().GetApiKey();
+        }
+
+        entry.state = CoverState::Loading;
+        entry.download_result = HttpClient::downloadFileAsync(
+            entry.download_url, headers, entry.cache_path, HttpPriority::Low);
+
+        entry.holds_download_slot = true;
+        inflight_downloads_++;
+        return true;
+    }
+
+    void CoverCache::ReleaseInflight(CoverEntry& entry) {
+        entry.download_result.reset();
+        if (!entry.holds_download_slot) {
+            return;
+        }
+        entry.holds_download_slot = false;
+        inflight_downloads_--;
+    }
+
+    // ---------------------------------------------------------------------------
     // GetOrRequest
     // ---------------------------------------------------------------------------
 
@@ -187,7 +246,7 @@ namespace romm::ui {
         return GetOrRequest(rom_id, platform_slug, cover_path_rel, profile_type, variant, allow_download);
     }
 
-    CoverCacheResult CoverCache::GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download) {
+    CoverCacheResult CoverCache::GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download, int decode_w, int decode_h) {
         CoverCacheResult result;
         if (rom_id <= 0 || cover_path_rel.empty()) {
             return result;
@@ -196,7 +255,12 @@ namespace romm::ui {
         std::string norm_slug = romm::model::NormalizePlatformSlug(platform_slug);
         bool is_big = (variant == "big" || variant == "miximage_v2");
         int req_w = 0, req_h = 0;
-        GetDimensions(profile_type, is_big, req_w, req_h);
+        if (decode_w > 0 && decode_h > 0) {
+            req_w = decode_w;
+            req_h = decode_h;
+        } else {
+            GetDimensions(profile_type, is_big, req_w, req_h);
+        }
 
         CoverCacheKey key;
         key.platform_slug = norm_slug;
@@ -219,6 +283,7 @@ namespace romm::ui {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - entry.last_retry_time).count();
                 if (elapsed >= 10) {
+                    ReleaseInflight(entry);
                     cache_.erase(it);
                     // Fall through to re-request
                 } else {
@@ -227,6 +292,16 @@ namespace romm::ui {
                     return result;
                 }
             } else {
+                // A Missing entry with a known URL is one we deliberately
+                // didn't start: either every download slot was busy, or the
+                // caller asked without permission to download. Both become
+                // startable the moment that changes — this is what lets the
+                // covers currently on screen take slots from ones the user has
+                // scrolled away from, and what makes the decode-failure retry
+                // in PollCompleted actually fire.
+                if (entry.state == CoverState::Missing && allow_download) {
+                    StartDownload(entry);
+                }
                 result.texture = entry.texture;
                 result.state = entry.state;
                 return result;
@@ -279,49 +354,52 @@ namespace romm::ui {
             cache_path = base_path + ".tmp";
             entry.cache_path = cache_path;
             entry.state = CoverState::Missing;
-            
-            if (allow_download) {
-                auto& config = romm::model::ConfigManager::Instance();
-                if (!config.IsValid()) {
+
+            auto& config = romm::model::ConfigManager::Instance();
+            if (!config.IsValid()) {
+                if (allow_download) {
                     entry.state = CoverState::FailedTransient;
                     entry.last_retry_time = std::chrono::steady_clock::now();
+                }
+            } else {
+                // Resolve the URL even when we're not allowed to download yet,
+                // so a later allow_download=true call can start it straight
+                // from the entry without redoing this work.
+                if (cover_path_rel.rfind("http://", 0) == 0 || cover_path_rel.rfind("https://", 0) == 0) {
+                    entry.download_url = cover_path_rel;
+                    entry.download_needs_auth = false;
                 } else {
-                    std::string url;
-                    std::map<std::string, std::string> headers;
-                    if (cover_path_rel.rfind("http://", 0) == 0 || cover_path_rel.rfind("https://", 0) == 0) {
-                        url = cover_path_rel;
-                    } else {
-                        std::string url_path = cover_path_rel;
-                        bool is_handheld_platform = (profile_type == CoverProfileType::PSPPortrait || 
-                                                     profile_type == CoverProfileType::NintendoDS ||
-                                                     profile_type == CoverProfileType::GameBoy ||
-                                                     profile_type == CoverProfileType::GameBoyColor ||
-                                                     profile_type == CoverProfileType::GameBoyAdvance);
-                        if (is_handheld_platform) {
-                            size_t last_slash = url_path.find_last_of('/');
-                            if (last_slash != std::string::npos) {
-                                if (is_big) {
-                                    url_path = url_path.substr(0, last_slash) + "/big.png";
-                                } else {
-                                    url_path = url_path.substr(0, last_slash) + "/small.png";
-                                }
-                            }
+                    std::string url_path = cover_path_rel;
+                    bool is_handheld_platform = (profile_type == CoverProfileType::PSPPortrait ||
+                                                 profile_type == CoverProfileType::NintendoDS ||
+                                                 profile_type == CoverProfileType::GameBoy ||
+                                                 profile_type == CoverProfileType::GameBoyColor ||
+                                                 profile_type == CoverProfileType::GameBoyAdvance);
+                    if (is_handheld_platform) {
+                        size_t last_slash = url_path.find_last_of('/');
+                        if (last_slash != std::string::npos) {
+                            // Swap only the filename, keeping whatever
+                            // extension the server advertised. RomM can be
+                            // mass-converted to WebP, in which case it serves
+                            // big.webp/small.webp — hardcoding ".png" here
+                            // would 404 every handheld cover on such an
+                            // instance while other platforms, which use the
+                            // API path verbatim, kept working.
+                            const std::string filename = url_path.substr(last_slash + 1);
+                            const size_t dot = filename.find_last_of('.');
+                            const std::string ext = (dot != std::string::npos) ? filename.substr(dot) : std::string(".png");
+                            url_path = url_path.substr(0, last_slash) + (is_big ? "/big" : "/small") + ext;
                         }
-                        url = config.GetRommHost() + url_path;
-                        headers["Authorization"] = "Bearer " + config.GetApiKey();
                     }
+                    entry.download_url = config.GetRommHost() + url_path;
+                    entry.download_needs_auth = true;
+                }
 
-                    std::string dir_base = std::string("sdmc:/switch/romm-nx/cache/covers/") + norm_slug + "/" + variant + "/";
-                    // GetOrRequest runs on the render thread; the mkdir chain
-                    // is several SD-card syscalls, so only walk it once per
-                    // directory per app run (main-thread only, no lock needed).
-                    static std::unordered_set<std::string> ensured_dirs;
-                    if (ensured_dirs.insert(dir_base).second) {
-                        EnsureDirExists(dir_base);
-                    }
-
-                    entry.state = CoverState::Loading;
-                    entry.download_result = HttpClient::downloadFileAsync(url, headers, cache_path);
+                if (allow_download) {
+                    // May decline and leave the entry in Missing when all
+                    // download slots are busy; the caller re-requests next
+                    // frame while the cover is still on screen.
+                    StartDownload(entry);
                 }
             }
         }
@@ -396,18 +474,22 @@ namespace romm::ui {
             if (!entry.download_result || !entry.download_result->completed) continue;
 
             if (entry.download_result->success) {
-                const bool resize_handheld = !entry.is_big &&
-                                             (entry.profile_type == CoverProfileType::NintendoDS ||
-                                              entry.profile_type == CoverProfileType::Nintendo3DS ||
-                                              entry.profile_type == CoverProfileType::GameBoy ||
-                                              entry.profile_type == CoverProfileType::GameBoyColor ||
-                                              entry.profile_type == CoverProfileType::GameBoyAdvance);
+                // Shrink big covers to the size they're actually drawn at.
+                // RomM serves big.png at 640x640, which is 1.5 MiB of RGBA per
+                // texture for a tile that renders around 340px — across a full
+                // cache that's hundreds of MiB held to display pixels the GPU
+                // discards on every blit. Smalls are left alone: they're
+                // already at or below their render size, so there is nothing to
+                // reclaim and rescaling could only lose detail.
+                const int target_w = entry.is_big ? entry.key.requested_width : 0;
+                const int target_h = entry.is_big ? entry.key.requested_height : 0;
+
                 auto dec = std::make_shared<CoverDecodeResult>();
                 entry.decode_result = dec;
                 const std::string path = entry.cache_path;
-                HttpClient::runAsync([dec, path, resize_handheld]() {
-                    DecodeCoverTask(dec, path, resize_handheld);
-                });
+                HttpClient::runAsync([dec, path, target_w, target_h]() {
+                    DecodeCoverTask(dec, path, target_w, target_h);
+                }, HttpPriority::Low);
             } else {
                 remove(entry.cache_path.c_str());
                 long code = entry.download_result->statusCode;
@@ -424,7 +506,9 @@ namespace romm::ui {
                 std::cerr << "[cover] Download failed (HTTP " << code << ") for cache_key=" << cache_key << std::endl;
             }
 
-            entry.download_result.reset();
+            // Frees the slot for the next cover, whether we're moving on to
+            // decode or giving up.
+            ReleaseInflight(entry);
         }
     }
 
@@ -438,9 +522,11 @@ namespace romm::ui {
                 pu::ui::render::DeleteTexture(entry.texture);
                 entry.texture = nullptr;
             }
+            ReleaseInflight(entry);
         }
         cache_.clear();
         lru_order_.clear();
+        inflight_downloads_ = 0;
     }
 
     // ---------------------------------------------------------------------------
@@ -461,21 +547,14 @@ namespace romm::ui {
                 if (it->second.texture) {
                     pu::ui::render::DeleteTexture(it->second.texture);
                 }
+                // Evicting mid-download abandons the transfer (the worker's
+                // shared_ptr keeps the result alive until it finishes), so the
+                // slot has to come back or the cache slowly throttles itself
+                // down to zero concurrent downloads.
+                ReleaseInflight(it->second);
                 cache_.erase(it);
             }
         }
-    }
-
-    int CoverCache::GetPendingBigDownloadsCount() const {
-        int count = 0;
-        for (const auto& [key, entry] : cache_) {
-            if (entry.is_big && entry.state == CoverState::Loading) {
-                if (entry.download_result && !entry.download_result->completed) {
-                    count++;
-                }
-            }
-        }
-        return count;
     }
 
 } // namespace romm::ui

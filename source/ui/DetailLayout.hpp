@@ -52,6 +52,19 @@ namespace romm::ui {
         Uninstall
     };
 
+    // Derives which action the A button should perform for a ROM, from install
+    // state plus the download queue. Free function rather than a DetailCard
+    // method because the Detail *view mode* panel in the library needs the same
+    // answer, and two copies of this ladder would drift the moment one of the
+    // DownloadState cases changed.
+    //
+    // Requires the ROM's GameDetail (for the multi-disc install identity);
+    // returns Download when detail is null, which is the safe default for a
+    // panel still waiting on its debounced fetch.
+    DownloadActionState ComputeDownloadActionState(int rom_id,
+                                                   const std::string& platform_slug,
+                                                   const romm::model::GameDetail* detail);
+
     struct DetailGameContext {
         int rom_id = -1;
         std::string platform_name;
@@ -224,8 +237,15 @@ namespace romm::ui {
         s32 x, y, w, h;
         FullscreenKeys keys;
         FullscreenMode current_mode;
+
+        // Cached so the fallback message isn't re-rasterised every frame; only
+        // re-rendered when the text actually changes.
+        pu::sdl2::Texture status_tex = nullptr;
+        std::string status_str;
+        void UpdateStatusText(const std::string& s);
     public:
         FullscreenImageElement(s32 x, s32 y, s32 w, s32 h);
+        ~FullscreenImageElement();
         void SetKeys(const FullscreenKeys& new_keys);
         void CycleMode(int direction);
         FullscreenMode GetMode() { return current_mode; }

@@ -46,7 +46,7 @@ namespace romm::model {
                 std::cout << "[PERF] JSON parse: " << parse_ms << " ms async" << std::endl;
             }
             result->completed = true;
-        });
+        }, HttpPriority::High);
 
         return result;
     }
@@ -103,7 +103,7 @@ namespace romm::model {
                 std::cout << "[PERF] ROM parse time: " << parse_ms << " ms" << std::endl;
             }
             result->completed = true;
-        });
+        }, HttpPriority::High);
 
         return result;
     }
@@ -131,11 +131,14 @@ namespace romm::model {
         result->generation = generation;
         result->platform_slug = platform_slug;
         
+        // High lane: the user pressed A and is staring at an empty description
+        // panel until this lands. Without the priority it queues behind every
+        // cover download the grid piled up while they were browsing.
         HttpClient::runAsync([=]() {
             HttpResult http_res = HttpClient::getSync(url_str, headers);
             result->statusCode = http_res.statusCode;
             result->success = http_res.success;
-            
+
             if (http_res.success) {
                 GameDetail detail;
                 detail.rom_id = romId;
@@ -252,9 +255,9 @@ namespace romm::model {
 
                 result->detail = detail;
             }
-            
+
             result->completed = true;
-        });
+        }, HttpPriority::High);
 
         return result;
     }

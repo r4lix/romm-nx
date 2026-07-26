@@ -269,7 +269,12 @@ namespace romm::ui {
 
     void FileBrowserPane::LoadDirectoryAsync(const std::string& path) {
         CancelPendingScan();
-        
+
+        // Marks are per-listing. Carrying them across a directory change would
+        // leave paths in the delete batch that the user can't see to unmark.
+        marked_paths.clear();
+        confirm_is_bulk = false;
+
         std::cout << "[FILE_BROWSER] scan_start path=" << path << std::endl;
 
         {
@@ -599,6 +604,9 @@ namespace romm::ui {
                 options_menu_items.push_back("Rename");
                 options_menu_items.push_back("Delete");
             }
+            if (!marked_paths.empty()) {
+                options_menu_items.push_back("Delete Marked (" + std::to_string(marked_paths.size()) + ")");
+            }
         }
 
         pu::ui::Color selected_clr(230, 199, 167, 255);
@@ -620,6 +628,43 @@ namespace romm::ui {
         }
     }
 
+    void FileBrowserPane::ToggleMark(const FileEntry& item) {
+        if (item.name == "..") return;
+        auto it = marked_paths.find(item.path);
+        if (it != marked_paths.end()) {
+            marked_paths.erase(it);
+        } else {
+            marked_paths.insert(item.path);
+        }
+    }
+
+    int FileBrowserPane::DeleteOnePath(const std::string& path) {
+        if (!IsWritablePath(path)) return 1;
+
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) return 3;
+
+        if (S_ISDIR(st.st_mode)) {
+            // Recursive delete stays disabled here, same as the single-item
+            // path: a bulk operation is exactly where an accidental recursive
+            // wipe would do the most damage.
+            int count = 0;
+            DIR* subdir = opendir(path.c_str());
+            if (subdir) {
+                struct dirent* sub_ent;
+                while ((sub_ent = readdir(subdir)) != nullptr) {
+                    const std::string sub_name = sub_ent->d_name;
+                    if (sub_name != "." && sub_name != "..") count++;
+                }
+                closedir(subdir);
+            }
+            if (count != 0) return 2;
+            return (rmdir(path.c_str()) == 0) ? 0 : 3;
+        }
+
+        return (unlink(path.c_str()) == 0) ? 0 : 3;
+    }
+
     void FileBrowserPane::RebuildConfirmTextures() {
         for (auto& tex : confirm_texs_selected) pu::ui::render::DeleteTexture(tex);
         for (auto& tex : confirm_texs_unselected) pu::ui::render::DeleteTexture(tex);
@@ -636,7 +681,37 @@ namespace romm::ui {
             confirm_texs_unselected.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), item, unselected_clr, 370));
         }
 
-        selected_confirm_idx = 0; // Default to "No"
+        // Name what is actually about to be deleted. A generic prompt in front
+        // of an irreversible batch operation isn't a real confirmation.
+        std::string title;
+        if (confirm_is_bulk) {
+            title = "Delete " + std::to_string(marked_paths.size()) +
+                    (marked_paths.size() == 1 ? " marked item?" : " marked items?");
+        } else {
+            std::string sel_name;
+            {
+                std::lock_guard<std::mutex> lock(data_mutex);
+                if (selected_file_idx < loaded_items.size()) {
+                    sel_name = loaded_items[selected_file_idx].name;
+                }
+            }
+            title = sel_name.empty() ? "Delete selected item?" : ("Delete \"" + sel_name + "\"?");
+        }
+        if (title != confirm_title_str || !confirm_title_tex) {
+            if (confirm_title_tex) pu::ui::render::DeleteTexture(confirm_title_tex);
+            confirm_title_str = title;
+            confirm_title_tex = pu::ui::render::RenderText(
+                GetSafeFont("Ubuntu@30", "Ubuntu@24"), title, pu::ui::Color(255, 255, 255, 255));
+        }
+
+        // Deliberately does NOT touch selected_confirm_idx. This runs from
+        // OnSelectionUpdated(), which the Left/Right handlers call right after
+        // moving the highlight — resetting here snapped it straight back to
+        // "No", making "Yes" unselectable. The default is set when the dialog
+        // opens instead.
+        if (selected_confirm_idx >= confirm_menu_items.size()) {
+            selected_confirm_idx = 0;
+        }
     }
 
     void FileBrowserPane::RefreshStats() {
@@ -926,6 +1001,14 @@ namespace romm::ui {
                     DrawFileIcon(drawer, icon_x, icon_y, icon_color);
                 }
 
+                // Mark indicator, in the gutter left of the icon.
+                if (marked_paths.count(item.path)) {
+                    const s32 box = 20;
+                    const s32 box_x = x_coord + 2;
+                    const s32 box_y = iy + (file_h - 10 - box) / 2;
+                    drawer->RenderRoundedRectangleFill(pu::ui::Color(230, 199, 167, 255), box_x, box_y, box - 6, box, 3);
+                }
+
                 auto title_tex = is_selected ? item.text_tex_selected : item.text_tex_unselected;
                 if (title_tex) {
                     s32 th = pu::ui::render::GetTextureHeight(title_tex);
@@ -1079,7 +1162,7 @@ namespace romm::ui {
         } else if (active_focus == FileBrowserFocus::DeleteConfirm) {
             btns = { {"B", "Cancel"}, {"A", "Confirm"} };
         } else {
-            btns = { {"X", "Options"}, {"B", "Back"}, {"A", "Open"} };
+            btns = { {"Y", "Options"}, {"X", "Mark"}, {"B", "Back"}, {"A", "Open"} };
         }
 
         s32 total_w = 0;
@@ -1214,11 +1297,19 @@ namespace romm::ui {
                     std::cout << "[NAV] Returning to Main Menu" << std::endl;
                 }
             }
-            if (keys_down & HidNpadButton_X) {
-                // Open contextual Options panel
+            if (keys_down & HidNpadButton_Y) {
+                // Open contextual Options panel. Moved off X so that X is free
+                // to mean "mark this entry" here, matching the library's
+                // multi-select binding.
                 active_focus = FileBrowserFocus::OptionsMenu;
                 selected_option_idx = 0;
                 OnSelectionUpdated();
+            }
+            if (keys_down & HidNpadButton_X) {
+                if (has_sel) {
+                    ToggleMark(sel_item);
+                    OnSelectionUpdated();
+                }
             }
         }
         else if (active_focus == FileBrowserFocus::OptionsMenu) {
@@ -1357,7 +1448,15 @@ namespace romm::ui {
                     }
                 }
                 else if (option == "Delete") {
-                    // Open Delete Confirm submenu
+                    // Open Delete Confirm submenu, defaulting to the safe answer.
+                    confirm_is_bulk = false;
+                    selected_confirm_idx = 0; // "No"
+                    active_focus = FileBrowserFocus::DeleteConfirm;
+                    OnSelectionUpdated();
+                }
+                else if (option.rfind("Delete Marked", 0) == 0) {
+                    confirm_is_bulk = true;
+                    selected_confirm_idx = 0; // "No"
                     active_focus = FileBrowserFocus::DeleteConfirm;
                     OnSelectionUpdated();
                 }
@@ -1390,6 +1489,35 @@ namespace romm::ui {
                     // "No" (Cancel)
                     active_focus = FileBrowserFocus::OptionsMenu;
                     OnSelectionUpdated();
+                } else if (confirm_is_bulk) {
+                    // "Yes" on a batch. Every path is re-checked against
+                    // IsWritablePath inside DeleteOnePath, so a mark placed
+                    // before the write-scope setting changed can't slip through.
+                    int ok = 0, blocked = 0, not_empty = 0, failed = 0;
+                    for (const auto& path : marked_paths) {
+                        switch (DeleteOnePath(path)) {
+                            case 0: ok++; break;
+                            case 1: blocked++; break;
+                            case 2: not_empty++; break;
+                            default: failed++; break;
+                        }
+                    }
+                    std::cout << "[FILE_BROWSER] bulk_delete ok=" << ok << " blocked=" << blocked
+                              << " not_empty=" << not_empty << " failed=" << failed << std::endl;
+
+                    marked_paths.clear();
+                    confirm_is_bulk = false;
+
+                    if (blocked || not_empty || failed) {
+                        std::string msg = "Deleted " + std::to_string(ok) + ".";
+                        if (blocked)   msg += "  " + std::to_string(blocked) + " outside writable folder.";
+                        if (not_empty) msg += "  " + std::to_string(not_empty) + " folder(s) not empty.";
+                        if (failed)    msg += "  " + std::to_string(failed) + " failed.";
+                        nav->ShowKeyboard("Delete results", msg, "");
+                    }
+
+                    ForceRefresh();
+                    active_focus = FileBrowserFocus::Files;
                 } else {
                     // "Yes" (Confirm Delete)
                     if (has_sel) {

@@ -480,10 +480,26 @@ namespace romm::ui {
             // this used to be a TTF render + destroy per row, per frame.
             if (idx < (int)row_texs.size()) {
                 auto& rt = row_texs[idx];
-                if (!rt.sel && !rt.unsel) {
-                    std::string disp_title = TruncateTitle(CleanDisplayTitle(g.title), 36);
+                if (!rt.built) {
+                    // Never leave a row nameless. An empty title renders to a
+                    // null texture, which left the row showing only the SD-card
+                    // icon — and, because the "not built yet" test was the
+                    // textures being null, retried the failed render every
+                    // frame forever. Fall back through the other identifying
+                    // fields, and mark the row built either way.
+                    std::string source = g.title;
+                    if (source.empty()) source = g.original_filename;
+                    if (source.empty()) {
+                        const size_t slash = g.install_path.find_last_of('/');
+                        source = (slash == std::string::npos) ? g.install_path
+                                                              : g.install_path.substr(slash + 1);
+                    }
+                    if (source.empty()) source = "Unknown title";
+
+                    std::string disp_title = TruncateTitle(CleanDisplayTitle(source), 36);
                     rt.sel   = pu::ui::render::RenderText("Ubuntu@22", disp_title, pu::ui::Color(255, 255, 255, 255));
                     rt.unsel = pu::ui::render::RenderText("Ubuntu@22", disp_title, pu::ui::Color(190, 180, 225, 255));
+                    rt.built = true;
                 }
                 auto title_tex = is_sel ? rt.sel : rt.unsel;
                 if (title_tex) {
