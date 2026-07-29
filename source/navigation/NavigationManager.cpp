@@ -14,6 +14,7 @@
 #include "../ui/AlphabetBar.hpp"
 #include "../ui/MainApplication.hpp"
 #include "../model/ConfigManager.hpp"
+#include "../i18n/I18n.hpp"
 #include <sstream>
 #include <chrono>
 #include <vector>
@@ -91,7 +92,9 @@ namespace romm::navigation {
     bool NavigationManager::PromptForSearch() {
         // Prefilled with the active query so refining a search doesn't mean
         // retyping it, and clearing to empty is how you cancel the filter.
-        const std::string entered = ShowKeyboard("Search", "Filter this platform by title. Leave empty to clear.", search_query_display);
+        const std::string entered = ShowKeyboard(romm::i18n::tr("keyboard.search.header"),
+                                                 romm::i18n::tr("keyboard.search.subtext"),
+                                                 search_query_display);
         const std::string lowered = romm::model::ToLowerAscii(entered);
         if (lowered == search_query) {
             return false;
@@ -166,6 +169,28 @@ namespace romm::navigation {
         } else if (current_screen == Screen::FileBrowser && file_browser_layout) {
             file_browser_layout->OnSelectionUpdated();
         }
+    }
+
+    // The single refresh path for a language change. Layouts are created once
+    // in Initialize() and reused for the whole session, and Plutonium elements
+    // bake text into textures at construction, so switching languages has to
+    // push through every live layout — there is deliberately no second
+    // mechanism (no rebuild-on-navigate, no per-frame string comparison).
+    //
+    // Each layout re-applies its own strings and keeps its current selection;
+    // nothing is torn down, so the user stays exactly where they were.
+    void NavigationManager::RefreshTranslations() {
+        if (main_menu_layout) main_menu_layout->RefreshTranslations();
+        if (library_layout) library_layout->RefreshTranslations();
+        if (detail_layout) detail_layout->RefreshTranslations();
+        if (settings_layout) settings_layout->RefreshTranslations();
+        if (installed_layout) installed_layout->RefreshTranslations();
+        if (queue_layout) queue_layout->RefreshTranslations();
+        // Created lazily on first visit, so it may legitimately not exist yet.
+        if (file_browser_layout) file_browser_layout->RefreshTranslations();
+        // FullscreenImageLayout renders its status line from tr() every frame.
+
+        UpdateLayoutSelection();
     }
 
     void NavigationManager::HandleUninstallModalInput(u64 keys_down) {
@@ -264,7 +289,7 @@ namespace romm::navigation {
             // changelog/confirm UI there instead of duplicating it here.
             update_modal_active = false;
             current_screen = Screen::Settings;
-            selected_settings_category_idx = 5; // Updates
+            selected_settings_category_idx = 6; // Updates
             settings_focus = romm::ui::SettingsFocusArea::OptionList;
             selected_settings_option_idx = 0;
             if (settings_layout) {
@@ -272,6 +297,68 @@ namespace romm::navigation {
             }
             std::cout << "[NAV] [UPDATE POPUP] Opening Settings > Updates" << std::endl;
             UpdateLayoutSelection();
+        }
+    }
+
+    void NavigationManager::ApplyPlatformVisibilityChange() {
+        if (!model) return;
+
+        // Anchor on platform ids, not indices: the filter reorders the list, so
+        // an index that was valid a moment ago can point at a different
+        // platform (or nothing) afterwards.
+        std::string loaded_id;
+        std::string selected_id;
+        {
+            const auto& before = model->GetPlatforms();
+            if (loaded_platform_idx < before.size()) loaded_id = before[loaded_platform_idx].id;
+            if (selected_platform_idx < before.size()) selected_id = before[selected_platform_idx].id;
+        }
+
+        model->RebuildVisiblePlatforms();
+
+        const auto& after = model->GetPlatforms();
+        if (after.empty()) {
+            // Everything hidden: park on 0 and let the sidebar/grid draw their
+            // empty states. Nothing indexes into the list in that state.
+            loaded_platform_idx = 0;
+            selected_platform_idx = 0;
+            selected_game_idx = 0;
+            selected_letter_idx = 0;
+            ClearSearch();
+            ClearBulkSelection();
+        } else {
+            // Nearest still-visible entry when the anchor itself disappeared —
+            // indices only shift downwards under a filter, so clamping to the
+            // last valid index is the closest surviving neighbour.
+            auto resolve = [&after](const std::string& id, size_t fallback) -> size_t {
+                for (size_t i = 0; i < after.size(); ++i) {
+                    if (after[i].id == id) return i;
+                }
+                return (fallback < after.size()) ? fallback : after.size() - 1;
+            };
+
+            const size_t new_loaded = resolve(loaded_id, loaded_platform_idx);
+            selected_platform_idx = resolve(selected_id, selected_platform_idx);
+
+            const bool loaded_platform_survived = (!loaded_id.empty() && after[new_loaded].id == loaded_id);
+            loaded_platform_idx = new_loaded;
+            if (!loaded_platform_survived) {
+                // A different platform's games are about to be shown; the
+                // per-platform selection, filter and marks no longer apply.
+                selected_game_idx = 0;
+                selected_letter_idx = 0;
+                ClearSearch();
+                ClearBulkSelection();
+            }
+        }
+
+        if (library_layout) {
+            // The grid caches by platform index, which can survive this change
+            // unchanged while pointing at a different platform.
+            if (auto grid = library_layout->GetGameGrid()) {
+                grid->InvalidatePlatformCache();
+            }
+            library_layout->OnSelectionUpdated();
         }
     }
 
@@ -1166,7 +1253,10 @@ namespace romm::navigation {
                     // row/category (Download Sound Pack is now a single
                     // A-press action, not browsable).
                     else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
-                        if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                        if (selected_settings_category_idx == 4 && settings_layout) {
+                            settings_layout->ToggleSelectedPlatform(false); // Left = Hidden
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
                             settings_layout->CycleStartupSound(-1);
                             state_changed = true;
                         } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {
@@ -1181,7 +1271,10 @@ namespace romm::navigation {
                         }
                     }
                     else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                        if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                        if (selected_settings_category_idx == 4 && settings_layout) {
+                            settings_layout->ToggleSelectedPlatform(true); // Right = Shown
+                            state_changed = true;
+                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
                             settings_layout->CycleStartupSound(1);
                             state_changed = true;
                         } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {

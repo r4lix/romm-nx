@@ -5,6 +5,7 @@
 #include "GlobalProgressBar.hpp"
 #include "UninstallConfirmModal.hpp"
 #include "MainMenuLayout.hpp"
+#include "../i18n/I18n.hpp"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -226,15 +227,35 @@ namespace romm::ui {
         : Element(), x(x), y(y), w(w), h(h), nav_mgr(nav) {
         
         sd_card_icon = pu::ui::render::LoadImageFromFile("romfs:/sd_card.png");
-        cover_placeholder_tex = pu::ui::render::RenderText("Ubuntu@30", "NO IMAGE", pu::ui::Color(190, 180, 225, 255));
-        empty_state_tex = pu::ui::render::RenderText("Ubuntu@30", "No installed games for this platform.", pu::ui::Color(130, 120, 165, 255));
+        BuildStaticTextures();
+    }
+
+    // Split out of the constructor so a language change can rebuild exactly the
+    // localized textures without touching the SD-card icon.
+    void InstalledListPanel::BuildStaticTextures() {
+        if (cover_placeholder_tex) { pu::ui::render::DeleteTexture(cover_placeholder_tex); cover_placeholder_tex = nullptr; }
+        if (empty_state_tex)       { pu::ui::render::DeleteTexture(empty_state_tex);       empty_state_tex = nullptr; }
+        if (label_platform_tex)    { pu::ui::render::DeleteTexture(label_platform_tex);    label_platform_tex = nullptr; }
+        if (label_size_tex)        { pu::ui::render::DeleteTexture(label_size_tex);        label_size_tex = nullptr; }
+        if (label_location_tex)    { pu::ui::render::DeleteTexture(label_location_tex);    label_location_tex = nullptr; }
+        if (label_file_tex)        { pu::ui::render::DeleteTexture(label_file_tex);        label_file_tex = nullptr; }
+        if (label_status_tex)      { pu::ui::render::DeleteTexture(label_status_tex);      label_status_tex = nullptr; }
+
+        cover_placeholder_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("cover.no_image"), pu::ui::Color(190, 180, 225, 255));
+        empty_state_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("installed.empty"), pu::ui::Color(130, 120, 165, 255));
 
         pu::ui::Color label_clr(190, 180, 225, 255);
-        label_platform_tex = pu::ui::render::RenderText("Ubuntu@20", "PLATFORM", label_clr);
-        label_size_tex     = pu::ui::render::RenderText("Ubuntu@20", "SIZE", label_clr);
-        label_location_tex = pu::ui::render::RenderText("Ubuntu@20", "LOCATION", label_clr);
-        label_file_tex     = pu::ui::render::RenderText("Ubuntu@20", "FILE", label_clr);
-        label_status_tex   = pu::ui::render::RenderText("Ubuntu@20", "STATUS", label_clr);
+        label_platform_tex = pu::ui::render::RenderText("Ubuntu@20", romm::i18n::tr("installed.label.platform"), label_clr);
+        label_size_tex     = pu::ui::render::RenderText("Ubuntu@20", romm::i18n::tr("installed.label.size"), label_clr);
+        label_location_tex = pu::ui::render::RenderText("Ubuntu@20", romm::i18n::tr("installed.label.location"), label_clr);
+        label_file_tex     = pu::ui::render::RenderText("Ubuntu@20", romm::i18n::tr("installed.label.file"), label_clr);
+        label_status_tex   = pu::ui::render::RenderText("Ubuntu@20", romm::i18n::tr("installed.label.status"), label_clr);
+    }
+
+    void InstalledListPanel::RefreshTranslations() {
+        BuildStaticTextures();
+        // Forces RebuildInfoStrip() to redo the size/status lines next frame.
+        InvalidateSelectionVisuals();
     }
 
     void InstalledListPanel::ClearRowTextures() {
@@ -348,7 +369,7 @@ namespace romm::ui {
         long long sz = g.size;
         struct stat sb;
         if (stat(g.install_path.c_str(), &sb) == 0 && sb.st_size > 0) sz = sb.st_size;
-        std::string size_str = "Unknown";
+        std::string size_str = romm::i18n::tr("installed.size_unknown");
         if (sz > 0) {
             if (sz >= 1024LL * 1024LL * 1024LL) {
                 std::ostringstream ss; ss << std::fixed << std::setprecision(2)
@@ -367,7 +388,7 @@ namespace romm::ui {
 
         info_location_tex = pu::ui::render::RenderText("Ubuntu@24", location_dir, text_clr, 680);
         info_file_tex = pu::ui::render::RenderText("Ubuntu@24", filename_ext, text_clr, 680);
-        info_status_tex = pu::ui::render::RenderText("Ubuntu@24", "Installed", text_clr);
+        info_status_tex = pu::ui::render::RenderText("Ubuntu@24", romm::i18n::tr("installed.status.installed"), text_clr);
 
         info_cached_idx = selected_idx;
     }
@@ -494,7 +515,7 @@ namespace romm::ui {
                         source = (slash == std::string::npos) ? g.install_path
                                                               : g.install_path.substr(slash + 1);
                     }
-                    if (source.empty()) source = "Unknown title";
+                    if (source.empty()) source = romm::i18n::tr("installed.unknown_title");
 
                     std::string disp_title = TruncateTitle(CleanDisplayTitle(source), 36);
                     rt.sel   = pu::ui::render::RenderText("Ubuntu@22", disp_title, pu::ui::Color(255, 255, 255, 255));
@@ -565,15 +586,12 @@ namespace romm::ui {
                 if (nav) {
                     auto model = nav->GetModel();
                     if (model) {
-                        for (const auto& plat : model->GetPlatforms()) {
-                            for (const auto& game : plat.games) {
-                                if (game.id == g.rom_id) {
-                                    resolved_cover_source = game.cover_path_large;
-                                    if (resolved_cover_source.empty()) resolved_cover_source = game.cover_path;
-                                    break;
-                                }
-                            }
-                            if (!resolved_cover_source.empty()) break;
+                        // Searches hidden platforms too: an installed game keeps
+                        // its cover whether or not its platform is currently
+                        // shown in the browser.
+                        if (const auto* game = model->FindGameByRomId(g.rom_id)) {
+                            resolved_cover_source = game->cover_path_large;
+                            if (resolved_cover_source.empty()) resolved_cover_source = game->cover_path;
                         }
                         if (resolved_cover_source.empty()) {
                             const auto* detail = model->GetCachedDetail(g.rom_id);
@@ -712,7 +730,7 @@ namespace romm::ui {
         list_panel = InstalledListPanel::New(45, 230, 600, 750, nav);
         this->Add(list_panel);
 
-        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, "↑↓ Navigate     L/R Platform     A Options     B Back");
+        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, romm::i18n::tr("hint.installed"));
         hint_text->SetFont("Ubuntu@26");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         hint_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
@@ -830,6 +848,13 @@ namespace romm::ui {
     }
 
     void InstalledLayout::OnSelectionUpdated() {}
+
+    void InstalledLayout::RefreshTranslations() {
+        if (hint_text) hint_text->SetText(romm::i18n::tr("hint.installed"));
+        if (list_panel) list_panel->RefreshTranslations();
+        // Tab labels are platform names (RomM/catalogue identities), so the tab
+        // bar deliberately has nothing to re-translate.
+    }
 
     void InstalledLayout::ForceRefresh() {
         RebuildData();

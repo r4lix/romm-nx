@@ -1,5 +1,7 @@
 #include "LibraryMenuModal.hpp"
 #include "../model/ConfigManager.hpp"
+#include "../i18n/I18n.hpp"
+#include "SettingsLayout.hpp"
 
 namespace romm::ui {
 
@@ -31,7 +33,7 @@ namespace romm::ui {
         drawer->RenderRoundedRectangleFill(bg_color, panel_x + 4, panel_y + 4, PANEL_W - 8, panel_h - 8, 12);
 
         // Title
-        pu::sdl2::Texture tex_title = pu::ui::render::RenderText("Orbitron@30", "MENU", cream);
+        pu::sdl2::Texture tex_title = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("library_menu.title"), cream);
         if (tex_title) {
             drawer->RenderTexture(tex_title, panel_x + 40, panel_y + 30);
             pu::ui::render::DeleteTexture(tex_title);
@@ -46,15 +48,21 @@ namespace romm::ui {
                 platform_slug = platforms[plat_idx].slug;
             }
         }
-        std::string view_mode_label = "View Mode: " + config.GetGridViewModeString(platform_slug);
+        // The stored view-mode string is a config token ("Default"/"Big"/
+        // "Detail") — TranslateViewMode maps it to a display word without
+        // touching what gets written to config.json.
+        std::string view_mode_label = romm::i18n::format("library_menu.view_mode",
+            {{"mode", TranslateViewMode(config.GetGridViewModeString(platform_slug))}});
 
+        // The query is the user's own text, quoted as-is.
         const std::string& query = nav->GetSearchQueryDisplay();
-        const std::string search_note = query.empty() ? "None" : ("\"" + query + "\"");
+        const std::string search_note = query.empty() ? romm::i18n::tr("library_menu.search_none")
+                                                      : ("\"" + query + "\"");
 
         struct Row { std::string main; std::string note; };
         Row rows[LibraryMenuModal::GetRowCount()] = {
-            { "Search", search_note },
-            { "Sort", "Coming Soon" },
+            { romm::i18n::tr("library_menu.search"), search_note },
+            { romm::i18n::tr("library_menu.sort"), romm::i18n::tr("library_menu.coming_soon") },
             { view_mode_label, "" }
         };
 
@@ -88,7 +96,8 @@ namespace romm::ui {
             }
         }
 
-        std::string hint = (selected == 2) ? "A Cycle Mode   |   B Close" : "A Select   |   B Close";
+        std::string hint = romm::i18n::tr((selected == 2) ? "hint.library_menu.cycle"
+                                                          : "hint.library_menu.select");
         pu::sdl2::Texture tex_hints = pu::ui::render::RenderText("Ubuntu@20", hint, muted_color);
         if (tex_hints) {
             drawer->RenderTexture(tex_hints, panel_x + 40, panel_y + panel_h - 50);

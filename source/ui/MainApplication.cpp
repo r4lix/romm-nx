@@ -8,6 +8,7 @@
 #include "../model/AudioManager.hpp"
 #include "../model/NetworkStatus.hpp"
 #include "../model/DownloadManager.hpp"
+#include "../i18n/I18n.hpp"
 #include "LibraryLayout.hpp"
 #include "GameGrid.hpp"
 #include <iostream>
@@ -16,6 +17,13 @@
 namespace romm::ui {
 
     void MainApplication::OnLoad() {
+        // First thing in OnLoad, deliberately: Plutonium mounts RomFS in
+        // Renderer::Initialize() (which Application::Load() runs just before
+        // this), so romfs:/lang/*.json is readable here but not in main(), and
+        // every layout constructed further down already asks for translated
+        // strings.
+        romm::i18n::Initialize();
+
         std::cout << "[LOG] Loading Orbitron and Ubuntu fonts from RomFS" << std::endl;
         
         // Registered from a table rather than one block per size. These were

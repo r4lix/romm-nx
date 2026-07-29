@@ -109,6 +109,14 @@ namespace romm::ui {
         // on the render thread, so the scan thread parks them here (under
         // data_mutex) and OnRender frees them on its next pass.
         std::vector<FileEntry> retired_items;
+        // Stable identifiers for the contextual Options rows, parallel to the
+        // rendered labels below. Input handling branches on these ids — never on
+        // the label, which changes with the UI language.
+        enum class FileOption {
+            Mount, Open, Properties, Refresh,
+            CreateFolder, Rename, Delete, DeleteMarked
+        };
+        std::vector<FileOption> options_menu_ids;
         std::vector<std::string> options_menu_items;
         // Bulk-operation marks, keyed by absolute path. Cleared whenever the
         // listing changes directory — a mark the user can no longer see must
@@ -188,6 +196,8 @@ namespace romm::ui {
         void RebuildConfirmTextures();
         void ClearTextures();
         void RefreshStats();
+        // (Re)renders the language-dependent textures created at construction.
+        void BuildStaticTextures();
 
         // Dynamic drawing icons and UI helpers
         void DrawFolderIcon(pu::ui::render::Renderer::Ref &drawer, s32 x, s32 y, pu::ui::Color color);
@@ -200,6 +210,7 @@ namespace romm::ui {
         ~FileBrowserPane() override;
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void ForceRefresh();
         void CancelPendingScan();
 
@@ -231,6 +242,7 @@ namespace romm::ui {
         FileBrowserLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void ForceRefresh();
         void CancelPendingScan();
         void HandleInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos);

@@ -3,6 +3,7 @@
 #include "../model/DownloadManager.hpp"
 #include "../model/DataModel.hpp"
 #include "CoverCache.hpp"
+#include "../i18n/I18n.hpp"
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
@@ -23,9 +24,19 @@ namespace romm::ui {
     static std::string FormatEta(long long remaining_bytes, size_t bps) {
         if (bps == 0 || remaining_bytes <= 0) return "";
         long long secs = remaining_bytes / (long long)bps;
-        if (secs < 60) return std::to_string(secs) + "s";
-        if (secs < 3600) return std::to_string(secs / 60) + "m " + std::to_string(secs % 60) + "s";
-        return std::to_string(secs / 3600) + "h " + std::to_string((secs % 3600) / 60) + "m";
+        if (secs < 60) {
+            return romm::i18n::format("progress.eta.seconds", {{"seconds", std::to_string(secs)}});
+        }
+        if (secs < 3600) {
+            return romm::i18n::format("progress.eta.minutes", {
+                {"minutes", std::to_string(secs / 60)},
+                {"seconds", std::to_string(secs % 60)}
+            });
+        }
+        return romm::i18n::format("progress.eta.hours", {
+            {"hours", std::to_string(secs / 3600)},
+            {"minutes", std::to_string((secs % 3600) / 60)}
+        });
     }
 
     GlobalProgressBar::GlobalProgressBar(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
@@ -103,17 +114,19 @@ namespace romm::ui {
                     game_name = game_name.substr(0, last_dot);
                 }
             }
-            if (game_name.empty()) game_name = "ROM ID " + std::to_string(active_snap.rom_id);
+            // Game name is RomM data (or the on-disk filename): only truncated
+            // to fit the pill, never translated.
+            if (game_name.empty()) {
+                game_name = romm::i18n::format("progress.rom_id", {{"id", std::to_string(active_snap.rom_id)}});
+            }
             if (game_name.length() > 28) {
                 game_name = game_name.substr(0, 25) + "...";
             }
             cached_title = game_name;
 
-            const std::string queued_suffix =
-                (cached_pending > 0) ? ("  •  +" + std::to_string(cached_pending) + " queued") : "";
-
+            std::string sub;
             if (active_snap.state == romm::model::DownloadState::Preparing) {
-                cached_sub = "Preparing..." + queued_suffix;
+                sub = romm::i18n::tr("progress.preparing");
             } else if (active_snap.state == romm::model::DownloadState::DownloadingGame) {
                 long long downloaded = active_snap.downloaded_bytes.load();
                 if (active_snap.total_bytes > 0) {
@@ -123,19 +136,32 @@ namespace romm::ui {
                 size_t bps = active_snap.download_speed_bps.load();
                 int pct_int = (int)(cached_pct * 100);
 
-                std::string sub = std::to_string(pct_int) + "%  •  " + (bps > 0 ? FormatSpeed(bps) : "0.0 KB/s");
-                std::string eta = FormatEta(active_snap.total_bytes - downloaded, bps);
-                if (!eta.empty()) sub += "  •  ETA " + eta;
-                sub += queued_suffix;
-                cached_sub = sub;
+                const std::string eta = FormatEta(active_snap.total_bytes - downloaded, bps);
+                sub = romm::i18n::format(eta.empty() ? "progress.downloading" : "progress.downloading_eta", {
+                    {"percent", std::to_string(pct_int)},
+                    {"speed", bps > 0 ? FormatSpeed(bps) : "0.0 KB/s"},
+                    {"eta", eta}
+                });
             } else {
                 // DownloadingCover / SyncingCover: game payload is done
                 cached_pct = 1.0f;
-                cached_sub = "Cover Sync..." + queued_suffix;
+                sub = romm::i18n::tr("progress.cover_sync");
             }
+
+            // The queued-count tail is its own template taking the status as a
+            // placeholder, so the separator and word order stay translatable
+            // rather than being hardcoded here.
+            cached_sub = (cached_pending > 0)
+                ? romm::i18n::format("progress.with_queued", {
+                      {"status", sub},
+                      {"queued", std::to_string(cached_pending)}
+                  })
+                : sub;
         } else if (cached_pending > 0) {
-            cached_title = "Queue";
-            cached_sub = std::to_string(cached_pending) + " item" + (cached_pending > 1 ? "s" : "") + " queued";
+            cached_title = romm::i18n::tr("progress.queue");
+            cached_sub = romm::i18n::format(
+                cached_pending > 1 ? "progress.queued_items_plural" : "progress.queued_items",
+                {{"count", std::to_string(cached_pending)}});
         }
     }
 

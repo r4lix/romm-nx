@@ -8,6 +8,7 @@
 #include "UninstallConfirmModal.hpp"
 #include "../model/RommApi.hpp"
 #include "../model/ConfigManager.hpp"
+#include "../i18n/I18n.hpp"
 #include <sys/stat.h>
 #include "GlobalProgressBar.hpp"
 
@@ -363,24 +364,34 @@ namespace romm::ui {
         ClearTextures();
         pu::ui::Color text_color(237, 229, 251, 255); // #EDE5FB
         
-        tex_btn_download = pu::ui::render::RenderText("Orbitron@30", "DOWNLOAD", text_color);
-        tex_btn_preparing = pu::ui::render::RenderText("Orbitron@30", "PREPARING...", text_color);
-        tex_btn_downloaded = pu::ui::render::RenderText("Orbitron@30", "DOWNLOADED", text_color);
-        tex_btn_failed = pu::ui::render::RenderText("Orbitron@30", "RETRY", text_color);
-        tex_btn_unsupported = pu::ui::render::RenderText("Orbitron@30", "UNSUPPORTED", text_color);
-        
-        tex_btn_uninstall = pu::ui::render::RenderText("Orbitron@30", "UNINSTALL", text_color);
-        tex_btn_confirm_uninstall = pu::ui::render::RenderText("Orbitron@30", "CONFIRM? (A=Yes, B=No)", text_color);
-        tex_btn_add_to_queue = pu::ui::render::RenderText("Orbitron@30", "ADD TO QUEUE", text_color);
-        tex_btn_remove_from_queue = pu::ui::render::RenderText("Orbitron@30", "REMOVE FROM QUEUE", text_color);
+        // The action button is 430px wide; these labels are sized to fit there
+        // in every shipped language.
+        tex_btn_download = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.download"), text_color);
+        tex_btn_preparing = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.preparing"), text_color);
+        tex_btn_downloaded = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.downloaded"), text_color);
+        tex_btn_failed = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.retry"), text_color);
+        tex_btn_unsupported = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.unsupported"), text_color);
 
-        details_tex = pu::ui::render::RenderText("Orbitron@30", "DETAILS", text_color);
-        save_data_tex = pu::ui::render::RenderText("Orbitron@30", "SAVE DATA", text_color);
-        mods_tex = pu::ui::render::RenderText("Orbitron@30", "MODS", text_color);
-        cheats_tex = pu::ui::render::RenderText("Orbitron@30", "CHEATS", text_color);
+        tex_btn_uninstall = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.uninstall"), text_color);
+        tex_btn_confirm_uninstall = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.confirm_uninstall"), text_color);
+        tex_btn_add_to_queue = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.add_to_queue"), text_color);
+        tex_btn_remove_from_queue = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.remove_from_queue"), text_color);
 
-        cover_placeholder_tex = pu::ui::render::RenderText("Ubuntu@30", "NO IMAGE", text_color);
-        loading_tex = pu::ui::render::RenderText("Ubuntu@30", "LOADING...", text_color);
+        details_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.tab.details"), text_color);
+        save_data_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.tab.save_data"), text_color);
+        mods_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.tab.mods"), text_color);
+        cheats_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.tab.cheats"), text_color);
+
+        cover_placeholder_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("cover.no_image"), text_color);
+        loading_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("cover.loading"), text_color);
+    }
+
+    void DetailCard::RefreshTranslations() {
+        // InitTextures() clears first, and current_dynamic_text is reset so the
+        // in-progress "DOWNLOADING 42%" label re-renders on the next frame
+        // instead of comparing equal against the old-language string.
+        InitTextures();
+        current_dynamic_text.clear();
     }
 
     void DetailCard::ClearTextures() {
@@ -740,14 +751,15 @@ namespace romm::ui {
                     if (total > 0) {
                         progress_pct = (float)down / total;
                         int pct_int = (int)(progress_pct * 100);
-                        new_dynamic_text = "DOWNLOADING " + std::to_string(pct_int) + "%";
+                        new_dynamic_text = romm::i18n::format("detail.btn.downloading_percent",
+                                                              {{"percent", std::to_string(pct_int)}});
                     } else {
-                        new_dynamic_text = "DOWNLOADING...";
+                        new_dynamic_text = romm::i18n::tr("detail.btn.downloading");
                     }
                 } else if (task_snap.state == romm::model::DownloadState::DownloadingCover) {
-                    new_dynamic_text = "DOWNLOADING COVER...";
+                    new_dynamic_text = romm::i18n::tr("detail.btn.downloading_cover");
                 } else if (task_snap.state == romm::model::DownloadState::SyncingCover) {
-                    new_dynamic_text = "SYNCING COVER...";
+                    new_dynamic_text = romm::i18n::tr("detail.btn.syncing_cover");
                 } else {
                     active_btn_tex = tex_btn_preparing;
                 }
@@ -758,7 +770,7 @@ namespace romm::ui {
                     if (t.state == romm::model::DownloadState::Queued) q_pos++;
                     if (t.rom_id == rom_id) break;
                 }
-                new_dynamic_text = "QUEUED #" + std::to_string(q_pos);
+                new_dynamic_text = romm::i18n::format("detail.btn.queued", {{"position", std::to_string(q_pos)}});
             } else if (current_action_state == DownloadActionState::Failed) {
                 active_btn_tex = tex_btn_failed;
             } else if (current_action_state == DownloadActionState::AddToQueue) {
@@ -984,8 +996,11 @@ namespace romm::ui {
         card = DetailCard::New(150, 150, 1620, 780, nav);
         this->Add(card);
 
-        // Title (Orbitron Black, Very light text, moved right to x=660)
-        game_title_text = pu::ui::elm::TextBlock::New(660, 200, "Game Title");
+        // Title (Orbitron Black, Very light text, moved right to x=660).
+        // Starts empty: OnSelectionUpdated() fills it from the RomM game data,
+        // and a hardcoded English placeholder here would be an untranslated
+        // string with no dictionary entry behind it.
+        game_title_text = pu::ui::elm::TextBlock::New(660, 200, "");
         game_title_text->SetFont("Orbitron@45");
         game_title_text->SetColor(pu::ui::Color(237, 229, 251, 255));
         this->Add(game_title_text);
@@ -997,7 +1012,7 @@ namespace romm::ui {
         this->Add(platform_text);
 
         // Meta (Ubuntu, Light Lavender, moved down to x=660, y=280)
-        meta_text = pu::ui::elm::TextBlock::New(660, 280, "Metadata Info Line");
+        meta_text = pu::ui::elm::TextBlock::New(660, 280, "");
         meta_text->SetFont("Ubuntu@30");
         meta_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(meta_text);
@@ -1008,13 +1023,13 @@ namespace romm::ui {
         const s32 section_content_y = section_title_y + SECTION_TITLE_HEIGHT + SECTION_TITLE_TO_CONTENT_GAP; // 450
 
         // Description Section Header (Orbitron, Cream Accent)
-        desc_title_text = pu::ui::elm::TextBlock::New(660, section_title_y, "DESCRIPTION");
+        desc_title_text = pu::ui::elm::TextBlock::New(660, section_title_y, romm::i18n::tr("detail.section.description"));
         desc_title_text->SetFont("Orbitron@37");
         desc_title_text->SetColor(pu::ui::Color(230, 199, 167, 255));
         this->Add(desc_title_text);
 
         // Description Content (Ubuntu, Very light text)
-        desc_text = pu::ui::elm::TextBlock::New(660, section_content_y, "No description available.");
+        desc_text = pu::ui::elm::TextBlock::New(660, section_content_y, romm::i18n::tr("detail.no_description"));
         desc_text->SetFont("Ubuntu@30");
         desc_text->SetColor(pu::ui::Color(237, 229, 251, 255));
         this->Add(desc_text);
@@ -1035,10 +1050,18 @@ namespace romm::ui {
         this->Add(download_status_text);
 
         // Controller Hints (Ubuntu, Light Lavender)
-        hint_text = pu::ui::elm::TextBlock::New(660, 850, "B Return to Library");
+        hint_text = pu::ui::elm::TextBlock::New(660, 850, romm::i18n::tr("hint.detail.panel"));
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(hint_text);
+    }
+
+    void DetailLayout::RefreshTranslations() {
+        if (card) card->RefreshTranslations();
+        UpdateFooterHints();
+        // Repopulates the meta/description blocks in the new language. Cheap,
+        // and it keeps the currently-open game's panel consistent.
+        OnSelectionUpdated();
     }
 
     void DetailLayout::OnSelectionUpdated() {
@@ -1065,41 +1088,48 @@ namespace romm::ui {
 
         if (tab_idx == 0) { // DETAILS
             if (state == romm::model::DetailLoadState::Loading || state == romm::model::DetailLoadState::NotLoaded) {
-                meta_text->SetText("Loading details...");
-                desc_title_text->SetText("DESCRIPTION");
+                meta_text->SetText(romm::i18n::tr("detail.loading_details"));
+                desc_title_text->SetText(romm::i18n::tr("detail.section.description"));
                 desc_text->SetText("");
             } else if (state == romm::model::DetailLoadState::Failed) {
-                meta_text->SetText("Failed to load details from RomM.");
-                desc_title_text->SetText("DESCRIPTION");
+                meta_text->SetText(romm::i18n::tr("detail.load_failed"));
+                desc_title_text->SetText(romm::i18n::tr("detail.section.description"));
                 desc_text->SetText("");
             } else if (detail) {
-                std::string meta = "";
-                if (!detail->developer.empty()) meta += "Developer: " + detail->developer + "  |  ";
-                if (!detail->publisher.empty() && detail->publisher != detail->developer) meta += "Publisher: " + detail->publisher + "  |  ";
-                
-                std::string size_str = "Size: Unknown";
+                // Developer / publisher / size are RomM values; only the labels
+                // and separators around them are localized, via one whole
+                // template per combination of present fields.
+                std::string size_str = romm::i18n::tr("detail.meta.size_unknown");
                 if (detail->file_size_bytes > 0) {
+                    char buf[64];
                     double size_mb = (double)detail->file_size_bytes / (1024.0 * 1024.0);
-                    if (size_mb >= 1024.0) {
-                        char buf[64]; std::sprintf(buf, "%.2f GB", size_mb / 1024.0); size_str = buf;
-                    } else if (size_mb >= 1.0) {
-                        char buf[64]; std::sprintf(buf, "%.2f MB", size_mb); size_str = buf;
-                    } else {
+                    if (size_mb >= 1024.0)   std::sprintf(buf, "%.2f GB", size_mb / 1024.0);
+                    else if (size_mb >= 1.0) std::sprintf(buf, "%.2f MB", size_mb);
+                    else {
                         double size_kb = (double)detail->file_size_bytes / 1024.0;
-                        if (size_kb >= 1.0) {
-                            char buf[64]; std::sprintf(buf, "%.2f KB", size_kb); size_str = buf;
-                        } else {
-                            char buf[64]; std::sprintf(buf, "%lld B", detail->file_size_bytes); size_str = buf;
-                        }
+                        if (size_kb >= 1.0)  std::sprintf(buf, "%.2f KB", size_kb);
+                        else                 std::sprintf(buf, "%lld B", detail->file_size_bytes);
                     }
+                    size_str = romm::i18n::format("detail.meta.size", {{"size", buf}});
                 }
-                meta += size_str;
 
-                meta_text->SetText(meta);
-                desc_title_text->SetText("DESCRIPTION");
-                
+                const bool has_dev = !detail->developer.empty();
+                const bool has_pub = !detail->publisher.empty() && detail->publisher != detail->developer;
+                const char* meta_key =
+                    (has_dev && has_pub) ? "detail.meta.developer_publisher" :
+                    (has_dev)            ? "detail.meta.developer" :
+                    (has_pub)            ? "detail.meta.publisher" :
+                                           "detail.meta";
+                meta_text->SetText(romm::i18n::format(meta_key, {
+                    {"developer", detail->developer},
+                    {"publisher", detail->publisher},
+                    {"size", size_str}
+                }));
+                desc_title_text->SetText(romm::i18n::tr("detail.section.description"));
+
+                // RomM's description verbatim; only the empty-state line is ours.
                 std::string desc = detail->description;
-                if (desc.empty()) desc = "No description available.";
+                if (desc.empty()) desc = romm::i18n::tr("detail.no_description");
                 
                 std::cout << "[DETAIL] Description source rom=" << detail->rom_id << std::endl;
                 
@@ -1136,22 +1166,22 @@ namespace romm::ui {
         }
         else if (tab_idx == 1) { // SAVE DATA
             meta_text->SetText("");
-            desc_title_text->SetText("SAVE DATA");
-            desc_text->SetText("Coming later");
+            desc_title_text->SetText(romm::i18n::tr("detail.section.save_data"));
+            desc_text->SetText(romm::i18n::tr("detail.coming_later"));
             trailer_title_text->SetText("");
             UpdateFooterHints();
         }
         else if (tab_idx == 2) { // MODS
             meta_text->SetText("");
             desc_title_text->SetText("");
-            desc_text->SetText("Coming later");
+            desc_text->SetText(romm::i18n::tr("detail.coming_later"));
             trailer_title_text->SetText("");
             UpdateFooterHints();
         }
         else if (tab_idx == 3) { // CHEATS
             meta_text->SetText("");
             desc_title_text->SetText("");
-            desc_text->SetText("Coming later");
+            desc_text->SetText(romm::i18n::tr("detail.coming_later"));
             trailer_title_text->SetText("");
             UpdateFooterHints();
         }
@@ -1211,25 +1241,20 @@ namespace romm::ui {
         }
         
         auto focus = nav->GetDetailFocus();
-        std::string base_hints;
-        
-        if (focus == romm::navigation::DetailFocus::Cover) {
-            base_hints = "A Enlarge   |   Right Focus Panel   |   B Back";
-        } else {
-            std::string prefix = "";
-            if (has_image) {
-                prefix = "Left Focus Image   |   ";
-            }
-            
-            std::string desc_scroll = "";
-            if (maxDescriptionScrollOffset > 0) {
-                desc_scroll = "   |   R-Stick Scroll Desc";
-            }
-            
-            base_hints = prefix + "A Select / Focus   |   B Back / Library" + desc_scroll;
+
+        // Four whole hint lines rather than a base string with translated
+        // prefixes/suffixes glued on: which segments appear, and in what order,
+        // is a property of the sentence and belongs to the translator.
+        const char* key = "hint.detail.cover";
+        if (focus != romm::navigation::DetailFocus::Cover) {
+            const bool scrollable = (maxDescriptionScrollOffset > 0);
+            key = (has_image && scrollable) ? "hint.detail.panel_image_scroll"
+                : (has_image)               ? "hint.detail.panel_image"
+                : (scrollable)              ? "hint.detail.panel_scroll"
+                                            : "hint.detail.panel";
         }
-        
-        hint_text->SetText(base_hints);
+
+        hint_text->SetText(romm::i18n::tr(key));
     }
 
     // --- FullscreenImageElement Implementation ---
@@ -1426,11 +1451,11 @@ namespace romm::ui {
         DrawPlaceholderCover(drawer, GetPlaceholderCover(slug), box_x, box_y, box_w, box_h);
 
         if (any_pending) {
-            UpdateStatusText("Loading cover...");
+            UpdateStatusText(romm::i18n::tr("cover.fullscreen.loading"));
         } else if (any_transient_fail) {
-            UpdateStatusText("Cover unavailable - check your connection");
+            UpdateStatusText(romm::i18n::tr("cover.fullscreen.unavailable"));
         } else {
-            UpdateStatusText("No cover available for this game");
+            UpdateStatusText(romm::i18n::tr("cover.fullscreen.none"));
         }
 
         if (status_tex) {

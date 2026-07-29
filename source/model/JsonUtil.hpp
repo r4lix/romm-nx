@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -28,5 +29,11 @@ namespace romm::model {
     bool jsonExtractLongLong(const std::string& json, const std::string& key, long long& out);
     bool jsonExtractStringArray(const std::string& json, const std::string& key, std::vector<std::string>& out);
     bool jsonExtractBool(const std::string& json, const std::string& key, bool& out);
+
+    // Parses a top-level object whose values are all strings, i.e. exactly the
+    // shape of the i18n dictionaries in romfs:/lang/. Non-string values are
+    // skipped rather than treated as a parse failure. Returns false only if the
+    // document isn't a JSON object at all.
+    bool jsonParseFlatStringMap(const std::string& json, std::map<std::string, std::string>& out);
 }
 

@@ -18,7 +18,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	romm-nx
 BUILD		:=	build
-SOURCES		:=	source source/ui source/model source/navigation
+SOURCES		:=	source source/ui source/model source/navigation source/i18n
 DATA		:=	data
 INCLUDES	:=	include temp_plutonium/Plutonium/include
 ROMFS		:=	romfs
@@ -171,6 +171,12 @@ $(OUTPUT).nro	:	$(OUTPUT).elf
 endif
 
 $(OUTPUT).elf	:	$(OFILES)
+
+# APP_VERSION is scraped out of Version.hpp above, but libnx's stock
+# `%.nacp: $(MAKEFILE_LIST)` rule only knows about the Makefile — so bumping the
+# version alone used to leave the previous version baked into the NRO's nacp
+# metadata. Name the real source as a prerequisite so it regenerates.
+$(OUTPUT).nacp	:	$(TOPDIR)/source/Version.hpp
 
 $(OFILES_SRC)	: $(HFILES_BIN)
 

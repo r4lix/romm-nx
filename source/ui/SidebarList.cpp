@@ -1,4 +1,5 @@
 #include "SidebarList.hpp"
+#include "../i18n/I18n.hpp"
 
 namespace romm::ui {
 
@@ -19,12 +20,25 @@ namespace romm::ui {
 
         auto state = model->GetPlatformState();
         size_t count = model->GetPlatforms().size();
+        uint64_t generation = model->GetPlatformsGeneration();
+        uint64_t i18n_generation = romm::i18n::Generation();
 
-        if (state != cached_state || count != cached_platform_count) {
+        if (state != cached_state || count != cached_platform_count ||
+            generation != cached_platforms_generation ||
+            i18n_generation != cached_i18n_generation) {
             cached_state = state;
             cached_platform_count = count;
+            cached_platforms_generation = generation;
+            cached_i18n_generation = i18n_generation;
             InitTextures();
         }
+    }
+
+    void SidebarList::RefreshTranslations() {
+        // Only the status cards are localized — platform rows are RomM names.
+        // Refresh() re-checks the i18n generation, so this just forces the pass.
+        cached_i18n_generation = 0;
+        Refresh();
     }
 
     void SidebarList::InitTextures() {
@@ -39,49 +53,39 @@ namespace romm::ui {
         pu::ui::Color selected_clr(237, 229, 251, 255); // Very light text (#EDE5FB)
         pu::ui::Color unselected_clr(190, 180, 225, 255); // Light lavender (#BEB4E1)
 
+        // Every non-Success state draws a single status card; only the message
+        // differs, so pick the key first and render once.
+        auto push_row = [&](const std::string& text) {
+            selected_texs.push_back(pu::ui::render::RenderText(font_name, text, selected_clr, w - 50));
+            unselected_texs.push_back(pu::ui::render::RenderText(font_name, text, unselected_clr, w - 50));
+        };
+
         auto state = model->GetPlatformState();
-        if (state == romm::model::ApiState::WaitingNetwork) {
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Waiting for network...", selected_clr, w - 50);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Waiting for network...", unselected_clr, w - 50);
-            selected_texs.push_back(sel_tex);
-            unselected_texs.push_back(unsel_tex);
-        } else if (state == romm::model::ApiState::Loading) {
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Loading platforms...", selected_clr, w - 50);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Loading platforms...", unselected_clr, w - 50);
-            selected_texs.push_back(sel_tex);
-            unselected_texs.push_back(unsel_tex);
-        } else if (state == romm::model::ApiState::FailedConnect) {
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Failed to connect", selected_clr, w - 50);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Failed to connect", unselected_clr, w - 50);
-            selected_texs.push_back(sel_tex);
-            unselected_texs.push_back(unsel_tex);
-        } else if (state == romm::model::ApiState::Unauthorized) {
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Unauthorized / invalid API key", selected_clr, w - 50);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Unauthorized / invalid API key", unselected_clr, w - 50);
-            selected_texs.push_back(sel_tex);
-            unselected_texs.push_back(unsel_tex);
-        } else if (state == romm::model::ApiState::Success) {
+        if (state == romm::model::ApiState::Success) {
             const auto& plats = model->GetPlatforms();
             if (plats.empty()) {
-                pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "No platforms found", selected_clr, w - 50);
-                pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "No platforms found", unselected_clr, w - 50);
-                selected_texs.push_back(sel_tex);
-                unselected_texs.push_back(unsel_tex);
+                // The server may well have returned platforms — they're just
+                // all hidden. Say which of the two it is, so the fix ("go turn
+                // one back on") is obvious instead of looking like a fetch
+                // failure.
+                push_row(romm::i18n::tr(model->GetAllPlatforms().empty()
+                                            ? "status.no_platforms"
+                                            : "status.all_platforms_hidden_short"));
             } else {
                 for (const auto& plat : plats) {
-                    pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, plat.name, selected_clr, w - 50);
-                    pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, plat.name, unselected_clr, w - 50);
-                    selected_texs.push_back(sel_tex);
-                    unselected_texs.push_back(unsel_tex);
+                    // RomM data: rendered exactly as the server reported it.
+                    push_row(plat.name);
                 }
             }
-        } else {
-            // Idle or default
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, "Initializing...", selected_clr, w - 50);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, "Initializing...", unselected_clr, w - 50);
-            selected_texs.push_back(sel_tex);
-            unselected_texs.push_back(unsel_tex);
+            return;
         }
+
+        const char* status_key = "status.initializing"; // Idle or default
+        if (state == romm::model::ApiState::WaitingNetwork) status_key = "status.waiting_network_short";
+        else if (state == romm::model::ApiState::Loading) status_key = "status.loading_platforms";
+        else if (state == romm::model::ApiState::FailedConnect) status_key = "status.failed_connect";
+        else if (state == romm::model::ApiState::Unauthorized) status_key = "status.unauthorized";
+        push_row(romm::i18n::tr(status_key));
     }
 
     void SidebarList::ClearTextures() {

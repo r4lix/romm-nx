@@ -1,4 +1,5 @@
 #include "StatusBar.hpp"
+#include "../i18n/I18n.hpp"
 #include <switch.h>
 #include <sys/statvfs.h>
 #include <sstream>
@@ -58,7 +59,7 @@ namespace romm::ui {
         NifmInternetConnectionType type = (NifmInternetConnectionType)0;
         u32 wifi = 0;
         NifmInternetConnectionStatus status = (NifmInternetConnectionStatus)0;
-        std::string net_str = "Disconnected";
+        std::string net_str = romm::i18n::tr("statusbar.net.disconnected");
         net_connected = false;
         net_is_wifi_or_eth = false;
 
@@ -71,17 +72,17 @@ namespace romm::ui {
                 if (wifi >= 3) pct = 100;
                 else if (wifi == 2) pct = 66;
                 else if (wifi == 1) pct = 33;
-                net_str = "Wi-Fi (" + std::to_string(pct) + "%)";
+                net_str = romm::i18n::format("statusbar.net.wifi", {{"percent", std::to_string(pct)}});
             } else if (type == NifmInternetConnectionType_Ethernet) {
-                net_str = "Ethernet";
+                net_str = romm::i18n::tr("statusbar.net.ethernet");
             } else {
-                net_str = "Connected";
+                net_str = romm::i18n::tr("statusbar.net.connected");
             }
         }
         UpdateCached(net_text, net_str);
 
         // Battery
-        std::string batt_str = "100%";
+        std::string batt_str = romm::i18n::format("statusbar.battery", {{"percent", "100"}});
         battery_charging_state = false;
         battery_low_state = false;
         if (psm_ok) {
@@ -91,7 +92,9 @@ namespace romm::ui {
                 R_SUCCEEDED(psmGetChargerType(&charger))) {
                 battery_charging_state = (charger != PsmChargerType_Unconnected);
                 battery_low_state = (charge <= 20);
-                batt_str = std::to_string(charge) + "%" + (battery_charging_state ? " (Charging)" : "");
+                batt_str = romm::i18n::format(
+                    battery_charging_state ? "statusbar.battery.charging" : "statusbar.battery",
+                    {{"percent", std::to_string(charge)}});
             }
         }
         UpdateCached(battery_text, batt_str);
@@ -103,9 +106,13 @@ namespace romm::ui {
             free_gb = (double)vfs.f_bfree * vfs.f_frsize / (1024.0 * 1024.0 * 1024.0);
             total_gb = (double)vfs.f_blocks * vfs.f_frsize / (1024.0 * 1024.0 * 1024.0);
         }
-        std::ostringstream ss;
-        ss << std::fixed << std::setprecision(1) << free_gb << " GB / " << total_gb << " GB Free";
-        UpdateCached(storage_text, ss.str());
+        std::ostringstream free_ss, total_ss;
+        free_ss << std::fixed << std::setprecision(1) << free_gb;
+        total_ss << std::fixed << std::setprecision(1) << total_gb;
+        UpdateCached(storage_text, romm::i18n::format("statusbar.storage", {
+            {"free", free_ss.str()},
+            {"total", total_ss.str()}
+        }));
     }
 
     void StatusBar::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x_coord, const s32 y_coord) {

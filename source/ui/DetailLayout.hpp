@@ -162,6 +162,10 @@ namespace romm::ui {
         void SetContext(const DetailGameContext& context);
         void OnLeave();
 
+        // Re-rasterises the button/tab/placeholder labels after a language
+        // change — they're all pre-rendered at construction.
+        void RefreshTranslations();
+
         // Single source of truth for the tab count (Details/Save Data/Mods/
         // Cheats) — OnRender's tab strip and NavigationManager's Right-
         // navigation clamp both size against this instead of independently
@@ -219,6 +223,7 @@ namespace romm::ui {
         DetailLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void ScrollDescription(int direction);
         void UpdateDownloadStatus();
         void UpdateFooterHints();

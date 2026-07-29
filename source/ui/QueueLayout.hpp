@@ -52,6 +52,8 @@ namespace romm::ui {
         void RefreshList();
         // Footer hint matching the selected row's available action.
         std::string GetContextHint() const;
+        // Re-renders the empty-state text and every row's status line.
+        void RefreshTranslations();
 
         s32 GetX() override { return x; }
         s32 GetY() override { return y; }
@@ -82,6 +84,7 @@ namespace romm::ui {
         QueueLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void ForceRefresh();
         void HandleInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos);
 

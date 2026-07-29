@@ -1,5 +1,6 @@
 #include "UpdateAvailableModal.hpp"
 #include "../model/UpdateManager.hpp"
+#include "../i18n/I18n.hpp"
 
 namespace romm::ui {
 
@@ -26,16 +27,18 @@ namespace romm::ui {
         pu::ui::Color text_color(237, 229, 251, 255);
         pu::ui::Color sub_color(190, 180, 225, 255);
 
-        auto title_tex = pu::ui::render::RenderText("Orbitron@30", "Update available!", text_color);
+        auto title_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("modal.update.title"), text_color);
         if (title_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(title_tex);
             drawer->RenderTexture(title_tex, modal_x + (modal_w - tw) / 2, modal_y + 35);
             pu::ui::render::DeleteTexture(title_tex);
         }
 
-        std::string sub_text = manifest.version.empty() ?
-            "A new version of romm-nx is ready to install." :
-            "romm-nx v" + manifest.version + " is ready to install.";
+        // The version string comes from the update manifest, so it is a value,
+        // not a translatable word.
+        std::string sub_text = manifest.version.empty()
+            ? romm::i18n::tr("modal.update.body_generic")
+            : romm::i18n::format("modal.update.body", {{"version", manifest.version}});
         auto sub_tex = pu::ui::render::RenderText("Ubuntu@20", sub_text, sub_color);
         if (sub_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(sub_tex);
@@ -43,7 +46,7 @@ namespace romm::ui {
             pu::ui::render::DeleteTexture(sub_tex);
         }
 
-        auto btn_tex = pu::ui::render::RenderText("Orbitron@24", "A View Update        B Later", text_color);
+        auto btn_tex = pu::ui::render::RenderText("Orbitron@24", romm::i18n::tr("hint.modal.update"), text_color);
         if (btn_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(btn_tex);
             drawer->RenderTexture(btn_tex, modal_x + (modal_w - tw) / 2, modal_y + modal_h - 60);

@@ -34,6 +34,7 @@ namespace romm::ui {
         size_t info_cached_game_idx      = 999999;
         size_t info_cached_total         = 999999;
         size_t info_cached_sel_count     = 999999;
+        uint64_t info_cached_i18n_generation = 0;
 
         // Virtualized game list & scroll state
         std::vector<romm::model::Game> filtered_games;
@@ -114,6 +115,15 @@ namespace romm::ui {
 
         // Called by LibraryLayout whenever selection/state changes
         void OnSelectionUpdated();
+
+        // Drops every cached text texture so the next frame re-rasterises the
+        // status message, info strip, list rows and panel in the new language.
+        void RefreshTranslations();
+
+        // Forces the next OnSelectionUpdated() to rebuild the filtered list.
+        // Needed when the platform *behind* an index changes without the index
+        // moving — hiding a platform in Settings shifts the whole list up.
+        void InvalidatePlatformCache() { cached_selected_platform_idx = 999999; }
 
         // Authoritative column count for the currently-rendered grid — the
         // single source NavigationManager's row/col navigation math reads,

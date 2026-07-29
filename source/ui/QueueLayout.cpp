@@ -4,6 +4,7 @@
 #include "../model/DownloadManager.hpp"
 #include "GlobalProgressBar.hpp"
 #include "CoverCache.hpp"
+#include "../i18n/I18n.hpp"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -47,7 +48,7 @@ namespace romm::ui {
     static std::string MakeStatusString(const romm::model::DownloadTask& t) {
         switch (t.state.load()) {
             case romm::model::DownloadState::Preparing:
-                return "Preparing...";
+                return romm::i18n::tr("queue.status.preparing");
             case romm::model::DownloadState::DownloadingGame: {
                 float progress_pct = 0.0f;
                 if (t.total_bytes > 0) {
@@ -55,9 +56,11 @@ namespace romm::ui {
                 }
                 int pct_int = (int)(progress_pct * 100);
 
-                std::string speed_str = "Starting...";
+                std::string speed_str = romm::i18n::tr("queue.status.speed_starting");
                 size_t bps = t.download_speed_bps.load();
                 if (bps > 0) {
+                    // Transfer rate: a number plus an SI-style unit, identical
+                    // in every language romm-nx ships.
                     std::stringstream ss;
                     double speed_mbps = (double)bps / (1024.0 * 1024.0);
                     if (speed_mbps >= 1.0) {
@@ -67,24 +70,28 @@ namespace romm::ui {
                     }
                     speed_str = ss.str();
                 }
-                return "Downloading  •  " + std::to_string(pct_int) + "%  •  " + speed_str;
+                return romm::i18n::format("queue.status.downloading", {
+                    {"percent", std::to_string(pct_int)},
+                    {"speed", speed_str}
+                });
             }
             case romm::model::DownloadState::DownloadingCover:
             case romm::model::DownloadState::SyncingCover:
-                return "Cover Sync...";
+                return romm::i18n::tr("queue.status.cover_sync");
             case romm::model::DownloadState::Queued:
-                return "Queued";
+                return romm::i18n::tr("queue.status.queued");
             case romm::model::DownloadState::Completed:
-                return "Completed";
-            case romm::model::DownloadState::Failed: {
-                std::string s = "Failed";
-                if (!t.error_message.empty()) s += " (" + t.error_message + ")";
-                return s;
-            }
+                return romm::i18n::tr("queue.status.completed");
+            case romm::model::DownloadState::Failed:
+                // error_message is already localized by DownloadManager, except
+                // where it carries a curl/system string — see the note there.
+                return t.error_message.empty()
+                    ? romm::i18n::tr("queue.status.failed")
+                    : romm::i18n::format("queue.status.failed_reason", {{"reason", t.error_message}});
             case romm::model::DownloadState::Cancelled:
-                return "Cancelled";
+                return romm::i18n::tr("queue.status.cancelled");
             default:
-                return "Unknown";
+                return romm::i18n::tr("queue.status.unknown");
         }
     }
 
@@ -95,7 +102,16 @@ namespace romm::ui {
     QueueList::QueueList(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element(), x(x), y(y), w(w), h(h), nav_mgr(nav) {
         pu::ui::Color text_color(237, 229, 251, 255);
-        empty_tex = pu::ui::render::RenderText("Ubuntu@30", "Queue is empty.", text_color);
+        empty_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("queue.empty"), text_color);
+    }
+
+    void QueueList::RefreshTranslations() {
+        pu::ui::Color text_color(237, 229, 251, 255);
+        if (empty_tex) pu::ui::render::DeleteTexture(empty_tex);
+        empty_tex = pu::ui::render::RenderText("Ubuntu@30", romm::i18n::tr("queue.empty"), text_color);
+        // Row titles are game names, but the status lines under them are ours —
+        // a full rebuild is the simplest way to get both consistent.
+        BuildList();
     }
 
     QueueList::~QueueList() {
@@ -150,7 +166,10 @@ namespace romm::ui {
                     item.game_title = item.game_title.substr(0, last_dot);
                 }
             }
-            if (item.game_title.empty()) item.game_title = "ROM ID " + std::to_string(t.rom_id);
+            // Last resort when neither RomM nor the filesystem gave us a name.
+            if (item.game_title.empty()) {
+                item.game_title = romm::i18n::format("queue.rom_id", {{"id", std::to_string(t.rom_id)}});
+            }
 
             item.status_str = MakeStatusString(t);
             item.text_tex_selected = pu::ui::render::RenderText("Ubuntu@30", item.game_title, selected_clr, w - 120);
@@ -218,20 +237,20 @@ namespace romm::ui {
 
     std::string QueueList::GetContextHint() const {
         if (items.empty() || selected_idx >= items.size()) {
-            return "B Back";
+            return romm::i18n::tr("hint.queue.back");
         }
         auto st = items[selected_idx].task.state.load();
         if (IsActiveState(st)) {
-            return "A Cancel Download   |   X Clear Completed   |   B Back";
+            return romm::i18n::tr("hint.queue.cancel");
         }
         switch (st) {
             case romm::model::DownloadState::Failed:
             case romm::model::DownloadState::Cancelled:
-                return "A Retry   |   X Clear Completed   |   B Back";
+                return romm::i18n::tr("hint.queue.retry");
             case romm::model::DownloadState::Queued:
             case romm::model::DownloadState::Completed:
             default:
-                return "A Remove   |   X Clear Completed   |   B Back";
+                return romm::i18n::tr("hint.queue.remove");
         }
     }
 
@@ -359,13 +378,13 @@ namespace romm::ui {
 
         this->SetBackgroundColor(pu::ui::Color(16, 18, 22, 255));
 
-        header_text = pu::ui::elm::TextBlock::New(0, 90, "Download Queue");
+        header_text = pu::ui::elm::TextBlock::New(0, 90, romm::i18n::tr("queue.title"));
         header_text->SetFont("Orbitron@45");
         header_text->SetColor(pu::ui::Color(237, 229, 251, 255));
         header_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
         this->Add(header_text);
 
-        last_hint = "A Action   |   X Clear Completed   |   B Back";
+        last_hint = romm::i18n::tr("hint.queue.default");
         hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, last_hint);
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
@@ -395,6 +414,15 @@ namespace romm::ui {
 
     void QueueLayout::ForceRefresh() {
         if (list) list->BuildList();
+        UpdateHint();
+    }
+
+    void QueueLayout::RefreshTranslations() {
+        if (header_text) header_text->SetText(romm::i18n::tr("queue.title"));
+        if (list) list->RefreshTranslations();
+        // Clearing last_hint forces UpdateHint() past its "unchanged" check,
+        // which would otherwise keep the old-language footer.
+        last_hint.clear();
         UpdateHint();
     }
 

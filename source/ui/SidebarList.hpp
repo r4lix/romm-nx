@@ -21,6 +21,12 @@ namespace romm::ui {
 
         romm::model::ApiState cached_state = romm::model::ApiState::Idle;
         size_t cached_platform_count = 999999;
+        // Catches visibility changes that leave the count untouched (e.g. Reset
+        // Defaults hiding one platform and showing another).
+        uint64_t cached_platforms_generation = 0;
+        // Status cards ("Loading platforms...", "Failed to connect", ...) are
+        // pre-rendered, so a language switch has to invalidate them too.
+        uint64_t cached_i18n_generation = 0;
         int sidebar_scroll_offset = 0;
         int visible_platform_count = 13;
 
@@ -32,6 +38,7 @@ namespace romm::ui {
         ~SidebarList() override;
 
         void Refresh();
+        void RefreshTranslations();
 
         s32 GetX() override { return x; }
         s32 GetY() override { return y; }

@@ -3,25 +3,29 @@
 #include "GlobalProgressBar.hpp"
 #include "UpdateAvailableModal.hpp"
 #include "../model/UpdateManager.hpp"
+#include "../i18n/I18n.hpp"
 #include "../Version.hpp"
+#include <cctype>
 
 namespace romm::ui {
 
     // --- MenuGrid Implementation ---
 
+    // Card order is load-bearing (NavigationManager indexes menu entries by
+    // position), so the keys live in one ordered table rather than being spread
+    // across the constructor and the update-badge check below.
+    const char* const MenuGrid::kItemKeys[] = {
+        "menu.games",
+        "menu.installed",
+        "menu.queue",
+        "menu.saves",
+        "menu.file_browser",
+        "menu.settings"
+    };
+
     MenuGrid::MenuGrid(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element(), x(x), y(y), w(w), h(h), nav_mgr(nav),
           card_w(360), card_h(320), col_spacing(50), row_spacing(40), offset_x(165), offset_y(50) {
-        
-        item_names = {
-            "Games",
-            "Installed",
-            "Queue",
-            "Saves",
-            "File browser",
-            "Settings"
-        };
-
         InitTextures();
     }
 
@@ -31,20 +35,29 @@ namespace romm::ui {
 
     void MenuGrid::InitTextures() {
         ClearTextures();
-        
+
         // Use Orbitron for dashboard card text (bold & stylistic)
         std::string font_name = "Orbitron@37";
         pu::ui::Color selected_clr(237, 229, 251, 255); // Very light text (#EDE5FB)
         pu::ui::Color unselected_clr(190, 180, 225, 255); // Light lavender (#BEB4E1)
 
-        for (size_t i = 0; i < item_names.size(); ++i) {
-            s32 limit_w = (i < 4) ? 320 : 720;
-            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, item_names.at(i), selected_clr, limit_w);
-            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, item_names.at(i), unselected_clr, limit_w);
-            
+        for (size_t i = 0; i < GetItemCount(); ++i) {
+            // Row-1 cards are 360px wide; 340 keeps a 10px margin either side
+            // while giving longer translations ("File d'attente") the room they
+            // need. RenderText's width argument truncates rather than wraps, so
+            // a too-small limit shows an ellipsis instead of the label.
+            s32 limit_w = (i < 4) ? 340 : 720;
+            const std::string label = romm::i18n::tr(kItemKeys[i]);
+            pu::sdl2::Texture sel_tex = pu::ui::render::RenderText(font_name, label, selected_clr, limit_w);
+            pu::sdl2::Texture unsel_tex = pu::ui::render::RenderText(font_name, label, unselected_clr, limit_w);
+
             selected_texs.push_back(sel_tex);
             unselected_texs.push_back(unsel_tex);
         }
+    }
+
+    void MenuGrid::RefreshTranslations() {
+        InitTextures();
     }
 
     void MenuGrid::ClearTextures() {
@@ -79,7 +92,7 @@ namespace romm::ui {
         s32 row2_spacing = 50;
         s32 row2_start_x = x_coord + 165;
 
-        for (size_t i = 0; i < item_names.size(); ++i) {
+        for (size_t i = 0; i < GetItemCount(); ++i) {
             s32 card_x = 0;
             s32 card_y = 0;
             s32 card_w_val = 0;
@@ -130,7 +143,8 @@ namespace romm::ui {
 
             drawer->RenderTexture(text_tex, tx, ty);
 
-            if (item_names[i] == "Settings" &&
+            // Keyed off the card's identity, not its (now translated) label.
+            if (std::string(kItemKeys[i]) == "menu.settings" &&
                 romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) {
                 s32 dot_radius = 10;
                 drawer->RenderCircleFill(pu::ui::Color(231, 76, 60, 255), card_x + card_w_val - dot_radius - 14, card_y + dot_radius + 14, dot_radius);
@@ -153,13 +167,15 @@ namespace romm::ui {
         status_left->SetColor(pu::ui::Color(190, 180, 225, 255)); // Light lavender (#BEB4E1)
         this->Add(status_left);
 
-        auto status_right = pu::ui::elm::TextBlock::New(1920 - 160, 45, "EN");
-        status_right->SetFont("Ubuntu@30");
-        status_right->SetColor(pu::ui::Color(190, 180, 225, 255)); // Light lavender (#BEB4E1)
-        this->Add(status_right);
+        // Active UI language, upper-cased ("EN" / "FR"). A language code, not a
+        // translated word — it deliberately reads the same in every language.
+        language_text = pu::ui::elm::TextBlock::New(1920 - 160, 45, "EN");
+        language_text->SetFont("Ubuntu@30");
+        language_text->SetColor(pu::ui::Color(190, 180, 225, 255)); // Light lavender (#BEB4E1)
+        this->Add(language_text);
 
         // Header text block (Centered, Orbitron Black)
-        header_text = pu::ui::elm::TextBlock::New(0, 90, "Menu");
+        header_text = pu::ui::elm::TextBlock::New(0, 90, romm::i18n::tr("menu.title"));
         header_text->SetFont("Orbitron@45");
         header_text->SetColor(pu::ui::Color(237, 229, 251, 255)); // Very light text (#EDE5FB)
         header_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
@@ -170,7 +186,7 @@ namespace romm::ui {
         this->Add(grid);
 
         // Footer Hint (Centered, Ubuntu)
-        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, "A Select   |   + Exit");
+        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, romm::i18n::tr("hint.main_menu"));
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255)); // Light lavender (#BEB4E1)
         hint_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
@@ -183,10 +199,23 @@ namespace romm::ui {
         // Update-available popup — added last so it renders on top of everything else
         update_modal = UpdateAvailableModal::New(nav);
         this->Add(update_modal);
+
+        RefreshTranslations();
     }
 
     void MainMenuLayout::OnSelectionUpdated() {
         // Selection highlights update dynamically on redraw
+    }
+
+    void MainMenuLayout::RefreshTranslations() {
+        if (header_text) header_text->SetText(romm::i18n::tr("menu.title"));
+        if (hint_text) hint_text->SetText(romm::i18n::tr("hint.main_menu"));
+        if (language_text) {
+            std::string code = romm::i18n::GetLanguageCode();
+            for (auto& c : code) c = (char)toupper((unsigned char)c);
+            language_text->SetText(code);
+        }
+        if (grid) grid->RefreshTranslations();
     }
 
 }

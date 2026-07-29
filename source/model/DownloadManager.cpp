@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <fstream>
 #include "JsonUtil.hpp"
+#include "../i18n/I18n.hpp"
 
 namespace romm::model {
 
@@ -1338,21 +1339,21 @@ namespace romm::model {
             char fs_path[FS_MAX_PATH] = {0};
             if (fsdevTranslatePath(df.part_path.c_str(), &fs, fs_path) != 0) {
                 std::cerr << "[BigFile] Path translation failed: " << df.part_path << std::endl;
-                outcome.error_message = "Path translation failed";
+                outcome.error_message = romm::i18n::tr("download.error.path_translation");
                 return outcome;
             }
 
             Result rc = fsFsCreateFile(fs, fs_path, df.total_bytes, FsCreateOption_BigFile);
             std::cout << "[BigFile] create result=" << rc << std::endl;
             if (R_FAILED(rc)) {
-                outcome.error_message = "Failed to create BigFile (error " + std::to_string(rc) + ")";
+                outcome.error_message = romm::i18n::format("download.error.bigfile_create", {{"code", std::to_string(rc)}});
                 return outcome;
             }
 
             rc = fsFsOpenFile(fs, fs_path, FsOpenMode_Write, &writer.fs_file);
             if (R_FAILED(rc)) {
                 std::cerr << "[BigFile] Open file failed: " << rc << std::endl;
-                outcome.error_message = "Failed to open BigFile";
+                outcome.error_message = romm::i18n::tr("download.error.bigfile_open");
                 return outcome;
             }
             writer.fs_file_open = true;
@@ -1362,7 +1363,7 @@ namespace romm::model {
             writer.file_ptr = fopen(df.part_path.c_str(), "wb");
             if (!writer.file_ptr) {
                 std::cerr << "[Download] Could not open .part file for writing." << std::endl;
-                outcome.error_message = "Could not create part file";
+                outcome.error_message = romm::i18n::tr("download.error.part_file");
                 return outcome;
             }
             static char file_buf[512 * 1024];
@@ -1376,7 +1377,7 @@ namespace romm::model {
             } else {
                 fclose(writer.file_ptr);
             }
-            outcome.error_message = "Curl init failed";
+            outcome.error_message = romm::i18n::tr("download.error.curl_init");
             return outcome;
         }
 
@@ -1534,13 +1535,15 @@ namespace romm::model {
             DeleteLogicalFile(df.part_path);
             outcome.cancelled = cancel_requested.load();
             if (outcome.cancelled) {
-                outcome.error_message = "Cancelled";
+                outcome.error_message = romm::i18n::tr("download.error.cancelled");
             } else if (use_big_file && writer.last_write_error != 0) {
-                outcome.error_message = "Write error " + std::to_string(writer.last_write_error);
+                outcome.error_message = romm::i18n::format("download.error.write", {{"code", std::to_string(writer.last_write_error)}});
             } else if (res != CURLE_OK) {
+                // curl's own diagnostic string: produced by the library in English
+                // only, so it is passed through rather than mistranslated.
                 outcome.error_message = curl_easy_strerror(res);
             } else {
-                outcome.error_message = "Verification failed";
+                outcome.error_message = romm::i18n::tr("download.error.verification");
             }
             return outcome;
         }
@@ -1651,7 +1654,9 @@ namespace romm::model {
                     break;
                 }
                 if (!oc.success) {
-                    FailTask(rom_id, DownloadState::Failed, oc.error_message.empty() ? "Download failed" : oc.error_message);
+                    FailTask(rom_id, DownloadState::Failed,
+                             oc.error_message.empty() ? romm::i18n::tr("download.error.failed")
+                                                      : oc.error_message);
                     std::cout << "[Download] Failed: " << oc.error_message << std::endl;
                     ScreenWakeManager::Instance().RequestUpdate();
                     task_failed = true;

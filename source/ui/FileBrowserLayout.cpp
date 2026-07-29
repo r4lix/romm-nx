@@ -1,6 +1,7 @@
 #include "FileBrowserLayout.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "../model/ConfigManager.hpp"
+#include "../i18n/I18n.hpp"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -32,10 +33,7 @@ namespace romm::ui {
         
         std::cout << "[FILE_BROWSER] init_start" << std::endl;
         
-        loading_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Loading...", pu::ui::Color(190, 180, 225, 255));
-        empty_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Folder is empty.", pu::ui::Color(190, 180, 225, 255));
-        options_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "File Options", pu::ui::Color(255, 255, 255, 255));
-        confirm_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Delete Selected files?", pu::ui::Color(255, 255, 255, 255));
+        BuildStaticTextures();
 
         mkdir("sdmc:/switch", 0777);
         mkdir("sdmc:/switch/romm-nx", 0777);
@@ -53,6 +51,40 @@ namespace romm::ui {
     FileBrowserPane::~FileBrowserPane() {
         CancelPendingScan();
         ClearTextures();
+    }
+
+    void FileBrowserPane::BuildStaticTextures() {
+        if (loading_tex) { pu::ui::render::DeleteTexture(loading_tex); loading_tex = nullptr; }
+        if (empty_tex) { pu::ui::render::DeleteTexture(empty_tex); empty_tex = nullptr; }
+        if (options_title_tex) { pu::ui::render::DeleteTexture(options_title_tex); options_title_tex = nullptr; }
+        if (confirm_title_tex) { pu::ui::render::DeleteTexture(confirm_title_tex); confirm_title_tex = nullptr; }
+
+        loading_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), romm::i18n::tr("filebrowser.loading"), pu::ui::Color(190, 180, 225, 255));
+        empty_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), romm::i18n::tr("filebrowser.empty"), pu::ui::Color(190, 180, 225, 255));
+        options_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), romm::i18n::tr("filebrowser.options_title"), pu::ui::Color(255, 255, 255, 255));
+        confirm_title_str.clear(); // forces RebuildConfirmTextures() to re-render
+        confirm_title_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), romm::i18n::tr("filebrowser.confirm.title"), pu::ui::Color(255, 255, 255, 255));
+    }
+
+    void FileBrowserPane::RefreshTranslations() {
+        BuildStaticTextures();
+        // The footer button labels are cached by label text, so entries keyed on
+        // the old language would otherwise linger for the rest of the session.
+        for (auto& [key, tex] : button_text_cache) {
+            if (tex) pu::ui::render::DeleteTexture(tex);
+        }
+        button_text_cache.clear();
+        // The stats strings ("microSD 12.3 GB", "Wi-Fi 66 %") are cached by
+        // string value; re-deriving them is what re-translates them.
+        net1_cache.Clear();
+        net2_cache.Clear();
+        sd_cache.Clear();
+        sys_cache.Clear();
+        pos_cache.Clear();
+        error_cache.Clear();
+        RefreshStats();
+        BuildLocationsList();
+        OnSelectionUpdated();
     }
 
     void FileBrowserPane::ClearTextures() {
@@ -231,15 +263,15 @@ namespace romm::ui {
         };
 
         std::vector<LocDef> defs = {
-            {"SD Card Root", "sdmc:/"},
-            {"romm-nx Folder", "sdmc:/switch/romm-nx/"},
-            {"ROMs Folder", "sdmc:/roms/"}
+            {romm::i18n::tr("filebrowser.location.sd_root"), "sdmc:/"},
+            {romm::i18n::tr("filebrowser.location.romm_folder"), "sdmc:/switch/romm-nx/"},
+            {romm::i18n::tr("filebrowser.location.roms_folder"), "sdmc:/roms/"}
         };
 
         auto& config = romm::model::ConfigManager::Instance();
         std::string psp_path = config.GetRomPath("psp");
         if (!psp_path.empty() && psp_path != "sdmc:/roms/psp/") {
-            defs.push_back({"PSP ROMs Path", psp_path});
+            defs.push_back({romm::i18n::tr("filebrowser.location.psp_path"), psp_path});
         }
 
         pu::ui::Color selected_clr(237, 229, 251, 255);
@@ -254,7 +286,7 @@ namespace romm::ui {
 
             std::string display_name = d.name;
             if (!loc.exists) {
-                display_name += " (missing)";
+                display_name = romm::i18n::format("filebrowser.location.missing", {{"name", d.name}});
             }
 
             pu::ui::Color text_color = loc.exists ? unselected_clr : missing_clr;
@@ -297,7 +329,7 @@ namespace romm::ui {
                 if (!cancel_scan && active_gen == scan_generation_id && current_scan_path == path) {
                     is_loading = false;
                     load_failed = true;
-                    error_msg = "Could not open directory.";
+                    error_msg = romm::i18n::tr("filebrowser.error.open_dir");
                     needs_layout_update = true;
                     std::cout << "[FILE_BROWSER] error path=" << path << " message=Could not open directory." << std::endl;
                 } else {
@@ -424,7 +456,7 @@ namespace romm::ui {
         if (item.name == "..") {
             details_str = "";
         } else if (item.is_dir) {
-            details_str = "Folder";
+            details_str = romm::i18n::tr("filebrowser.type.folder");
         } else {
             std::string date_str = "";
             if (item.mtime > 0) {
@@ -523,31 +555,36 @@ namespace romm::ui {
                 const auto& loc = locations[selected_location_idx];
                 path = loc.path;
                 name = loc.name;
-                type = "Quick Location";
-                size = loc.exists ? "Directory exists" : "Directory missing";
+                type = romm::i18n::tr("filebrowser.type.quick_location");
+                size = romm::i18n::tr(loc.exists ? "filebrowser.type.dir_exists"
+                                                 : "filebrowser.type.dir_missing");
             }
         } else {
             std::lock_guard<std::mutex> lock(data_mutex);
             if (selected_file_idx < loaded_items.size()) {
                 const auto& item = loaded_items[selected_file_idx];
+                // Path and name are filesystem values, shown verbatim.
                 path = item.path;
                 name = item.name;
-                
+
                 if (item.name == "..") {
-                    type = "Navigation helper";
-                    size = "Parent directory link";
+                    type = romm::i18n::tr("filebrowser.type.nav_helper");
+                    size = romm::i18n::tr("filebrowser.type.parent_link");
                 } else if (item.is_dir) {
-                    type = "Folder";
+                    type = romm::i18n::tr("filebrowser.type.folder");
                     if (item.item_count >= 0) {
-                        size = std::to_string(item.item_count) + " items";
+                        size = romm::i18n::format("filebrowser.item_count",
+                                                  {{"count", std::to_string(item.item_count)}});
                     }
                 } else {
-                    type = "File";
                     size = FormatSize(item.size);
                     size_t last_dot = item.name.find_last_of('.');
-                    if (last_dot != std::string::npos) {
-                        type += " (" + item.name.substr(last_dot) + ")";
-                    }
+                    // The extension is part of the filename, so it goes in as a
+                    // value rather than being appended to a translated word.
+                    type = (last_dot != std::string::npos)
+                        ? romm::i18n::format("filebrowser.type.file_ext",
+                                             {{"extension", item.name.substr(last_dot)}})
+                        : romm::i18n::tr("filebrowser.type.file");
                 }
 
                 if (item.mtime > 0) {
@@ -566,13 +603,13 @@ namespace romm::ui {
 
         detail_texs.cached_path = path;
         detail_texs.name_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), name, title_color, 370);
-        detail_texs.type_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), "Type: " + type, text_color, 370);
-        detail_texs.path_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@18", "Ubuntu@20"), "Path: " + path, text_color, 370);
+        detail_texs.type_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), romm::i18n::format("filebrowser.detail.type", {{"type", type}}), text_color, 370);
+        detail_texs.path_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@18", "Ubuntu@20"), romm::i18n::format("filebrowser.detail.path", {{"path", path}}), text_color, 370);
         if (!size.empty()) {
-            detail_texs.size_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), "Size: " + size, text_color, 370);
+            detail_texs.size_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), romm::i18n::format("filebrowser.detail.size", {{"size", size}}), text_color, 370);
         }
         if (!time_str.empty()) {
-            detail_texs.time_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), "Modified: " + time_str, text_color, 370);
+            detail_texs.time_tex = pu::ui::render::RenderText(GetSafeFont("Ubuntu@20", "Ubuntu@18"), romm::i18n::format("filebrowser.detail.modified", {{"time", time_str}}), text_color, 370);
         }
     }
 
@@ -582,18 +619,26 @@ namespace romm::ui {
         options_texs_selected.clear();
         options_texs_unselected.clear();
         options_menu_items.clear();
+        options_menu_ids.clear();
 
         if (mount_val_tex_selected) { pu::ui::render::DeleteTexture(mount_val_tex_selected); mount_val_tex_selected = nullptr; }
         if (mount_val_tex_unselected) { pu::ui::render::DeleteTexture(mount_val_tex_unselected); mount_val_tex_unselected = nullptr; }
 
-        options_menu_items.push_back("Mount");
-        options_menu_items.push_back("Open");
-        options_menu_items.push_back("Properties");
-        options_menu_items.push_back("Refresh");
+        // Ids and labels are appended together so the two vectors can never
+        // drift out of step.
+        auto add_option = [this](FileOption id, const std::string& label) {
+            options_menu_ids.push_back(id);
+            options_menu_items.push_back(label);
+        };
+
+        add_option(FileOption::Mount, romm::i18n::tr("filebrowser.option.mount"));
+        add_option(FileOption::Open, romm::i18n::tr("filebrowser.option.open"));
+        add_option(FileOption::Properties, romm::i18n::tr("filebrowser.option.properties"));
+        add_option(FileOption::Refresh, romm::i18n::tr("filebrowser.option.refresh"));
 
         bool can_write = IsWritablePath(current_path);
         if (can_write) {
-            options_menu_items.push_back("Create Folder");
+            add_option(FileOption::CreateFolder, romm::i18n::tr("filebrowser.option.create_folder"));
             bool sel_is_mutable = false;
             {
                 std::lock_guard<std::mutex> lock(data_mutex);
@@ -601,11 +646,13 @@ namespace romm::ui {
                                  loaded_items[selected_file_idx].name != "..";
             }
             if (sel_is_mutable) {
-                options_menu_items.push_back("Rename");
-                options_menu_items.push_back("Delete");
+                add_option(FileOption::Rename, romm::i18n::tr("filebrowser.option.rename"));
+                add_option(FileOption::Delete, romm::i18n::tr("filebrowser.option.delete"));
             }
             if (!marked_paths.empty()) {
-                options_menu_items.push_back("Delete Marked (" + std::to_string(marked_paths.size()) + ")");
+                add_option(FileOption::DeleteMarked,
+                           romm::i18n::format("filebrowser.option.delete_marked",
+                                              {{"count", std::to_string(marked_paths.size())}}));
             }
         }
 
@@ -613,7 +660,11 @@ namespace romm::ui {
         pu::ui::Color unselected_clr(255, 255, 255, 255);
 
         // Pre-render mount name textures
-        std::string mount_names[] = { "microSD card", "romm-nx", "ROMs" };
+        std::string mount_names[] = {
+            romm::i18n::tr("filebrowser.mount.sd"),
+            romm::i18n::tr("filebrowser.mount.romm"),
+            romm::i18n::tr("filebrowser.mount.roms")
+        };
         std::string active_mount_name = mount_names[current_mount_idx % 3];
         mount_val_tex_selected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), active_mount_name, selected_clr);
         mount_val_tex_unselected = pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), active_mount_name, unselected_clr);
@@ -671,7 +722,7 @@ namespace romm::ui {
         confirm_texs_selected.clear();
         confirm_texs_unselected.clear();
 
-        confirm_menu_items = { "No", "Yes" };
+        confirm_menu_items = { romm::i18n::tr("common.no"), romm::i18n::tr("common.yes") };
 
         pu::ui::Color selected_clr(230, 199, 167, 255);
         pu::ui::Color unselected_clr(255, 255, 255, 255);
@@ -685,8 +736,10 @@ namespace romm::ui {
         // of an irreversible batch operation isn't a real confirmation.
         std::string title;
         if (confirm_is_bulk) {
-            title = "Delete " + std::to_string(marked_paths.size()) +
-                    (marked_paths.size() == 1 ? " marked item?" : " marked items?");
+            title = romm::i18n::format(
+                marked_paths.size() == 1 ? "filebrowser.confirm.bulk_one"
+                                         : "filebrowser.confirm.bulk_many",
+                {{"count", std::to_string(marked_paths.size())}});
         } else {
             std::string sel_name;
             {
@@ -695,7 +748,10 @@ namespace romm::ui {
                     sel_name = loaded_items[selected_file_idx].name;
                 }
             }
-            title = sel_name.empty() ? "Delete selected item?" : ("Delete \"" + sel_name + "\"?");
+            // The filename is quoted verbatim inside the localized prompt.
+            title = sel_name.empty()
+                ? romm::i18n::tr("filebrowser.confirm.single_generic")
+                : romm::i18n::format("filebrowser.confirm.single", {{"name", sel_name}});
         }
         if (title != confirm_title_str || !confirm_title_tex) {
             if (confirm_title_tex) pu::ui::render::DeleteTexture(confirm_title_tex);
@@ -715,7 +771,7 @@ namespace romm::ui {
     }
 
     void FileBrowserPane::RefreshStats() {
-        cached_net_info.status_line1 = "Disconnected";
+        cached_net_info.status_line1 = romm::i18n::tr("filebrowser.net.disconnected");
         cached_net_info.status_line2 = "0.0.0.0";
         
         NifmInternetConnectionType type = (NifmInternetConnectionType)0;
@@ -728,11 +784,11 @@ namespace romm::ui {
                     if (wifi >= 3) pct = 100;
                     else if (wifi == 2) pct = 66;
                     else if (wifi == 1) pct = 33;
-                    cached_net_info.status_line1 = "Wi-Fi " + std::to_string(pct) + "%";
+                    cached_net_info.status_line1 = romm::i18n::format("filebrowser.net.wifi", {{"percent", std::to_string(pct)}});
                 } else if (type == NifmInternetConnectionType_Ethernet) {
-                    cached_net_info.status_line1 = "Ethernet";
+                    cached_net_info.status_line1 = romm::i18n::tr("filebrowser.net.ethernet");
                 } else {
-                    cached_net_info.status_line1 = "Connected";
+                    cached_net_info.status_line1 = romm::i18n::tr("filebrowser.net.connected");
                 }
                 
                 u32 ip = 0;
@@ -892,8 +948,8 @@ namespace romm::ui {
 
         // microSD space
         char sd_buf[64];
-        std::sprintf(sd_buf, "microSD %.1f GB", cached_store_info.sd_free);
-        auto sd_tex = UpdateCachedText(sd_cache, sd_buf, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
+        std::sprintf(sd_buf, "%.1f", cached_store_info.sd_free);
+        auto sd_tex = UpdateCachedText(sd_cache, romm::i18n::format("filebrowser.storage.microsd", {{"size", sd_buf}}), GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (sd_tex) {
             drawer->RenderTexture(sd_tex, 1350, 60);
         }
@@ -908,8 +964,8 @@ namespace romm::ui {
 
         // NAND (System) space
         char sys_buf[64];
-        std::sprintf(sys_buf, "System %.1f GB", cached_store_info.sys_free);
-        auto sys_tex = UpdateCachedText(sys_cache, sys_buf, GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
+        std::sprintf(sys_buf, "%.1f", cached_store_info.sys_free);
+        auto sys_tex = UpdateCachedText(sys_cache, romm::i18n::format("filebrowser.storage.system", {{"size", sys_buf}}), GetSafeFont("Ubuntu@20", "Ubuntu@24"), pu::ui::Color(190, 180, 225, 255));
         if (sys_tex) {
             drawer->RenderTexture(sys_tex, 1620, 60);
         }
@@ -941,7 +997,7 @@ namespace romm::ui {
             drawer->RenderTexture(loading_tex, x_coord + (1800 - tw) / 2, y_coord + (760 - th) / 2);
         } else if (load_failed) {
             pu::ui::Color red_clr(231, 76, 60, 255);
-            auto err_tex = UpdateCachedText(error_cache, error_msg.empty() ? "Failed to read path." : error_msg, GetSafeFont("Ubuntu@30", "Ubuntu@24"), red_clr);
+            auto err_tex = UpdateCachedText(error_cache, error_msg.empty() ? romm::i18n::tr("filebrowser.error.read_path") : error_msg, GetSafeFont("Ubuntu@30", "Ubuntu@24"), red_clr);
             if (err_tex) {
                 s32 tw = pu::ui::render::GetTextureWidth(err_tex);
                 s32 th = pu::ui::render::GetTextureHeight(err_tex);
@@ -1064,7 +1120,7 @@ namespace romm::ui {
                     }
                 }
 
-                if (options_menu_items[i] == "Mount") {
+                if (i < options_menu_ids.size() && options_menu_ids[i] == FileOption::Mount) {
                     auto val_tex = is_opt_selected ? mount_val_tex_selected : mount_val_tex_unselected;
                     if (val_tex) {
                         s32 val_w = pu::ui::render::GetTextureWidth(val_tex);
@@ -1158,11 +1214,16 @@ namespace romm::ui {
         };
         std::vector<FooterBtn> btns;
         if (active_focus == FileBrowserFocus::OptionsMenu) {
-            btns = { {"B", "Close"}, {"A", "OK"} };
+            btns = { {"B", romm::i18n::tr("filebrowser.footer.close")},
+                     {"A", romm::i18n::tr("filebrowser.footer.ok")} };
         } else if (active_focus == FileBrowserFocus::DeleteConfirm) {
-            btns = { {"B", "Cancel"}, {"A", "Confirm"} };
+            btns = { {"B", romm::i18n::tr("filebrowser.footer.cancel")},
+                     {"A", romm::i18n::tr("filebrowser.footer.confirm")} };
         } else {
-            btns = { {"Y", "Options"}, {"X", "Mark"}, {"B", "Back"}, {"A", "Open"} };
+            btns = { {"Y", romm::i18n::tr("filebrowser.footer.options")},
+                     {"X", romm::i18n::tr("filebrowser.footer.mark")},
+                     {"B", romm::i18n::tr("filebrowser.footer.back")},
+                     {"A", romm::i18n::tr("filebrowser.footer.open")} };
         }
 
         s32 total_w = 0;
@@ -1331,9 +1392,10 @@ namespace romm::ui {
                 OnSelectionUpdated();
             }
             if (keys_down & HidNpadButton_A) {
-                std::string option = options_menu_items[selected_option_idx];
-                
-                if (option == "Mount") {
+                if (selected_option_idx >= options_menu_ids.size()) return;
+                const FileOption option = options_menu_ids[selected_option_idx];
+
+                if (option == FileOption::Mount) {
                     current_mount_idx = (current_mount_idx + 1) % 3;
                     std::string mount_paths[] = { "sdmc:/", "sdmc:/switch/romm-nx/", "sdmc:/roms/" };
                     current_path = mount_paths[current_mount_idx];
@@ -1345,11 +1407,11 @@ namespace romm::ui {
                     file_scroll_offset = 0;
                     OnSelectionUpdated();
                 }
-                else if (option == "Open") {
+                else if (option == FileOption::Open) {
                     active_focus = FileBrowserFocus::Files;
                     HandleInput(HidNpadButton_A, 0); // Trigger standard Open behavior
                 }
-                else if (option == "Properties") {
+                else if (option == FileOption::Properties) {
                     if (has_sel) {
                         pu::ui::Color text_clr(255, 255, 255, 255);
                         pu::ui::Color title_clr(230, 199, 167, 255); // Cream Accent
@@ -1359,27 +1421,31 @@ namespace romm::ui {
                         }
                         properties_texs.clear();
 
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), "Item Properties", title_clr));
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Name: " + sel_item.name, text_clr, 720));
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Type: " + (sel_item.is_dir ? std::string("Folder") : std::string("File")), text_clr, 720));
+                        // Name, size and path are filesystem values; only the
+                        // field labels around them are localized.
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@30", "Ubuntu@24"), romm::i18n::tr("filebrowser.properties.title"), title_clr));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), romm::i18n::format("filebrowser.detail.name", {{"name", sel_item.name}}), text_clr, 720));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), romm::i18n::format("filebrowser.detail.type", {{"type", romm::i18n::tr(sel_item.is_dir ? "filebrowser.type.folder" : "filebrowser.type.file")}}), text_clr, 720));
                         if (!sel_item.is_dir) {
-                            properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Size: " + FormatSize(sel_item.size), text_clr, 720));
+                            properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), romm::i18n::format("filebrowser.detail.size", {{"size", FormatSize(sel_item.size)}}), text_clr, 720));
                         }
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "Path: " + sel_item.path, text_clr, 720));
-                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), "OK", title_clr));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), romm::i18n::format("filebrowser.detail.path", {{"path", sel_item.path}}), text_clr, 720));
+                        properties_texs.push_back(pu::ui::render::RenderText(GetSafeFont("Ubuntu@24", "Ubuntu@20"), romm::i18n::tr("common.ok"), title_clr));
 
                         active_focus = FileBrowserFocus::PropertiesModal;
                         OnSelectionUpdated();
                     }
                 }
-                else if (option == "Refresh") {
+                else if (option == FileOption::Refresh) {
                     ForceRefresh();
                     active_focus = FileBrowserFocus::Files;
                     OnSelectionUpdated();
                 }
-                else if (option == "Create Folder") {
+                else if (option == FileOption::CreateFolder) {
                     if (IsWritablePath(current_path)) {
-                        std::string new_folder_name = nav->ShowKeyboard("Create Folder", "Enter folder name:", "");
+                        std::string new_folder_name = nav->ShowKeyboard(
+                            romm::i18n::tr("filebrowser.keyboard.create_folder.header"),
+                            romm::i18n::tr("filebrowser.keyboard.create_folder.subtext"), "");
                         if (!new_folder_name.empty()) {
                             if (IsValidName(new_folder_name)) {
                                 std::string target = current_path;
@@ -1394,25 +1460,27 @@ namespace romm::ui {
                                         ForceRefresh();
                                         active_focus = FileBrowserFocus::Files;
                                     } else {
-                                        nav->ShowKeyboard("Error", "Could not create directory. Already exists?", "");
+                                        nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.create_dir"), "");
                                     }
                                 } else {
                                     std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=write_not_allowed" << std::endl;
-                                    nav->ShowKeyboard("Error", "Writes are limited to the ROMs folder. See Settings > File browser writes.", "");
+                                    nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.write_scope"), "");
                                 }
                             } else {
-                                nav->ShowKeyboard("Error", "Invalid name. Avoid symbols / \\ : * ? \" < > | ..", "");
+                                nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.invalid_name"), "");
                             }
                         }
                     } else {
                         std::cout << "[FILE_BROWSER] blocked_write path=" << current_path << " reason=write_not_allowed" << std::endl;
                     }
                 }
-                else if (option == "Rename") {
+                else if (option == FileOption::Rename) {
                     if (has_sel) {
                         const auto& item = sel_item;
                         if (IsWritablePath(item.path)) {
-                            std::string new_name = nav->ShowKeyboard("Rename Item", "Enter new name:", item.name);
+                            std::string new_name = nav->ShowKeyboard(
+                                romm::i18n::tr("filebrowser.keyboard.rename.header"),
+                                romm::i18n::tr("filebrowser.keyboard.rename.subtext"), item.name);
                             if (!new_name.empty() && new_name != item.name) {
                                 if (IsValidName(new_name)) {
                                     std::string target = current_path;
@@ -1423,7 +1491,7 @@ namespace romm::ui {
                                     if (IsWritablePath(target)) {
                                         struct stat buf;
                                         if (stat(target.c_str(), &buf) == 0) {
-                                            nav->ShowKeyboard("Error", "Target path already exists. Overwrite blocked.", "");
+                                            nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.target_exists"), "");
                                         } else {
                                             int rc = rename(item.path.c_str(), target.c_str());
                                             if (rc == 0) {
@@ -1431,15 +1499,15 @@ namespace romm::ui {
                                                 ForceRefresh();
                                                 active_focus = FileBrowserFocus::Files;
                                             } else {
-                                                nav->ShowKeyboard("Error", "Could not rename item.", "");
+                                                nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.rename"), "");
                                             }
                                         }
                                     } else {
                                         std::cout << "[FILE_BROWSER] blocked_write path=" << target << " reason=write_not_allowed" << std::endl;
-                                        nav->ShowKeyboard("Error", "Writes are limited to the ROMs folder. See Settings > File browser writes.", "");
+                                        nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.write_scope"), "");
                                     }
                                 } else {
-                                    nav->ShowKeyboard("Error", "Invalid name. Avoid symbols / \\ : * ? \" < > | ..", "");
+                                    nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.invalid_name"), "");
                                 }
                             }
                         } else {
@@ -1447,14 +1515,14 @@ namespace romm::ui {
                         }
                     }
                 }
-                else if (option == "Delete") {
+                else if (option == FileOption::Delete) {
                     // Open Delete Confirm submenu, defaulting to the safe answer.
                     confirm_is_bulk = false;
                     selected_confirm_idx = 0; // "No"
                     active_focus = FileBrowserFocus::DeleteConfirm;
                     OnSelectionUpdated();
                 }
-                else if (option.rfind("Delete Marked", 0) == 0) {
+                else if (option == FileOption::DeleteMarked) {
                     confirm_is_bulk = true;
                     selected_confirm_idx = 0; // "No"
                     active_focus = FileBrowserFocus::DeleteConfirm;
@@ -1509,11 +1577,13 @@ namespace romm::ui {
                     confirm_is_bulk = false;
 
                     if (blocked || not_empty || failed) {
-                        std::string msg = "Deleted " + std::to_string(ok) + ".";
-                        if (blocked)   msg += "  " + std::to_string(blocked) + " outside writable folder.";
-                        if (not_empty) msg += "  " + std::to_string(not_empty) + " folder(s) not empty.";
-                        if (failed)    msg += "  " + std::to_string(failed) + " failed.";
-                        nav->ShowKeyboard("Delete results", msg, "");
+                        // Independent sentences joined by a space — each one is
+                        // a complete localized message, not a fragment.
+                        std::string msg = romm::i18n::format("filebrowser.delete_results.deleted", {{"count", std::to_string(ok)}});
+                        if (blocked)   msg += "  " + romm::i18n::format("filebrowser.delete_results.blocked", {{"count", std::to_string(blocked)}});
+                        if (not_empty) msg += "  " + romm::i18n::format("filebrowser.delete_results.not_empty", {{"count", std::to_string(not_empty)}});
+                        if (failed)    msg += "  " + romm::i18n::format("filebrowser.delete_results.failed", {{"count", std::to_string(failed)}});
+                        nav->ShowKeyboard(romm::i18n::tr("filebrowser.delete_results.title"), msg, "");
                     }
 
                     ForceRefresh();
@@ -1541,7 +1611,7 @@ namespace romm::ui {
                                 if (count == 0) {
                                     rc = rmdir(item.path.c_str());
                                 } else {
-                                    nav->ShowKeyboard("Error", "Folder is not empty. Recursive delete is disabled.", "");
+                                    nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.not_empty"), "");
                                     active_focus = FileBrowserFocus::OptionsMenu;
                                     OnSelectionUpdated();
                                     return;
@@ -1556,7 +1626,7 @@ namespace romm::ui {
                                 ForceRefresh();
                                 active_focus = FileBrowserFocus::Files;
                             } else {
-                                nav->ShowKeyboard("Error", "Could not delete item.", "");
+                                nav->ShowKeyboard(romm::i18n::tr("common.error"), romm::i18n::tr("filebrowser.error.delete"), "");
                                 active_focus = FileBrowserFocus::OptionsMenu;
                                 OnSelectionUpdated();
                             }
@@ -1591,7 +1661,7 @@ namespace romm::ui {
         
         this->SetBackgroundColor(pu::ui::Color(10, 11, 14, 255));
 
-        header_text = pu::ui::elm::TextBlock::New(60, 55, "FileBrowser (beta)");
+        header_text = pu::ui::elm::TextBlock::New(60, 55, romm::i18n::tr("filebrowser.title"));
         header_text->SetFont(GetSafeFont("Ubuntu@30", "Ubuntu@24"));
         header_text->SetColor(pu::ui::Color(255, 255, 255, 255));
         this->Add(header_text);
@@ -1613,6 +1683,12 @@ namespace romm::ui {
 
     void FileBrowserLayout::ForceRefresh() {
         if (pane) pane->ForceRefresh();
+    }
+
+    void FileBrowserLayout::RefreshTranslations() {
+        if (header_text) header_text->SetText(romm::i18n::tr("filebrowser.title"));
+        if (pane) pane->RefreshTranslations();
+        // path_text holds a filesystem path — nothing to translate.
     }
 
     void FileBrowserLayout::CancelPendingScan() {

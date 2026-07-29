@@ -1,4 +1,5 @@
 #include "UninstallConfirmModal.hpp"
+#include "../i18n/I18n.hpp"
 
 namespace romm::ui {
 
@@ -25,14 +26,15 @@ namespace romm::ui {
             pu::ui::Color text_color(237, 229, 251, 255);
             
             // Title
-            pu::sdl2::Texture tex_title = pu::ui::render::RenderText("Orbitron@30", "Uninstall game?", text_color);
+            pu::sdl2::Texture tex_title = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("modal.uninstall.title"), text_color);
             if (tex_title) {
                 s32 tw = pu::ui::render::GetTextureWidth(tex_title);
                 drawer->RenderTexture(tex_title, modal_x + (modal_w - tw) / 2, modal_y + 30);
                 pu::ui::render::DeleteTexture(tex_title);
             }
 
-            // Subtitle (Filename)
+            // Subtitle: the game's own title (or its filename) — RomM data,
+            // shown exactly as stored, never translated.
             pu::sdl2::Texture tex_file = pu::ui::render::RenderText("Ubuntu-Regular@22", payload.title.empty() ? payload.filename : payload.title, pu::ui::Color(180, 180, 180, 255));
             if (tex_file) {
                 s32 tw = pu::ui::render::GetTextureWidth(tex_file);
@@ -41,7 +43,7 @@ namespace romm::ui {
             }
 
             // Buttons Line
-            pu::sdl2::Texture tex_buttons = pu::ui::render::RenderText("Orbitron@24", "A Confirm         B Cancel", text_color);
+            pu::sdl2::Texture tex_buttons = pu::ui::render::RenderText("Orbitron@24", romm::i18n::tr("hint.modal.uninstall"), text_color);
             if (tex_buttons) {
                 s32 tw = pu::ui::render::GetTextureWidth(tex_buttons);
                 drawer->RenderTexture(tex_buttons, modal_x + (modal_w - tw) / 2, modal_y + 160);

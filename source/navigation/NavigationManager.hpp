@@ -144,6 +144,12 @@ namespace romm::navigation {
         NavigationManager(pu::ui::Application* app, std::shared_ptr<romm::model::DataModel> model);
         
         void Initialize();
+
+        // Re-applies every visible string after the UI language changes. This
+        // is the one refresh path — Settings calls it, nothing else re-reads
+        // translations on its own.
+        void RefreshTranslations();
+
         void HandleInput(const u64 keys_down, const u64 keys_held);
         static std::string ShowKeyboard(const std::string& header, const std::string& subtext, const std::string& initial_text);
         
@@ -189,6 +195,12 @@ namespace romm::navigation {
         void SetSelectedSettingsOptionIdx(size_t idx) { selected_settings_option_idx = idx; }
         romm::ui::SettingsFocusArea GetSettingsFocus() const { return settings_focus; }
         void SetSettingsFocus(romm::ui::SettingsFocusArea focus) { settings_focus = focus; }
+
+        // Called after Settings > Platforms changes what's visible. Re-filters
+        // the model and re-anchors the library's selection on the platforms
+        // themselves rather than on stale indices, so a hidden platform can't
+        // leave the cursor pointing at the wrong entry (or past the end).
+        void ApplyPlatformVisibilityChange();
 
         size_t GetSelectedRomPathPlatformIdx() const { return selected_rom_path_platform_idx; }
         void SetSelectedRomPathPlatformIdx(size_t idx) { selected_rom_path_platform_idx = idx; }

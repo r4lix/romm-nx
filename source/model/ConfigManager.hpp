@@ -2,6 +2,8 @@
 
 #include <string>
 #include <map>
+#include <set>
+#include <vector>
 
 namespace romm::model {
     
@@ -39,7 +41,10 @@ namespace romm::model {
 
         std::string GetMaskedApiKey() const;
 
-        // General settings
+        // General settings.
+        // UI language: "auto" (follow the console), "en" or "fr". A config file
+        // written before this setting existed has no key at all, which is
+        // exactly the "auto" case — see the default below.
         const std::string& GetLanguage() const { return language; }
         void SetLanguage(const std::string& lang) { language = lang; }
 
@@ -132,6 +137,29 @@ namespace romm::model {
         std::string GetRomPath(const std::string& platform) const;
         void SetRomPath(const std::string& platform, const std::string& path);
 
+        // --- Platform visibility (Settings > Platforms) -------------------
+        // Purely a UI filter over the platform browser: nothing here touches
+        // ROM files, installed_index.json, download paths, covers or cache.
+        // Keyed by NormalizePlatformId(), so aliases of the same platform
+        // share one entry; accepts a raw RomM slug or a display name.
+        bool IsPlatformVisible(const std::string& slug) const;
+        void SetPlatformVisible(const std::string& slug, bool visible);
+        // Restores the shipped default-visible / default-hidden lists. Any
+        // platform outside the catalogue goes back to hidden.
+        void ResetPlatformVisibilityDefaults();
+        // Unhides everything currently known, catalogue or server-detected.
+        void ShowAllPlatforms();
+
+        // Records the platforms the server just returned. Ones seen for the
+        // first time take their catalogue default (unknown => hidden), which
+        // is what makes "hidden by default" stick without re-hiding a platform
+        // the user has since enabled. Returns true if anything changed, so the
+        // caller can Save() exactly once.
+        bool RegisterDetectedPlatforms(const std::vector<std::string>& slugs);
+
+        const std::set<std::string>& GetHiddenPlatformIds() const { return hidden_platforms; }
+        const std::set<std::string>& GetKnownPlatformIds() const { return known_platforms; }
+
     private:
         ConfigManager();
 
@@ -141,7 +169,7 @@ namespace romm::model {
         bool is_valid = false;
         std::string error_message;
 
-        std::string language = "en";
+        std::string language = "auto";
         std::string theme = "romm_brand";
         CoversQuality covers_quality = CoversQuality::Balanced;
         GridViewMode grid_view_mode = GridViewMode::Default;
@@ -169,6 +197,13 @@ namespace romm::model {
 
         std::map<std::string, std::string> rom_paths;
         std::map<std::string, GridViewMode> platform_grid_view_mode;
+
+        // Canonical ids the user has hidden from the platform browser, and
+        // every canonical id romm-nx has ever seen. The second list is what
+        // lets a *newly* detected platform default to hidden without also
+        // re-hiding one the user deliberately enabled earlier.
+        std::set<std::string> hidden_platforms;
+        std::set<std::string> known_platforms;
     };
 
 }

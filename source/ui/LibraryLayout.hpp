@@ -32,6 +32,7 @@ namespace romm::ui {
         ~LibraryLayout() override;
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
 
         std::shared_ptr<GameGrid> GetGameGrid() const { return grid; }
 

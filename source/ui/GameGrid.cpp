@@ -4,6 +4,7 @@
 #include "PlaceholderCover.hpp"
 #include "../model/ConfigManager.hpp"
 #include "../model/DownloadManager.hpp"
+#include "../i18n/I18n.hpp"
 #include <cstdio>
 #include <iostream>
 #include <chrono>
@@ -168,59 +169,75 @@ namespace romm::ui {
         }
     }
 
+    // Byte count as a bare "1.23 GB"-style value. Never localized: the number
+    // formatting and the unit symbols are the same in every language romm-nx
+    // ships, and this feeds {size} placeholders rather than standing alone.
+    static std::string FormatByteSize(long long bytes) {
+        char buf[64];
+        double size_mb = (double)bytes / (1024.0 * 1024.0);
+        if (size_mb >= 1024.0)   std::sprintf(buf, "%.2f GB", size_mb / 1024.0);
+        else if (size_mb >= 1.0) std::sprintf(buf, "%.2f MB", size_mb);
+        else {
+            double size_kb = (double)bytes / 1024.0;
+            if (size_kb >= 1.0)  std::sprintf(buf, "%.2f KB", size_kb);
+            else                 std::sprintf(buf, "%lld B", bytes);
+        }
+        return buf;
+    }
+
     void GameGrid::RebuildInfoStrip(const romm::model::Game& game, const std::string& platform_name, size_t game_idx, size_t total) {
         auto nav_for_sel = nav_mgr.lock();
         const size_t sel_count = nav_for_sel ? nav_for_sel->GetBulkSelectionCount() : 0;
+        const uint64_t i18n_gen = romm::i18n::Generation();
         if (game_idx == info_cached_game_idx && total == info_cached_total &&
-            sel_count == info_cached_sel_count) {
+            sel_count == info_cached_sel_count && i18n_gen == info_cached_i18n_generation) {
             return;
         }
         info_cached_sel_count = sel_count;
+        info_cached_i18n_generation = i18n_gen;
 
         ClearInfoTextures();
 
         pu::ui::Color title_color(237, 229, 251, 255); // #EDE5FB
         pu::ui::Color sub_color(190, 180, 225, 255);   // #BEB4E1
 
-        // Title texture
+        // Title texture — RomM's game title, verbatim.
         info_title_tex = pu::ui::render::RenderText("Orbitron@30", game.title, title_color);
 
-        // Sub info: Size, Developer, Index
-        std::string size_str = "Size: Unknown";
-        if (game.fs_size_bytes > 0) {
-            double size_mb = (double)game.fs_size_bytes / (1024.0 * 1024.0);
-            if (size_mb >= 1024.0) {
-                char buf[64];
-                std::sprintf(buf, "Size: %.2f GB", size_mb / 1024.0);
-                size_str = buf;
-            } else if (size_mb >= 1.0) {
-                char buf[64];
-                std::sprintf(buf, "Size: %.2f MB", size_mb);
-                size_str = buf;
-            } else {
-                double size_kb = (double)game.fs_size_bytes / 1024.0;
-                if (size_kb >= 1.0) {
-                    char buf[64];
-                    std::sprintf(buf, "Size: %.2f KB", size_kb);
-                    size_str = buf;
-                } else {
-                    char buf[64];
-                    std::sprintf(buf, "Size: %lld B", game.fs_size_bytes);
-                    size_str = buf;
-                }
-            }
-        }
+        // Sub info: size, position in the list, and the bulk-selection count.
+        const std::string size_str =
+            (game.fs_size_bytes > 0)
+                ? romm::i18n::format("grid.size", {{"size", FormatByteSize(game.fs_size_bytes)}})
+                : romm::i18n::tr("grid.size_unknown");
 
-        std::string sub_text = size_str;
-        sub_text += "  |  " + std::to_string(game_idx + 1) + " / " + std::to_string(total);
-        if (sel_count > 0) {
-            sub_text += "  |  " + std::to_string(sel_count) + " selected (ZR to download)";
-        }
+        const romm::i18n::Args args = {
+            {"size", size_str},
+            {"index", std::to_string(game_idx + 1)},
+            {"total", std::to_string(total)},
+            {"count", std::to_string(sel_count)}
+        };
+        const std::string sub_text =
+            romm::i18n::format(sel_count > 0 ? "grid.info.selected" : "grid.info", args);
 
         info_sub_tex = pu::ui::render::RenderText("Ubuntu@24", sub_text, sub_color, w - 40);
 
         info_cached_game_idx = game_idx;
         info_cached_total = total;
+    }
+
+    void GameGrid::RefreshTranslations() {
+        // Everything localized in this element is a cached texture keyed by
+        // index or state, so drop the lot and let the next frame rebuild it.
+        ClearStatusTex();
+        ClearInfoTextures();
+        ClearListTextures();
+        ClearPanelTextures();
+        if (panel_keys_tex) {
+            pu::ui::render::DeleteTexture(panel_keys_tex);
+            panel_keys_tex = nullptr;
+        }
+        info_cached_i18n_generation = 0;
+        OnSelectionUpdated();
     }
 
     void GameGrid::OnSelectionUpdated() {
@@ -236,17 +253,26 @@ namespace romm::ui {
         if (plat_state != romm::model::ApiState::Success) {
             ClearStatusTex();
             ClearInfoTextures();
-            if (plat_state == romm::model::ApiState::WaitingNetwork) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Waiting for network connection...", text_color);
-            } else if (plat_state == romm::model::ApiState::Loading) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Loading platforms...", text_color);
-            } else if (plat_state == romm::model::ApiState::FailedConnect) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Failed to connect", text_color);
-            } else if (plat_state == romm::model::ApiState::Unauthorized) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Unauthorized / invalid API key", text_color);
-            } else {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Failed to connect", text_color);
-            }
+            const char* key = "status.failed_connect";
+            if (plat_state == romm::model::ApiState::WaitingNetwork) key = "status.waiting_network";
+            else if (plat_state == romm::model::ApiState::Loading) key = "status.loading_platforms";
+            else if (plat_state == romm::model::ApiState::Unauthorized) key = "status.unauthorized";
+            status_tex = pu::ui::render::RenderText("Ubuntu@37", romm::i18n::tr(key), text_color);
+            return;
+        }
+
+        // Platforms fetched fine, but Settings > Platforms hid every one of
+        // them. Draw that as its own state rather than falling through to a
+        // ROMs message about a platform that isn't there.
+        if (model->GetPlatforms().empty() && !model->GetAllPlatforms().empty()) {
+            ClearStatusTex();
+            ClearInfoTextures();
+            filtered_games.clear();
+            filter_generation++;
+            ClearListTextures();
+            ClearPanelTextures();
+            status_tex = pu::ui::render::RenderText("Ubuntu@37",
+                romm::i18n::tr("status.all_platforms_hidden"), text_color);
             return;
         }
 
@@ -254,18 +280,15 @@ namespace romm::ui {
         if (roms_state != romm::model::ApiState::Success) {
             ClearStatusTex();
             ClearInfoTextures();
-            if (roms_state == romm::model::ApiState::WaitingNetwork) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Waiting for network connection...", text_color);
-            } else if (roms_state == romm::model::ApiState::Idle) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Select a platform and press A to load ROMs", text_color);
-            } else if (roms_state == romm::model::ApiState::Loading) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Loading ROMs...", text_color);
-            } else if (roms_state == romm::model::ApiState::FailedConnect) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Failed to connect", text_color);
-            } else if (roms_state == romm::model::ApiState::Unauthorized) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "Unauthorized / invalid API key", text_color);
-            } else if (roms_state == romm::model::ApiState::NoData) {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "No games found", text_color);
+            const char* key = nullptr;
+            if (roms_state == romm::model::ApiState::WaitingNetwork) key = "status.waiting_network";
+            else if (roms_state == romm::model::ApiState::Idle) key = "status.select_platform";
+            else if (roms_state == romm::model::ApiState::Loading) key = "status.loading_roms";
+            else if (roms_state == romm::model::ApiState::FailedConnect) key = "status.failed_connect";
+            else if (roms_state == romm::model::ApiState::Unauthorized) key = "status.unauthorized";
+            else if (roms_state == romm::model::ApiState::NoData) key = "status.no_games";
+            if (key) {
+                status_tex = pu::ui::render::RenderText("Ubuntu@37", romm::i18n::tr(key), text_color);
             }
             return;
         }
@@ -320,10 +343,13 @@ namespace romm::ui {
             // everything" — otherwise an over-narrow query looks like a failed
             // load, and the way out isn't obvious.
             if (!search_query.empty()) {
+                // The query is the user's own text, substituted verbatim.
                 status_tex = pu::ui::render::RenderText(
-                    "Ubuntu@37", "No games match \"" + nav->GetSearchQueryDisplay() + "\"   —   press X to edit", text_color);
+                    "Ubuntu@37",
+                    romm::i18n::format("status.no_search_match", {{"query", nav->GetSearchQueryDisplay()}}),
+                    text_color);
             } else {
-                status_tex = pu::ui::render::RenderText("Ubuntu@37", "No games found", text_color);
+                status_tex = pu::ui::render::RenderText("Ubuntu@37", romm::i18n::tr("status.no_games"), text_color);
             }
             return;
         }
@@ -483,7 +509,7 @@ namespace romm::ui {
     }
 
     static std::string FormatSize(int64_t bytes) {
-        if (bytes <= 0) return "Unknown";
+        if (bytes <= 0) return romm::i18n::tr("common.unknown");
         char buf[64];
         double mb = (double)bytes / (1024.0 * 1024.0);
         if (mb >= 1024.0)     std::sprintf(buf, "%.2f GB", mb / 1024.0);
@@ -551,11 +577,18 @@ namespace romm::ui {
             "Orbitron@30", WrapText("Orbitron@30", game.title, panel_w),
             pu::ui::Color(237, 229, 251, 255));
 
-        std::string meta;
-        if (detail && !detail->developer.empty()) meta += detail->developer + "   |   ";
-        meta += FormatSize(detail && detail->file_size_bytes > 0 ? detail->file_size_bytes
-                                                                 : game.fs_size_bytes);
-        meta += "   |   " + std::to_string(game_idx + 1) + " of " + std::to_string(total);
+        // Developer and size are RomM values; only the separators and the
+        // "{index} of {total}" wording come from the dictionary.
+        const bool has_developer = (detail && !detail->developer.empty());
+        const romm::i18n::Args meta_args = {
+            {"developer", has_developer ? detail->developer : std::string()},
+            {"size", FormatSize(detail && detail->file_size_bytes > 0 ? detail->file_size_bytes
+                                                                     : game.fs_size_bytes)},
+            {"index", std::to_string(game_idx + 1)},
+            {"total", std::to_string(total)}
+        };
+        const std::string meta =
+            romm::i18n::format(has_developer ? "panel.meta.developer" : "panel.meta", meta_args);
         panel_meta_tex = pu::ui::render::RenderText(
             "Ubuntu@24", WrapText("Ubuntu@24", meta, panel_w),
             pu::ui::Color(190, 180, 225, 255));
@@ -563,14 +596,16 @@ namespace romm::ui {
         std::string desc;
         switch (detail_state) {
             case romm::model::DetailLoadState::Loaded:
-                desc = (detail && !detail->description.empty()) ? detail->description
-                                                                : "No description available.";
+                // RomM's description, untouched, when there is one.
+                desc = (detail && !detail->description.empty())
+                           ? detail->description
+                           : romm::i18n::tr("panel.desc.none");
                 break;
             case romm::model::DetailLoadState::Loading:
-                desc = "Loading details...";
+                desc = romm::i18n::tr("panel.desc.loading");
                 break;
             case romm::model::DetailLoadState::Failed:
-                desc = "Couldn't load details.";
+                desc = romm::i18n::tr("panel.desc.failed");
                 break;
             default:
                 desc = "";
@@ -598,11 +633,21 @@ namespace romm::ui {
 
         // ---- Header: count, and the active search if there is one ----------
         {
-            std::string header = std::to_string(filtered_games.size()) + " games";
             const std::string& q = nav->GetSearchQueryDisplay();
-            if (!q.empty()) header += "   |   Search: \"" + q + "\"";
             const size_t sel_count = nav->GetBulkSelectionCount();
-            if (sel_count > 0) header += "   |   " + std::to_string(sel_count) + " selected (ZR)";
+            // One whole template per combination rather than gluing translated
+            // fragments together — the separators and their order belong to the
+            // translation, not to this code.
+            const char* header_key =
+                (!q.empty() && sel_count > 0) ? "detaillist.header.search_selected" :
+                (!q.empty())                  ? "detaillist.header.search" :
+                (sel_count > 0)               ? "detaillist.header.selected" :
+                                                "detaillist.header";
+            const std::string header = romm::i18n::format(header_key, {
+                {"count", std::to_string(filtered_games.size())},
+                {"query", q},
+                {"selected", std::to_string(sel_count)}
+            });
 
             if (header != list_header_str || !list_header_tex) {
                 if (list_header_tex) pu::ui::render::DeleteTexture(list_header_tex);
@@ -776,16 +821,18 @@ namespace romm::ui {
         const auto* detail = model ? model->GetCachedDetail(game.id) : nullptr;
         std::string action_label;
         if (!detail) {
-            action_label = "Loading...";
+            action_label = romm::i18n::tr("panel.action.loading");
         } else {
+            const char* action_key = "panel.action.download";
             switch (ComputeDownloadActionState(game.id, platform_slug, detail)) {
-                case DownloadActionState::Uninstall:   action_label = "Uninstall"; break;
-                case DownloadActionState::Queued:      action_label = "Remove from queue"; break;
-                case DownloadActionState::Downloading: action_label = "Downloading..."; break;
-                case DownloadActionState::Failed:      action_label = "Retry"; break;
-                case DownloadActionState::AddToQueue:  action_label = "Add to queue"; break;
-                default:                               action_label = "Download"; break;
+                case DownloadActionState::Uninstall:   action_key = "panel.action.uninstall"; break;
+                case DownloadActionState::Queued:      action_key = "panel.action.remove_from_queue"; break;
+                case DownloadActionState::Downloading: action_key = "panel.action.downloading"; break;
+                case DownloadActionState::Failed:      action_key = "panel.action.retry"; break;
+                case DownloadActionState::AddToQueue:  action_key = "panel.action.add_to_queue"; break;
+                default:                               action_key = "panel.action.download"; break;
             }
+            action_label = romm::i18n::tr(action_key);
         }
 
         if (action_label != panel_action_str || !panel_action_tex) {
@@ -807,7 +854,7 @@ namespace romm::ui {
 
         if (panel_keys_tex == nullptr) {
             panel_keys_tex = pu::ui::render::RenderText("Ubuntu@20",
-                                                        "A  Open cover / Action      Up/Down  Move      B  Back",
+                                                        romm::i18n::tr("hint.grid_panel"),
                                                         pu::ui::Color(140, 130, 175, 255));
         }
         if (panel_keys_tex) {

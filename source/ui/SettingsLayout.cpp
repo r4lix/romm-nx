@@ -12,6 +12,9 @@
 #include "MainApplication.hpp"
 #include "GlobalProgressBar.hpp"
 #include "../model/AudioManager.hpp"
+#include "../model/PlatformCatalog.hpp"
+#include "../model/DataModel.hpp"
+#include "../i18n/I18n.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <cstdio>
@@ -20,7 +23,32 @@
 
 namespace romm::ui {
 
+    std::string TranslateViewMode(const std::string& stored_mode) {
+        if (stored_mode == "Big") return romm::i18n::tr("settings.view_mode.big");
+        if (stored_mode == "Detail") return romm::i18n::tr("settings.view_mode.detail");
+        return romm::i18n::tr("settings.view_mode.default");
+    }
+
+    std::string TranslateCoversQuality(const std::string& stored_quality) {
+        if (stored_quality == "SD") return romm::i18n::tr("settings.covers_quality.sd");
+        if (stored_quality == "HD") return romm::i18n::tr("settings.covers_quality.hd");
+        return romm::i18n::tr("settings.covers_quality.balanced");
+    }
+
     namespace {
+        // "auto" -> "en" -> "fr" -> "auto". Matches the row's displayed order.
+        const char* NextLanguageSetting(const std::string& current) {
+            if (current == romm::i18n::kSettingAuto) return romm::i18n::kSettingEnglish;
+            if (current == romm::i18n::kSettingEnglish) return romm::i18n::kSettingFrench;
+            return romm::i18n::kSettingAuto;
+        }
+
+        std::string LanguageSettingLabel(const std::string& setting) {
+            if (setting == romm::i18n::kSettingEnglish) return romm::i18n::tr("settings.general.language.en");
+            if (setting == romm::i18n::kSettingFrench) return romm::i18n::tr("settings.general.language.fr");
+            return romm::i18n::tr("settings.general.language.auto");
+        }
+
         std::string truncatePath(const std::string& path, size_t max_len = 45) {
             if (path.size() <= max_len) return path;
             
@@ -57,8 +85,11 @@ namespace romm::ui {
         const std::vector<std::string> kStartupSoundKeys = {"none", "ps1", "ps2", "ps3", "ps3-old", "ps4", "ps5", "psp"};
         const std::vector<std::string> kThemeSoundKeys = {"none", "ps2-remix", "ps4", "ps5", "psvita"};
 
+        // Sound-pack names are product names ("PlayStation 3 (New)") and a
+        // credit ("PS2 Remix (by Meech)") — proper nouns, identical in every
+        // language. Only the "none" entry is a real UI word.
         std::string StartupSoundDisplayName(const std::string& key) {
-            if (key == "none") return "None";
+            if (key == "none") return romm::i18n::tr("common.none");
             if (key == "ps1") return "PlayStation 1";
             if (key == "ps2") return "PlayStation 2";
             if (key == "ps3") return "PlayStation 3 (New)";
@@ -70,7 +101,7 @@ namespace romm::ui {
         }
 
         std::string ThemeSoundDisplayName(const std::string& key) {
-            if (key == "none") return "None";
+            if (key == "none") return romm::i18n::tr("common.none");
             if (key == "ps2-remix") return "PS2 Remix (by Meech)";
             if (key == "ps4") return "PlayStation 4";
             if (key == "ps5") return "PlayStation 5";
@@ -119,7 +150,69 @@ namespace romm::ui {
         // Single source of truth for the category list — OnRender's list and
         // NavigationManager's Down-navigation clamp (via GetCategoriesCount())
         // both read this instead of independently hardcoding the same count.
-        const std::vector<std::string> kSettingsCategories = {"General", "Theme", "Connection", "ROM Paths", "Advanced", "Updates", "Debug"};
+        // Index order is load-bearing: the per-category branches below and in
+        // HandleOptionAction()/GetOptionsCount() key off it, which is why these
+        // are i18n keys rather than display strings.
+        const std::vector<std::string> kSettingsCategoryKeys = {
+            "settings.category.general",
+            "settings.category.theme",
+            "settings.category.connection",
+            "settings.category.rom_paths",
+            "settings.category.platforms",
+            "settings.category.advanced",
+            "settings.category.updates",
+            "settings.category.debug"
+        };
+
+        // --- Settings > Platforms ------------------------------------------
+        // One row per canonical platform: everything romm-nx ships knowledge of
+        // (GetPlatformCatalog) merged with whatever the connected server
+        // returned, de-duplicated by NormalizePlatformId so "ps1", "psx" and
+        // "PlayStation" can never appear as three rows.
+        struct PlatformVisibilityRow {
+            std::string canonical_id;
+            std::string display_name;
+        };
+
+        // The two fixed action rows that sit above the platform list.
+        constexpr size_t kPlatformActionRows = 2; // 0 = Show All, 1 = Reset Defaults
+
+        std::vector<PlatformVisibilityRow> g_platform_rows;
+
+        void RebuildPlatformRows(const std::shared_ptr<romm::model::DataModel>& model) {
+            std::vector<PlatformVisibilityRow> rows;
+
+            auto push = [&rows](const std::string& id, const std::string& name) {
+                if (id.empty()) return;
+                for (const auto& existing : rows) {
+                    if (existing.canonical_id == id) return; // alias of a row we already have
+                }
+                rows.push_back({id, name});
+            };
+
+            for (const auto& entry : romm::model::GetPlatformCatalog()) {
+                push(entry.id, entry.display_name);
+            }
+            if (model) {
+                // GetAllPlatforms(), not GetPlatforms(): the filtered list is
+                // precisely the one that can't show you what to un-hide.
+                for (const auto& plat : model->GetAllPlatforms()) {
+                    const std::string id = romm::model::ResolvePlatformIdentity(plat.slug, plat.name);
+                    push(id, romm::model::GetPlatformDisplayName(id, plat.name));
+                }
+            }
+
+            g_platform_rows = std::move(rows);
+        }
+
+        const std::vector<PlatformVisibilityRow>& PlatformRows() {
+            // GetOptionsCount() is static and can be asked for the row count
+            // before any refresh has run; the catalogue alone is a valid answer.
+            if (g_platform_rows.empty()) {
+                RebuildPlatformRows(nullptr);
+            }
+            return g_platform_rows;
+        }
 
         // Which ROM Paths rows are selectable (BIOS/Save data are "Coming
         // later" placeholders) — OnRender's rows_data and NavigationManager's
@@ -183,7 +276,7 @@ namespace romm::ui {
         }
 
         // Render Buttons Hint
-        auto btn_tex = pu::ui::render::RenderText("Orbitron@24", "A Confirm        B Cancel", text_color);
+        auto btn_tex = pu::ui::render::RenderText("Orbitron@24", romm::i18n::tr("hint.modal.confirm_cancel"), text_color);
         if (btn_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(btn_tex);
             drawer->RenderTexture(btn_tex, modal_x + (modal_w - tw) / 2, modal_y + modal_h - 75);
@@ -209,6 +302,7 @@ namespace romm::ui {
     SettingsCard::SettingsCard(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element::Element(), x(x), y(y), w(w), h(h), nav_mgr(nav), connection_status_color(190, 180, 225, 255) {
         cached_statuses.resize(SUPPORTED_PLATFORMS.size());
+        ResetConnectionStatus();
         TriggerRecalculateCache();
         RefreshPathStatuses();
     }
@@ -217,8 +311,13 @@ namespace romm::ui {
         TriggerRecalculateCache();
     }
 
+    void SettingsCard::ResetConnectionStatus() {
+        connection_test_status = romm::i18n::tr("settings.connection.not_tested");
+        connection_status_color = pu::ui::Color(190, 180, 225, 255);
+    }
+
     void SettingsCard::TriggerConnectionTest() {
-        connection_test_status = "Testing...";
+        connection_test_status = romm::i18n::tr("settings.connection.testing");
         connection_status_color = pu::ui::Color(230, 199, 167, 255); // Cream (#E6C7A7)
 
         auto& config = romm::model::ConfigManager::Instance();
@@ -226,7 +325,7 @@ namespace romm::ui {
         std::string key = config.GetApiKey();
 
         if (host.empty() || key.empty()) {
-            connection_test_status = "Failed: Missing host/key";
+            connection_test_status = romm::i18n::tr("settings.connection.failed_missing");
             connection_status_color = pu::ui::Color(231, 76, 60, 255); // Red
             return;
         }
@@ -242,14 +341,16 @@ namespace romm::ui {
         HttpClient::runAsync([this, url, headers]() {
             auto http_res = HttpClient::getSync(url, headers);
             if (http_res.success && http_res.statusCode == 200) {
-                connection_test_status = "Connected";
+                connection_test_status = romm::i18n::tr("settings.connection.connected");
                 connection_status_color = pu::ui::Color(46, 204, 113, 255); // Green
             } else {
+                // curl/HTTP diagnostics: a protocol code or a library string,
+                // substituted into the localized wrapper rather than translated.
                 std::string err = http_res.error;
                 if (err.empty()) {
                     err = "HTTP " + std::to_string(http_res.statusCode);
                 }
-                connection_test_status = "Failed: " + err;
+                connection_test_status = romm::i18n::format("settings.connection.failed", {{"error", err}});
                 connection_status_color = pu::ui::Color(231, 76, 60, 255); // Red
             }
         });
@@ -325,7 +426,7 @@ namespace romm::ui {
         drawer->RenderRoundedRectangleFill(border_color, x_coord, y_coord, cat_panel_w, h, 16);
         drawer->RenderRoundedRectangleFill(fill_color, x_coord + 4, y_coord + 4, cat_panel_w - 8, h - 8, 12);
 
-        const std::vector<std::string>& categories = kSettingsCategories;
+        const std::vector<std::string>& categories = kSettingsCategoryKeys;
         s32 start_y = y_coord + 40;
         s32 row_h = 75;
         s32 row_spacing = 20;
@@ -361,14 +462,15 @@ namespace romm::ui {
             drawer->RenderRoundedRectangleFill(r_bg, rx + r_border_w, ry + r_border_w, rw - (r_border_w * 2), row_h - (r_border_w * 2), 6);
 
             pu::ui::Color text_color(237, 229, 251, 255);
-            auto tex = pu::ui::render::RenderText("Orbitron@30", categories[i], text_color);
+            auto tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr(categories[i]), text_color);
             if (tex) {
                 s32 th = pu::ui::render::GetTextureHeight(tex);
                 drawer->RenderTexture(tex, rx + 30, ry + (row_h - th) / 2);
                 pu::ui::render::DeleteTexture(tex);
             }
 
-            if (categories[i] == "Updates" &&
+            // Keyed off the category's identity, not its translated label.
+            if (categories[i] == "settings.category.updates" &&
                 romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) {
                 s32 dot_radius = 7;
                 drawer->RenderCircleFill(pu::ui::Color(231, 76, 60, 255), rx + rw - dot_radius - 12, ry + dot_radius + 12, dot_radius);
@@ -386,116 +488,149 @@ namespace romm::ui {
         std::vector<OptionRenderEntry> options;
         auto& config = romm::model::ConfigManager::Instance();
 
+        // ON/OFF is a UI word pair, so it comes from the dictionary too.
+        const std::string on_text = romm::i18n::tr("common.on");
+        const std::string off_text = romm::i18n::tr("common.off");
+        auto on_off = [&](bool value) { return value ? on_text : off_text; };
+
         if (active_cat == 0) { // General
-            options.push_back({"Language", config.GetLanguage() == "fr" ? "French (FR)" : "English (EN)"});
-            options.push_back({"Show debug build/version", config.ShowBuildVersion() ? "ON" : "OFF"});
-            options.push_back({"Confirm before uninstall", config.ConfirmBeforeUninstall() ? "ON" : "OFF"});
-            options.push_back({"Show installed badge", config.ShowInstalledBadge() ? "ON" : "OFF"});
-            options.push_back({"Screen Always On", config.ScreenAlwaysOn() ? "ON" : "OFF"});
-            options.push_back({"Covers Quality", config.GetCoversQualityString()});
-            options.push_back({"File browser writes", config.FileBrowserWriteAnywhere() ? "Everywhere (SD)" : "ROMs folder only"});
-            options.push_back({"Default View Mode", config.GetGridViewModeString() + " (per-platform via Y-Menu)"});
+            options.push_back({romm::i18n::tr("settings.general.language"),
+                               LanguageSettingLabel(config.GetLanguage())});
+            options.push_back({romm::i18n::tr("settings.general.show_build_version"), on_off(config.ShowBuildVersion())});
+            options.push_back({romm::i18n::tr("settings.general.confirm_uninstall"), on_off(config.ConfirmBeforeUninstall())});
+            options.push_back({romm::i18n::tr("settings.general.show_installed_badge"), on_off(config.ShowInstalledBadge())});
+            options.push_back({romm::i18n::tr("settings.general.screen_always_on"), on_off(config.ScreenAlwaysOn())});
+            options.push_back({romm::i18n::tr("settings.general.covers_quality"),
+                               TranslateCoversQuality(config.GetCoversQualityString())});
+            options.push_back({romm::i18n::tr("settings.general.filebrowser_writes"),
+                               romm::i18n::tr(config.FileBrowserWriteAnywhere()
+                                                  ? "settings.general.filebrowser_writes.everywhere"
+                                                  : "settings.general.filebrowser_writes.roms_only")});
+            options.push_back({romm::i18n::tr("settings.general.default_view_mode"),
+                               romm::i18n::format("settings.general.default_view_mode.value",
+                                                  {{"mode", TranslateViewMode(config.GetGridViewModeString())}})});
         }
         else if (active_cat == 1) { // Theme
             auto& audio_mgr = romm::model::AudioManager::Instance();
-            options.push_back({"Theme", "RomM Brand"});
+            // "RomM Brand" is the theme's proper name, not a UI word.
+            options.push_back({romm::i18n::tr("settings.theme.theme"), "RomM Brand"});
 
             if (audio_mgr.IsBatchDownloading()) {
-                options.push_back({"Download Sound Pack",
-                    "Downloading... (" + std::to_string(audio_mgr.GetBatchRemaining()) + " left)"});
+                options.push_back({romm::i18n::tr("settings.theme.download_pack"),
+                    romm::i18n::format("settings.theme.pack_downloading",
+                                       {{"remaining", std::to_string(audio_mgr.GetBatchRemaining())}})});
             } else {
                 size_t downloaded = 0;
                 for (const auto& pack : kSoundPacks) {
                     if (audio_mgr.IsCached(pack.kind, pack.key)) downloaded++;
                 }
-                std::string status = (downloaded == kSoundPacks.size()) ? "All downloaded" :
-                    (std::to_string(downloaded) + "/" + std::to_string(kSoundPacks.size()) + " downloaded");
-                options.push_back({"Download Sound Pack", status});
+                std::string status = (downloaded == kSoundPacks.size())
+                    ? romm::i18n::tr("settings.theme.pack_all_downloaded")
+                    : romm::i18n::format("settings.theme.pack_progress", {
+                          {"downloaded", std::to_string(downloaded)},
+                          {"total", std::to_string(kSoundPacks.size())}
+                      });
+                options.push_back({romm::i18n::tr("settings.theme.download_pack"), status});
             }
 
             // Only "none" plus already-downloaded packs are reachable here —
             // fetch new ones via "Download Sound Pack" above first.
-            options.push_back({"Startup Sound", StartupSoundDisplayName(config.GetStartupSound())});
-            options.push_back({"Startup Volume", "", false, config.GetStartupVolume()});
-            options.push_back({"Menu Ambience", ThemeSoundDisplayName(config.GetThemeSound())});
-            options.push_back({"Menu Ambience Volume", "", false, config.GetAmbientVolume()});
+            options.push_back({romm::i18n::tr("settings.theme.startup_sound"), StartupSoundDisplayName(config.GetStartupSound())});
+            options.push_back({romm::i18n::tr("settings.theme.startup_volume"), "", false, config.GetStartupVolume()});
+            options.push_back({romm::i18n::tr("settings.theme.menu_ambience"), ThemeSoundDisplayName(config.GetThemeSound())});
+            options.push_back({romm::i18n::tr("settings.theme.ambience_volume"), "", false, config.GetAmbientVolume()});
         }
         else if (active_cat == 2) { // Connection
-            options.push_back({"RomM Server URL", truncatePath(config.GetRommHost())});
-            options.push_back({"API Key", config.GetMaskedApiKey()});
-            options.push_back({"Test Connection", connection_test_status, true});
+            // Host URL and masked key are configuration values, shown as-is.
+            options.push_back({romm::i18n::tr("settings.connection.server_url"), truncatePath(config.GetRommHost())});
+            options.push_back({romm::i18n::tr("settings.connection.api_key"), config.GetMaskedApiKey()});
+            options.push_back({romm::i18n::tr("settings.connection.test"), connection_test_status, true});
         }
         else if (active_cat == 3) { // ROM Paths
             // Custom drawing logic handles this
         }
-        else if (active_cat == 4) { // Advanced
-            std::string cover_sz = "Calculating...";
-            std::string total_sz = "Calculating...";
-            if (!calculating_cache) {
-                double cover_mb = (double)cache_cover_bytes / (1024.0 * 1024.0);
-                char cover_buf[64];
-                std::snprintf(cover_buf, sizeof(cover_buf), "%.2f MB (%d files)", cover_mb, cache_cover_count);
-                cover_sz = cover_buf;
-
-                double total_mb = (double)cache_total_bytes / (1024.0 * 1024.0);
-                char total_buf[64];
-                std::snprintf(total_buf, sizeof(total_buf), "%.2f MB", total_mb);
-                total_sz = total_buf;
-            }
-            options.push_back({"Cover cache size", cover_sz});
-            options.push_back({"Total cache size", total_sz});
-            options.push_back({"Clear cover cache", "Trigger Clear", true});
-            options.push_back({"Clear all cache", "Trigger Clear", true});
-            options.push_back({"Auto-clear cache", config.IsAutoClearEnabled() ? "ON" : "OFF"});
-            options.push_back({"Max cache size", std::to_string(config.GetMaxSizeMb()) + " MB"});
-            options.push_back({"Delete cache older than", std::to_string(config.GetMaxAgeDays()) + " days"});
+        else if (active_cat == 4) { // Platforms
+            // Custom drawing logic handles this (needs its own scroll window)
         }
-        else if (active_cat == 5) { // Updates
-            options.push_back({"Current version", romm::ROMM_NX_VERSION});
-            options.push_back({"Current version code", std::to_string(romm::ROMM_NX_VERSION_CODE)});
-            options.push_back({"Update channel", config.GetUpdateChannel()});
-            options.push_back({"Manifest URL", config.GetUpdateManifestUrl()});
-            options.push_back({"Check on startup", config.CheckUpdatesOnStartup() ? "ON" : "OFF"});
-            options.push_back({"Check for updates", "Trigger Check", true});
+        else if (active_cat == 5) { // Advanced
+            std::string cover_sz = romm::i18n::tr("settings.advanced.calculating");
+            std::string total_sz = cover_sz;
+            if (!calculating_cache) {
+                char cover_buf[64];
+                std::snprintf(cover_buf, sizeof(cover_buf), "%.2f", (double)cache_cover_bytes / (1024.0 * 1024.0));
+                cover_sz = romm::i18n::format("settings.advanced.cover_size_value", {
+                    {"size", cover_buf},
+                    {"count", std::to_string(cache_cover_count)}
+                });
+
+                char total_buf[64];
+                std::snprintf(total_buf, sizeof(total_buf), "%.2f", (double)cache_total_bytes / (1024.0 * 1024.0));
+                total_sz = romm::i18n::format("settings.advanced.size_value", {{"size", total_buf}});
+            }
+            const std::string trigger_clear = romm::i18n::tr("settings.advanced.trigger_clear");
+            options.push_back({romm::i18n::tr("settings.advanced.cover_cache_size"), cover_sz});
+            options.push_back({romm::i18n::tr("settings.advanced.total_cache_size"), total_sz});
+            options.push_back({romm::i18n::tr("settings.advanced.clear_cover_cache"), trigger_clear, true});
+            options.push_back({romm::i18n::tr("settings.advanced.clear_all_cache"), trigger_clear, true});
+            options.push_back({romm::i18n::tr("settings.advanced.auto_clear"), on_off(config.IsAutoClearEnabled())});
+            options.push_back({romm::i18n::tr("settings.advanced.max_size"),
+                               romm::i18n::format("settings.advanced.size_value", {{"size", std::to_string(config.GetMaxSizeMb())}})});
+            options.push_back({romm::i18n::tr("settings.advanced.max_age"),
+                               romm::i18n::format("settings.advanced.age_value", {{"days", std::to_string(config.GetMaxAgeDays())}})});
+        }
+        else if (active_cat == 6) { // Updates
+            // Version strings, the channel and the manifest URL are values, not
+            // translatable words.
+            options.push_back({romm::i18n::tr("settings.updates.current_version"), romm::ROMM_NX_VERSION});
+            options.push_back({romm::i18n::tr("settings.updates.current_version_code"), std::to_string(romm::ROMM_NX_VERSION_CODE)});
+            options.push_back({romm::i18n::tr("settings.updates.channel"), config.GetUpdateChannel()});
+            options.push_back({romm::i18n::tr("settings.updates.manifest_url"), config.GetUpdateManifestUrl()});
+            options.push_back({romm::i18n::tr("settings.updates.check_on_startup"), on_off(config.CheckUpdatesOnStartup())});
+            options.push_back({romm::i18n::tr("settings.updates.check_now"), romm::i18n::tr("settings.updates.trigger_check"), true});
 
             auto& um = romm::model::UpdateManager::Instance();
             auto state = um.GetState();
-            std::string status_str = "Idle";
-            if (state == romm::model::UpdateState::Checking) status_str = "Checking...";
-            else if (state == romm::model::UpdateState::NoUpdateAvailable) status_str = "romm-nx is up to date.";
-            else if (state == romm::model::UpdateState::UpdateAvailable) status_str = "Update available!";
+            std::string status_str = romm::i18n::tr("settings.updates.status.idle");
+            if (state == romm::model::UpdateState::Checking) status_str = romm::i18n::tr("settings.updates.status.checking");
+            else if (state == romm::model::UpdateState::NoUpdateAvailable) status_str = romm::i18n::tr("settings.updates.status.up_to_date");
+            else if (state == romm::model::UpdateState::UpdateAvailable) status_str = romm::i18n::tr("settings.updates.status.available");
             else if (state == romm::model::UpdateState::Downloading) {
-                long long cur = um.GetDownloadedBytes();
-                long long tot = um.GetTotalBytes();
-                double cur_mb = (double)cur / (1024.0 * 1024.0);
-                double tot_mb = (double)tot / (1024.0 * 1024.0);
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "Downloading (%.2f/%.2f MB)", cur_mb, tot_mb);
-                status_str = buf;
+                char cur_buf[32], tot_buf[32];
+                std::snprintf(cur_buf, sizeof(cur_buf), "%.2f", (double)um.GetDownloadedBytes() / (1024.0 * 1024.0));
+                std::snprintf(tot_buf, sizeof(tot_buf), "%.2f", (double)um.GetTotalBytes() / (1024.0 * 1024.0));
+                status_str = romm::i18n::format("settings.updates.status.downloading",
+                                                {{"downloaded", cur_buf}, {"total", tot_buf}});
             }
-            else if (state == romm::model::UpdateState::Verifying) status_str = "Verifying...";
-            else if (state == romm::model::UpdateState::Installing) status_str = "Installing...";
-            else if (state == romm::model::UpdateState::InstalledRestartRequired) status_str = "Success! Please restart app.";
-            else if (state == romm::model::UpdateState::Error) status_str = "Error: " + um.GetLatestError();
+            else if (state == romm::model::UpdateState::Verifying) status_str = romm::i18n::tr("settings.updates.status.verifying");
+            else if (state == romm::model::UpdateState::Installing) status_str = romm::i18n::tr("settings.updates.status.installing");
+            else if (state == romm::model::UpdateState::InstalledRestartRequired) status_str = romm::i18n::tr("settings.updates.status.restart_required");
+            // The wrapper is localized; the diagnostic inside it comes from
+            // UpdateManager and stays in English (see the note there).
+            else if (state == romm::model::UpdateState::Error) status_str = romm::i18n::format("settings.updates.status.error", {{"error", um.GetLatestError()}});
 
-            options.push_back({"Status", status_str});
+            options.push_back({romm::i18n::tr("settings.updates.status"), status_str});
 
             if (state == romm::model::UpdateState::UpdateAvailable) {
                 auto manifest = um.GetRemoteManifest();
-                options.push_back({"Update available", "v" + manifest.version + " (code " + std::to_string(manifest.version_code) + ") — Install", true});
+                options.push_back({romm::i18n::tr("settings.updates.available"),
+                                   romm::i18n::format("settings.updates.available.install", {
+                                       {"version", manifest.version},
+                                       {"code", std::to_string(manifest.version_code)}
+                                   }), true});
             }
 
             if (um.CanRestoreBackup()) {
-                options.push_back({"Restore backup", "Trigger Restore", true});
+                options.push_back({romm::i18n::tr("settings.updates.restore_backup"),
+                                   romm::i18n::tr("settings.updates.trigger_restore"), true});
             }
         }
-        else if (active_cat == 6) { // Debug
-            options.push_back({"Build version", "v" + romm::ROMM_NX_VERSION});
-            options.push_back({"Config path", truncatePath("sdmc:/switch/romm-nx/config.json")});
-            options.push_back({"Installed index entries", std::to_string(romm::model::DownloadManager::Instance().GetInstalledIndex().size())});
-            
+        else if (active_cat == 7) { // Debug
+            options.push_back({romm::i18n::tr("settings.debug.build_version"), "v" + romm::ROMM_NX_VERSION});
+            options.push_back({romm::i18n::tr("settings.debug.config_path"), truncatePath("sdmc:/switch/romm-nx/config.json")});
+            options.push_back({romm::i18n::tr("settings.debug.index_entries"), std::to_string(romm::model::DownloadManager::Instance().GetInstalledIndex().size())});
+
             // Populating active download title
-            std::string active_title = "None";
+            std::string active_title = romm::i18n::tr("common.none");
             auto active_task = romm::model::DownloadManager::Instance().GetActiveDownloadSnapshot();
             if (active_task.rom_id > 0 && (active_task.state == romm::model::DownloadState::DownloadingGame || active_task.state == romm::model::DownloadState::DownloadingCover || active_task.state == romm::model::DownloadState::SyncingCover || active_task.state == romm::model::DownloadState::Preparing)) {
                 active_title = active_task.title;
@@ -503,12 +638,12 @@ namespace romm::ui {
                     active_title = active_title.substr(0, 19) + "...";
                 }
             }
-            options.push_back({"Active download", active_title});
-            options.push_back({"Queue count", std::to_string(romm::model::DownloadManager::Instance().GetQueueSnapshot().size())});
-            options.push_back({"Export debug info", "Trigger Export", true});
+            options.push_back({romm::i18n::tr("settings.debug.active_download"), active_title});
+            options.push_back({romm::i18n::tr("settings.debug.queue_count"), std::to_string(romm::model::DownloadManager::Instance().GetQueueSnapshot().size())});
+            options.push_back({romm::i18n::tr("settings.debug.export"), romm::i18n::tr("settings.debug.trigger_export"), true});
         }
 
-        if (active_cat != 3) {
+        if (active_cat != 3 && active_cat != 4) {
             // Draw Options List (real rows only)
             s32 opt_start_y = y_coord + 40;
             s32 opt_row_h = 75;
@@ -590,7 +725,9 @@ namespace romm::ui {
                 else if (!options[j].value.empty()) {
                     pu::ui::Color val_color = options[j].is_action ? pu::ui::Color(230, 199, 167, 255) : pu::ui::Color(190, 180, 225, 255);
 
-                    if (options[j].label == "Test Connection") {
+                    // Category + row index rather than the label text, which is
+                    // now language-dependent (Connection tab, "Test Connection").
+                    if (active_cat == 2 && j == 2) {
                         val_color = connection_status_color;
                     }
 
@@ -604,7 +741,7 @@ namespace romm::ui {
                 }
             }
 
-            if (active_cat == 5) {
+            if (active_cat == 6) {
                 auto& um = romm::model::UpdateManager::Instance();
                 auto state = um.GetState();
                 if (state == romm::model::UpdateState::UpdateAvailable) {
@@ -612,7 +749,7 @@ namespace romm::ui {
                     if (!manifest.changelog.empty()) {
                         s32 cy = y_coord + 550;
                         pu::ui::Color title_color(230, 199, 167, 255); // Cream
-                        auto title_tex = pu::ui::render::RenderText("Ubuntu@24", "Changelog:", title_color);
+                        auto title_tex = pu::ui::render::RenderText("Ubuntu@24", romm::i18n::tr("settings.updates.changelog"), title_color);
                         if (title_tex) {
                             drawer->RenderTexture(title_tex, opt_panel_x + 30, cy);
                             pu::ui::render::DeleteTexture(title_tex);
@@ -633,13 +770,121 @@ namespace romm::ui {
                             cy += 35;
                         }
                         if (manifest.changelog.size() > 4) {
-                            std::string extra = "... and " + std::to_string(manifest.changelog.size() - 4) + " more";
+                            std::string extra = romm::i18n::format("settings.updates.changelog_more",
+                                {{"count", std::to_string(manifest.changelog.size() - 4)}});
                             auto extra_tex = pu::ui::render::RenderText("Ubuntu@24", extra, item_color);
                             if (extra_tex) {
                                 drawer->RenderTexture(extra_tex, opt_panel_x + 50, cy);
                                 pu::ui::render::DeleteTexture(extra_tex);
                             }
                         }
+                    }
+                }
+            }
+        } else if (active_cat == 4) {
+            // Draw Custom Platforms layout.
+            //
+            // Same row visuals as the generic option list, but with its own
+            // scroll window: the row count is open-ended (catalogue + whatever
+            // the server reports) and can't be assumed to fit the panel.
+            s32 rows_start_y = y_coord + 40;
+            s32 row_h = 75;
+            s32 row_spacing = 15;
+            s32 row_w = opt_panel_w - 60;
+            s32 rx = opt_panel_x + 30;
+
+            const auto& plat_rows = PlatformRows();
+            const size_t total_rows = kPlatformActionRows + plat_rows.size();
+
+            s32 available_h = h - 80;
+            size_t visible_count = (size_t)std::max(1, (available_h + row_spacing) / (row_h + row_spacing));
+            if (visible_count > total_rows) visible_count = total_rows;
+
+            size_t selected_row = std::min(active_opt, total_rows > 0 ? total_rows - 1 : 0);
+            if (selected_row < platform_scroll_offset) {
+                platform_scroll_offset = selected_row;
+            } else if (selected_row >= platform_scroll_offset + visible_count) {
+                platform_scroll_offset = selected_row - visible_count + 1;
+            }
+            if (platform_scroll_offset + visible_count > total_rows) {
+                platform_scroll_offset = (total_rows > visible_count) ? (total_rows - visible_count) : 0;
+            }
+
+            for (size_t i = platform_scroll_offset; i < platform_scroll_offset + visible_count; ++i) {
+                s32 ry = rows_start_y + (s32)(i - platform_scroll_offset) * (row_h + row_spacing);
+                bool is_selected = (i == selected_row && !is_cat_focused);
+
+                pu::ui::Color r_bg;
+                pu::ui::Color r_border;
+                s32 r_border_w = 2;
+
+                if (is_selected) {
+                    r_bg = pu::ui::Color(85, 63, 152, 255);       // Violet highlight capsule
+                    r_border = pu::ui::Color(230, 199, 167, 255); // Cream border
+                    r_border_w = 3;
+                } else {
+                    r_bg = pu::ui::Color(16, 18, 22, 255);        // Web Dark Slate
+                    r_border = pu::ui::Color(45, 50, 62, 255);    // Slate Border Grey
+                }
+
+                drawer->RenderRoundedRectangleFill(r_border, rx, ry, row_w, row_h, 8);
+                drawer->RenderRoundedRectangleFill(r_bg, rx + r_border_w, ry + r_border_w, row_w - (r_border_w * 2), row_h - (r_border_w * 2), 6);
+
+                std::string label;
+                std::string value;
+                pu::ui::Color value_color(190, 180, 225, 255);
+
+                if (i == 0) {
+                    label = romm::i18n::tr("settings.platforms.show_all");
+                    value = romm::i18n::tr("common.trigger");
+                    value_color = pu::ui::Color(230, 199, 167, 255); // Cream = action
+                } else if (i == 1) {
+                    label = romm::i18n::tr("settings.platforms.reset_defaults");
+                    value = romm::i18n::tr("common.trigger");
+                    value_color = pu::ui::Color(230, 199, 167, 255);
+                } else {
+                    const auto& row = plat_rows[i - kPlatformActionRows];
+                    const bool shown = config.IsPlatformVisible(row.canonical_id);
+                    // Platform name: catalogue/RomM identity, never translated.
+                    label = row.display_name;
+                    value = romm::i18n::tr(shown ? "settings.platforms.shown" : "settings.platforms.hidden");
+                    value_color = shown ? pu::ui::Color(46, 204, 113, 255)   // Green
+                                        : pu::ui::Color(140, 140, 150, 255); // Muted grey
+                }
+
+                auto label_tex = pu::ui::render::RenderText("Ubuntu@24", label, pu::ui::Color(237, 229, 251, 255));
+                if (label_tex) {
+                    s32 th = pu::ui::render::GetTextureHeight(label_tex);
+                    drawer->RenderTexture(label_tex, rx + 25, ry + (row_h - th) / 2);
+                    pu::ui::render::DeleteTexture(label_tex);
+                }
+
+                auto val_tex = pu::ui::render::RenderText("Ubuntu@24", value, value_color);
+                if (val_tex) {
+                    s32 tw = pu::ui::render::GetTextureWidth(val_tex);
+                    s32 th = pu::ui::render::GetTextureHeight(val_tex);
+                    drawer->RenderTexture(val_tex, rx + row_w - tw - 25, ry + (row_h - th) / 2);
+                    pu::ui::render::DeleteTexture(val_tex);
+                }
+            }
+
+            // Scroll affordances, only when there's more off-screen.
+            {
+                pu::ui::Color arrow_clr(190, 180, 225, 200);
+                if (platform_scroll_offset > 0) {
+                    auto up_tex = pu::ui::render::RenderText("Orbitron@24", "^", arrow_clr);
+                    if (up_tex) {
+                        s32 tw = pu::ui::render::GetTextureWidth(up_tex);
+                        drawer->RenderTexture(up_tex, opt_panel_x + opt_panel_w - 22 - tw, y_coord + 12);
+                        pu::ui::render::DeleteTexture(up_tex);
+                    }
+                }
+                if (platform_scroll_offset + visible_count < total_rows) {
+                    auto down_tex = pu::ui::render::RenderText("Orbitron@24", "v", arrow_clr);
+                    if (down_tex) {
+                        s32 tw = pu::ui::render::GetTextureWidth(down_tex);
+                        drawer->RenderTexture(down_tex, opt_panel_x + opt_panel_w - 22 - tw, y_coord + h - 42);
+                        pu::ui::render::DeleteTexture(down_tex);
                     }
                 }
             }
@@ -759,11 +1004,14 @@ namespace romm::ui {
                 bool disabled;
             };
 
+            // Row labels are localized; the paths beside them are filesystem
+            // values shown verbatim (only truncated to fit).
+            const std::string coming_later = romm::i18n::tr("settings.rom_paths.coming_later");
             std::vector<RowData> rows_data = {
-                {"ROMs / Downloads", truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, kRomPathRowDisabled[0]},
-                {"Cover cache", truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, kRomPathRowDisabled[1]},
-                {"BIOS", "Coming later", cached_statuses[selected_tab].bios_status, kRomPathRowDisabled[2]},
-                {"Save data", "Coming later", cached_statuses[selected_tab].save_status, kRomPathRowDisabled[3]}
+                {romm::i18n::tr("settings.rom_paths.roms"), truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, kRomPathRowDisabled[0]},
+                {romm::i18n::tr("settings.rom_paths.cover_cache"), truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, kRomPathRowDisabled[1]},
+                {romm::i18n::tr("settings.rom_paths.bios"), coming_later, cached_statuses[selected_tab].bios_status, kRomPathRowDisabled[2]},
+                {romm::i18n::tr("settings.rom_paths.save_data"), coming_later, cached_statuses[selected_tab].save_status, kRomPathRowDisabled[3]}
             };
 
             size_t selected_row = nav->GetSelectedRomPathRowIdx();
@@ -815,23 +1063,23 @@ namespace romm::ui {
 
                 switch (rows_data[j].status) {
                     case PathStatus::Valid:
-                        status_text = "\u2713 Valid";
+                        status_text = romm::i18n::tr("settings.path_status.valid");
                         status_color = pu::ui::Color(46, 204, 113, 255);
                         break;
                     case PathStatus::Missing:
-                        status_text = "! Missing";
+                        status_text = romm::i18n::tr("settings.path_status.missing");
                         status_color = pu::ui::Color(241, 196, 15, 255);
                         break;
                     case PathStatus::Invalid:
-                        status_text = "! Invalid";
+                        status_text = romm::i18n::tr("settings.path_status.invalid");
                         status_color = pu::ui::Color(231, 76, 60, 255);
                         break;
                     case PathStatus::ReadOnly:
-                        status_text = "\u2014 Read-only";
+                        status_text = romm::i18n::tr("settings.path_status.readonly");
                         status_color = pu::ui::Color(150, 150, 160, 255);
                         break;
                     case PathStatus::ComingLater:
-                        status_text = "\u2014 Coming later";
+                        status_text = romm::i18n::tr("settings.path_status.coming_later");
                         status_color = pu::ui::Color(100, 100, 110, 255);
                         break;
                 }
@@ -858,13 +1106,13 @@ namespace romm::ui {
         card = SettingsCard::New(80, 160, 1760, 800, nav);
         this->Add(card);
 
-        settings_title_text = pu::ui::elm::TextBlock::New(0, 65, "SETTINGS");
+        settings_title_text = pu::ui::elm::TextBlock::New(0, 65, romm::i18n::tr("settings.title"));
         settings_title_text->SetFont("Orbitron@45");
         settings_title_text->SetColor(pu::ui::Color(237, 229, 251, 255));
         settings_title_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
         this->Add(settings_title_text);
 
-        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, "D-Pad Choose Tab   |   A Open   |   B Back");
+        hint_text = pu::ui::elm::TextBlock::New(0, 1080 - 65, romm::i18n::tr("hint.settings.categories"));
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         hint_text->SetHorizontalAlign(pu::ui::elm::HorizontalAlign::Center);
@@ -881,8 +1129,12 @@ namespace romm::ui {
 
     void SettingsLayout::OnSelectionUpdated() {
         auto nav = nav_mgr.lock();
-        if (nav && card && nav->GetSelectedSettingsCategoryIdx() == 3) {
+        if (!nav) return;
+        if (card && nav->GetSelectedSettingsCategoryIdx() == 3) {
             card->RefreshPathStatuses();
+        }
+        if (nav->GetSelectedSettingsCategoryIdx() == 4) {
+            RefreshPlatformRows();
         }
     }
 
@@ -890,6 +1142,59 @@ namespace romm::ui {
         if (card) {
             card->RefreshConfigTextures();
             card->RefreshPathStatuses();
+        }
+        RefreshPlatformRows();
+    }
+
+    // Rebuilt from the live model rather than cached once: platforms can land
+    // after the Settings screen is already open (the fetch is async), and a
+    // server the user just re-pointed at can report a different set entirely.
+    void SettingsLayout::RefreshPlatformRows() {
+        auto nav = nav_mgr.lock();
+        RebuildPlatformRows(nav ? nav->GetModel() : nullptr);
+
+        // The list just changed size under a cursor that may have been near its
+        // end — clamp before anything indexes with it.
+        if (nav && nav->GetSelectedSettingsCategoryIdx() == 4) {
+            const size_t count = kPlatformActionRows + PlatformRows().size();
+            if (count > 0 && nav->GetSelectedSettingsOptionIdx() >= count) {
+                nav->SetSelectedSettingsOptionIdx(count - 1);
+            }
+        }
+    }
+
+    // A on a platform row toggles; Left/Right set it outright, matching how the
+    // other Left/Right rows in Settings behave (deterministic per direction
+    // rather than direction-insensitive cycling).
+    void SettingsLayout::SetPlatformVisibility(size_t platform_row_idx, bool visible) {
+        const auto& plat_rows = PlatformRows();
+        if (platform_row_idx >= plat_rows.size()) return;
+
+        auto& config = romm::model::ConfigManager::Instance();
+        const auto& row = plat_rows[platform_row_idx];
+        if (config.IsPlatformVisible(row.canonical_id) == visible) return; // nothing to write
+
+        config.SetPlatformVisible(row.canonical_id, visible);
+        config.Save();
+        std::cout << "[PLATFORMS] platform=" << row.canonical_id
+                  << " visible=" << (visible ? "true" : "false") << std::endl;
+        ApplyPlatformVisibility();
+    }
+
+    void SettingsLayout::ToggleSelectedPlatform(bool visible) {
+        auto nav = nav_mgr.lock();
+        if (!nav) return;
+        const size_t opt_idx = nav->GetSelectedSettingsOptionIdx();
+        if (opt_idx < kPlatformActionRows) return; // Show All / Reset Defaults aren't toggles
+        SetPlatformVisibility(opt_idx - kPlatformActionRows, visible);
+    }
+
+    // Re-filters the platform browser immediately, so leaving Settings shows
+    // the new list without a refetch. Config is already saved by the caller.
+    void SettingsLayout::ApplyPlatformVisibility() {
+        auto nav = nav_mgr.lock();
+        if (nav) {
+            nav->ApplyPlatformVisibilityChange();
         }
     }
 
@@ -899,24 +1204,40 @@ namespace romm::ui {
 
         if (nav->GetSelectedSettingsCategoryIdx() == 3) {
             if (!nav->IsRomPathRowsFocused()) {
-                hint_text->SetText("D-Pad Left/Right Change Platform   |   A Enter Rows   |   B Back");
+                hint_text->SetText(romm::i18n::tr("hint.settings.rompath.tabs"));
             } else {
                 if (nav->GetSelectedRomPathRowIdx() == 0) {
-                    hint_text->SetText("A Edit Path   |   X Validate/Create   |   Y Reset Default   |   B Tabs");
+                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.roms"));
                 } else if (nav->GetSelectedRomPathRowIdx() == 1) {
-                    hint_text->SetText("X Validate   |   B Tabs");
+                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.cover"));
                 } else {
-                    hint_text->SetText("B Tabs");
+                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.other"));
                 }
             }
             return;
         }
 
-        if (focus == SettingsFocusArea::CategoryList) {
-            hint_text->SetText("D-Pad Choose Tab   |   A Open   |   B Back");
-        } else {
-            hint_text->SetText("D-Pad Move   |   A Select   |   B Tabs");
+        if (nav->GetSelectedSettingsCategoryIdx() == 4 && focus != SettingsFocusArea::CategoryList) {
+            hint_text->SetText(romm::i18n::tr("hint.settings.platforms"));
+            return;
         }
+
+        if (focus == SettingsFocusArea::CategoryList) {
+            hint_text->SetText(romm::i18n::tr("hint.settings.categories"));
+        } else {
+            hint_text->SetText(romm::i18n::tr("hint.settings.options"));
+        }
+    }
+
+    void SettingsLayout::RefreshTranslations() {
+        if (settings_title_text) settings_title_text->SetText(romm::i18n::tr("settings.title"));
+        auto nav = nav_mgr.lock();
+        if (nav) UpdateFooterHints(nav->GetSettingsFocus());
+        // The category and option rows are rendered from tr() every frame, so
+        // they pick up the new language on the next redraw with nothing to
+        // rebuild here. The connection-test result is a stored string, though,
+        // and would otherwise stay in the old language until re-run.
+        if (card) card->ResetConnectionStatus();
     }
 
     void SettingsLayout::HandleOptionAction(size_t cat_idx, size_t opt_idx) {
@@ -924,8 +1245,17 @@ namespace romm::ui {
 
         if (cat_idx == 0) { // General
             if (opt_idx == 0) {
-                config.SetLanguage(config.GetLanguage() == "fr" ? "en" : "fr");
+                // System default -> English -> Français -> System default.
+                // Persist the setting, apply it, then push the new strings
+                // through every layout so the change is visible immediately —
+                // no restart, and the user stays on this row.
+                const std::string next = NextLanguageSetting(config.GetLanguage());
+                config.SetLanguage(next);
                 config.Save();
+                romm::i18n::SetLanguageSetting(next);
+                if (auto nav = nav_mgr.lock()) {
+                    nav->RefreshTranslations();
+                }
             } else if (opt_idx == 1) {
                 config.SetShowBuildVersion(!config.ShowBuildVersion());
                 config.Save();
@@ -979,8 +1309,8 @@ namespace romm::ui {
                     }
                     if (missing > 0) {
                         confirm_modal->Show(
-                            "Download sound pack?",
-                            "Downloads the " + std::to_string(missing) + " missing startup/ambience track(s) for offline use. May take a while depending on your connection.",
+                            romm::i18n::tr("settings.confirm.sound_pack.title"),
+                            romm::i18n::format("settings.confirm.sound_pack.message", {{"count", std::to_string(missing)}}),
                             ConfirmAction::DownloadSoundPack,
                             []() {
                                 std::vector<std::pair<std::string, std::string>> packs;
@@ -998,7 +1328,8 @@ namespace romm::ui {
         else if (cat_idx == 2) { // Connection
             if (opt_idx == 0) {
                 std::string current = config.GetRommHost();
-                std::string val = romm::navigation::NavigationManager::ShowKeyboard("Edit RomM Host URL", "Example: https://rom.example.com", current);
+                std::string val = romm::navigation::NavigationManager::ShowKeyboard(
+                    romm::i18n::tr("keyboard.host.header"), romm::i18n::tr("keyboard.host.subtext"), current);
                 if (!val.empty() && val != current) {
                     config.SetRommHost(val);
                     config.Save();
@@ -1010,7 +1341,8 @@ namespace romm::ui {
                 }
             } else if (opt_idx == 1) {
                 std::string current = config.GetApiKey();
-                std::string val = romm::navigation::NavigationManager::ShowKeyboard("Edit API Token", "Enter RomM API Key", current);
+                std::string val = romm::navigation::NavigationManager::ShowKeyboard(
+                    romm::i18n::tr("keyboard.api_key.header"), romm::i18n::tr("keyboard.api_key.subtext"), current);
                 if (!val.empty() && val != current) {
                     config.SetApiKey(val);
                     config.Save();
@@ -1029,11 +1361,28 @@ namespace romm::ui {
         else if (cat_idx == 3) { // ROM Paths
             // Handled via explicit actions EditSelectedRomPath(), ValidateOrCreateSelectedPath(), and ResetSelectedRomPath()
         }
-        else if (cat_idx == 4) { // Advanced
+        else if (cat_idx == 4) { // Platforms
+            const auto& plat_rows = PlatformRows();
+            if (opt_idx == 0) { // Show All
+                config.ShowAllPlatforms();
+                config.Save();
+                std::cout << "[PLATFORMS] Show All: every known platform is now visible" << std::endl;
+                ApplyPlatformVisibility();
+            } else if (opt_idx == 1) { // Reset Defaults
+                config.ResetPlatformVisibilityDefaults();
+                config.Save();
+                std::cout << "[PLATFORMS] Reset to default visibility" << std::endl;
+                ApplyPlatformVisibility();
+            } else if (opt_idx - kPlatformActionRows < plat_rows.size()) {
+                SetPlatformVisibility(opt_idx - kPlatformActionRows,
+                                      !config.IsPlatformVisible(plat_rows[opt_idx - kPlatformActionRows].canonical_id));
+            }
+        }
+        else if (cat_idx == 5) { // Advanced
             if (opt_idx == 2) {
                 confirm_modal->Show(
-                    "Clear cover cache?",
-                    "This will remove downloaded cover thumbnails. ROM files will not be affected.",
+                    romm::i18n::tr("settings.confirm.clear_cover.title"),
+                    romm::i18n::tr("settings.confirm.clear_cover.message"),
                     ConfirmAction::ClearCoverCache,
                     [this]() {
                         long long b = 0;
@@ -1044,8 +1393,8 @@ namespace romm::ui {
                 );
             } else if (opt_idx == 3) {
                 confirm_modal->Show(
-                    "Clear all cache?",
-                    "This will delete downloaded covers and temporary files. ROM files will not be deleted.",
+                    romm::i18n::tr("settings.confirm.clear_all.title"),
+                    romm::i18n::tr("settings.confirm.clear_all.message"),
                     ConfirmAction::ClearAllCache,
                     [this]() {
                         long long b = 0;
@@ -1061,7 +1410,10 @@ namespace romm::ui {
                           << " max_mb=" << config.GetMaxSizeMb()
                           << " max_days=" << config.GetMaxAgeDays() << std::endl;
             } else if (opt_idx == 5) {
-                std::string val = romm::navigation::NavigationManager::ShowKeyboard("Edit Max Cache Size (MB)", "Enter maximum cache size in MB", std::to_string(config.GetMaxSizeMb()));
+                std::string val = romm::navigation::NavigationManager::ShowKeyboard(
+                    romm::i18n::tr("keyboard.max_cache_size.header"),
+                    romm::i18n::tr("keyboard.max_cache_size.subtext"),
+                    std::to_string(config.GetMaxSizeMb()));
                 if (!val.empty()) {
                     char* endptr = nullptr;
                     long mb = std::strtol(val.c_str(), &endptr, 10);
@@ -1071,7 +1423,10 @@ namespace romm::ui {
                     }
                 }
             } else if (opt_idx == 6) {
-                std::string val = romm::navigation::NavigationManager::ShowKeyboard("Edit Max Cache Age (Days)", "Delete cache files older than X days", std::to_string(config.GetMaxAgeDays()));
+                std::string val = romm::navigation::NavigationManager::ShowKeyboard(
+                    romm::i18n::tr("keyboard.max_cache_age.header"),
+                    romm::i18n::tr("keyboard.max_cache_age.subtext"),
+                    std::to_string(config.GetMaxAgeDays()));
                 if (!val.empty()) {
                     char* endptr = nullptr;
                     long days = std::strtol(val.c_str(), &endptr, 10);
@@ -1082,68 +1437,54 @@ namespace romm::ui {
                 }
             }
         }
-        else if (cat_idx == 5) { // Updates
-            std::vector<OptionRenderEntry> options;
-            options.push_back({"Current version", romm::ROMM_NX_VERSION});
-            options.push_back({"Current version code", std::to_string(romm::ROMM_NX_VERSION_CODE)});
-            options.push_back({"Update channel", config.GetUpdateChannel()});
-            options.push_back({"Manifest URL", config.GetUpdateManifestUrl()});
-            options.push_back({"Check on startup", config.CheckUpdatesOnStartup() ? "ON" : "OFF"});
-            options.push_back({"Check for updates", "Trigger Check", true});
-
+        else if (cat_idx == 6) { // Updates
+            // Dispatched by row index rather than by rebuilding a shadow copy
+            // of the option list and matching on its labels — those labels are
+            // translated now, so string comparison would silently stop matching
+            // in French. Indices 0-6 are the fixed rows drawn in OnRender;
+            // "Update available" and "Restore backup" follow, in that order,
+            // when their conditions hold.
             auto& um = romm::model::UpdateManager::Instance();
-            auto state = um.GetState();
-            std::string status_str = "Idle";
-            if (state == romm::model::UpdateState::Checking) status_str = "Checking...";
-            else if (state == romm::model::UpdateState::NoUpdateAvailable) status_str = "romm-nx is up to date.";
-            else if (state == romm::model::UpdateState::UpdateAvailable) status_str = "Update available!";
-            else if (state == romm::model::UpdateState::Downloading) status_str = "Downloading...";
-            else if (state == romm::model::UpdateState::Verifying) status_str = "Verifying...";
-            else if (state == romm::model::UpdateState::Installing) status_str = "Installing...";
-            else if (state == romm::model::UpdateState::InstalledRestartRequired) status_str = "Success! Restart required.";
-            else if (state == romm::model::UpdateState::Error) status_str = "Error";
-            options.push_back({"Status", status_str});
+            const bool has_update = (um.GetState() == romm::model::UpdateState::UpdateAvailable);
+            const bool can_restore = um.CanRestoreBackup();
 
-            if (state == romm::model::UpdateState::UpdateAvailable) {
-                options.push_back({"Update available", "Trigger Install", true});
+            constexpr size_t kRowCheckOnStartup = 4;
+            constexpr size_t kRowCheckForUpdates = 5;
+            constexpr size_t kFixedRowCount = 7; // through "Status"
+
+            const size_t update_row = has_update ? kFixedRowCount : SIZE_MAX;
+            const size_t restore_row = can_restore ? (has_update ? kFixedRowCount + 1 : kFixedRowCount)
+                                                   : SIZE_MAX;
+
+            if (opt_idx == kRowCheckOnStartup) {
+                config.SetCheckUpdatesOnStartup(!config.CheckUpdatesOnStartup());
+                config.Save();
             }
-
-            if (um.CanRestoreBackup()) {
-                options.push_back({"Restore backup", "Trigger Restore", true});
+            else if (opt_idx == kRowCheckForUpdates) {
+                um.CheckForUpdates();
             }
-
-            if (opt_idx < options.size()) {
-                std::string label = options[opt_idx].label;
-                if (label == "Check on startup") {
-                    config.SetCheckUpdatesOnStartup(!config.CheckUpdatesOnStartup());
-                    config.Save();
-                }
-                else if (label == "Check for updates") {
-                    um.CheckForUpdates();
-                }
-                else if (label == "Update available") {
-                    confirm_modal->Show(
-                        "Download & Install Update?",
-                        "This will download and replace romm-nx with the newer version. A restart will be required.",
-                        ConfirmAction::InstallUpdate,
-                        [&um]() {
-                            um.StartDownloadAndInstall();
-                        }
-                    );
-                }
-                else if (label == "Restore backup") {
-                    confirm_modal->Show(
-                        "Restore Previous Version?",
-                        "This will restore the backup romm-nx.nro.bak to the current version. A restart will be required.",
-                        ConfirmAction::RestoreBackup,
-                        [&um]() {
-                            um.RestoreBackup();
-                        }
-                    );
-                }
+            else if (opt_idx == update_row) {
+                confirm_modal->Show(
+                    romm::i18n::tr("settings.confirm.install_update.title"),
+                    romm::i18n::tr("settings.confirm.install_update.message"),
+                    ConfirmAction::InstallUpdate,
+                    [&um]() {
+                        um.StartDownloadAndInstall();
+                    }
+                );
+            }
+            else if (opt_idx == restore_row) {
+                confirm_modal->Show(
+                    romm::i18n::tr("settings.confirm.restore_backup.title"),
+                    romm::i18n::tr("settings.confirm.restore_backup.message"),
+                    ConfirmAction::RestoreBackup,
+                    [&um]() {
+                        um.RestoreBackup();
+                    }
+                );
             }
         }
-        else if (cat_idx == 6) { // Debug
+        else if (cat_idx == 7) { // Debug
             if (opt_idx == 5) {
                 std::string debug_path = "sdmc:/switch/romm-nx/debug.txt";
                 FILE* f = fopen(debug_path.c_str(), "w");
@@ -1218,8 +1559,12 @@ namespace romm::ui {
             case 1: return 6; // Theme
             case 2: return 3; // Connection
             case 3: return 2; // ROM Paths (ROMs and Cover cache)
-            case 4: return 7; // Advanced
-            case 5: { // Updates
+            // Platforms: Show All + Reset Defaults + one row per canonical
+            // platform. Grows with whatever the server reports, so it's derived
+            // rather than a literal.
+            case 4: return kPlatformActionRows + PlatformRows().size();
+            case 5: return 7; // Advanced
+            case 6: { // Updates
                 size_t count = 7; // Current version, code, channel, URL, Check on startup, Check for updates, Status
                 auto state = romm::model::UpdateManager::Instance().GetState();
                 if (state == romm::model::UpdateState::UpdateAvailable) {
@@ -1230,13 +1575,13 @@ namespace romm::ui {
                 }
                 return count;
             }
-            case 6: return 6; // Debug
+            case 7: return 6; // Debug
             default: return 0;
         }
     }
     
     size_t SettingsLayout::GetCategoriesCount() {
-        return kSettingsCategories.size();
+        return kSettingsCategoryKeys.size();
     }
 
     size_t SettingsLayout::GetSelectableRomPathRowCount() {
@@ -1262,9 +1607,12 @@ namespace romm::ui {
         auto& config = romm::model::ConfigManager::Instance();
 
         if (row_idx == 0) { // ROMs / Downloads is editable
+            // Platform name and the example path are values; only the wording
+            // around them is localized.
             std::string current = config.GetRomPath(plat.internal_slug);
-            std::string title = "Edit " + plat.display_name + " Path";
-            std::string prompt = "Example: sdmc:/roms/" + plat.display_slug + "/";
+            std::string title = romm::i18n::format("keyboard.rom_path.header", {{"platform", plat.display_name}});
+            std::string prompt = romm::i18n::format("keyboard.rom_path.subtext",
+                                                    {{"path", "sdmc:/roms/" + plat.display_slug + "/"}});
             std::string val = romm::navigation::NavigationManager::ShowKeyboard(title, prompt, current);
             if (!val.empty() && val != current) {
                 if (romm::model::RomPathManager::ValidatePath(val)) {
@@ -1337,11 +1685,12 @@ namespace romm::ui {
 
         if (row_idx == 0) { // ROMs / Downloads
             std::string default_path = romm::model::RomPathManager::GetDefaultPath(plat.internal_slug);
-            std::string title = "Reset " + plat.display_name + " ROM path?";
-            std::string msg = "This will restore " + plat.display_name + " path to the default value " + default_path + ".";
             confirm_modal->Show(
-                title,
-                msg,
+                romm::i18n::format("settings.confirm.reset_path.title", {{"platform", plat.display_name}}),
+                romm::i18n::format("settings.confirm.reset_path.message", {
+                    {"platform", plat.display_name},
+                    {"path", default_path}
+                }),
                 ConfirmAction::ResetRomPath,
                 [this, &config, plat, default_path]() {
                     config.SetRomPath(plat.internal_slug, default_path);

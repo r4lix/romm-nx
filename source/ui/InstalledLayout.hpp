@@ -127,6 +127,8 @@ namespace romm::ui {
 
         void ClearInfoTextures();
         void RebuildInfoStrip();
+        // (Re)renders the column labels and the empty/placeholder strings.
+        void BuildStaticTextures();
 
     public:
         InstalledListPanel(s32 x, s32 y, s32 w, s32 h,
@@ -137,6 +139,7 @@ namespace romm::ui {
                       const std::string& norm_slug);
         void ResetSelection();
         void SetSelectedIdx(size_t idx);
+        void RefreshTranslations();
 
         size_t GetSelectedIdx() const { return selected_idx; }
         const romm::model::InstalledIndexEntry* GetSelected() const;
@@ -183,6 +186,7 @@ namespace romm::ui {
         InstalledLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void ForceRefresh();
         void UpdateDownloadStatus() {}
         void HandleInput(const u64 keys_down, const u64 keys_up,

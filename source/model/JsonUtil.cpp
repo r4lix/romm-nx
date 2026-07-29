@@ -296,5 +296,113 @@ bool jsonParseRomItems(const std::string& json, std::vector<RomEntry>& out) {
         return false;
     }
 
+    namespace {
+
+        // Appends one Unicode code point as UTF-8. Only used by the \uXXXX
+        // escape path; dictionaries are authored as literal UTF-8, so this is
+        // purely defensive against a hand-edited or tool-generated file.
+        void appendUtf8(std::string& out, unsigned int cp) {
+            if (cp < 0x80) {
+                out.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+                out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+        }
+
+        // Reads a JSON string starting at the opening quote. Returns false if
+        // it is unterminated; `pos` ends just past the closing quote.
+        bool readJsonString(const std::string& json, size_t& pos, std::string& out) {
+            if (pos >= json.size() || json[pos] != '"') return false;
+            ++pos;
+            out.clear();
+            while (pos < json.size()) {
+                const char ch = json[pos++];
+                if (ch == '"') return true;
+                if (ch != '\\') {
+                    out.push_back(ch);
+                    continue;
+                }
+                if (pos >= json.size()) return false;
+                const char esc = json[pos++];
+                switch (esc) {
+                    case 'n': out.push_back('\n'); break;
+                    case 't': out.push_back('\t'); break;
+                    case 'r': out.push_back('\r'); break;
+                    case 'b': out.push_back('\b'); break;
+                    case 'f': out.push_back('\f'); break;
+                    case 'u': {
+                        unsigned int cp = 0;
+                        if (pos + 4 > json.size()) return false;
+                        for (int i = 0; i < 4; ++i) {
+                            const char h = json[pos + i];
+                            cp <<= 4;
+                            if (h >= '0' && h <= '9') cp |= (unsigned)(h - '0');
+                            else if (h >= 'a' && h <= 'f') cp |= (unsigned)(h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') cp |= (unsigned)(h - 'A' + 10);
+                            else return false;
+                        }
+                        pos += 4;
+                        appendUtf8(out, cp);
+                        break;
+                    }
+                    default: out.push_back(esc); break; // covers \" \\ \/
+                }
+            }
+            return false;
+        }
+
+    } // namespace
+
+    bool jsonParseFlatStringMap(const std::string& json, std::map<std::string, std::string>& out) {
+        out.clear();
+
+        size_t pos = skipWhitespace(json, 0);
+        if (pos >= json.size() || json[pos] != '{') {
+            return false;
+        }
+        const size_t end = findMatching(json, pos, '{', '}');
+        if (end == std::string::npos) {
+            return false;
+        }
+
+        ++pos;
+        while (pos < end) {
+            pos = skipWhitespace(json, pos);
+            if (pos >= end || json[pos] == '}') break;
+
+            if (json[pos] != '"') {
+                ++pos; // stray token; skip rather than abandon the whole file
+                continue;
+            }
+
+            std::string key;
+            if (!readJsonString(json, pos, key)) return false;
+
+            pos = skipWhitespace(json, pos);
+            if (pos >= end || json[pos] != ':') return false;
+            pos = skipWhitespace(json, pos + 1);
+
+            if (pos < end && json[pos] == '"') {
+                std::string value;
+                if (!readJsonString(json, pos, value)) return false;
+                out[key] = value;
+            } else {
+                // Non-string value (number/bool/null/nested): not a dictionary
+                // entry, so skip to the next comma at this depth.
+                while (pos < end && json[pos] != ',') ++pos;
+            }
+
+            pos = skipWhitespace(json, pos);
+            if (pos < end && json[pos] == ',') ++pos;
+        }
+
+        return true;
+    }
+
 } // namespace romm::model
 

@@ -11,6 +11,13 @@ namespace romm::navigation {
 
 namespace romm::ui {
 
+    // ConfigManager stores these as stable English tokens because they are
+    // written to config.json — never translate them at the source. These two
+    // map a stored token to its display word for the current language, and are
+    // the only place that mapping happens (Settings, and the library Y-Menu).
+    std::string TranslateViewMode(const std::string& stored_mode);
+    std::string TranslateCoversQuality(const std::string& stored_quality);
+
     enum class SettingsFocusArea {
         CategoryList,
         OptionList
@@ -102,8 +109,9 @@ namespace romm::ui {
         long long cache_total_bytes = 0;
         int cache_cover_count = 0;
 
-        // Connection test state
-        std::string connection_test_status = "Not tested";
+        // Connection test state. Set from the constructor rather than inline so
+        // it is a translated string, not a hardcoded English one.
+        std::string connection_test_status;
         pu::ui::Color connection_status_color;
 
         // ROM Paths status cache
@@ -113,6 +121,10 @@ namespace romm::ui {
         // instead of shrinking tabs to force-fit an arbitrary platform count
         // (which just overlaps again once the count grows further).
         size_t rom_path_tab_scroll_offset = 0;
+        // Settings > Platforms row list: index of the first visible row. The
+        // list is open-ended (catalogue + server-detected), so it scrolls
+        // rather than assuming it fits the panel.
+        size_t platform_scroll_offset = 0;
 
     public:
         SettingsCard(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav);
@@ -124,6 +136,10 @@ namespace romm::ui {
         s32 GetHeight() override { return h; }
 
         void RefreshConfigTextures();
+        // Back to "Not tested" in the current language — used on construction
+        // and after a language switch, since the stored result would otherwise
+        // stay in the previous one.
+        void ResetConnectionStatus();
         void TriggerConnectionTest();
         void TriggerRecalculateCache();
         void RecalculateCacheSize();
@@ -148,6 +164,7 @@ namespace romm::ui {
         SettingsLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
         void RefreshConfig();
         void UpdateFooterHints(SettingsFocusArea focus);
 
@@ -158,6 +175,16 @@ namespace romm::ui {
         void CycleThemeSound(int direction);
         void CycleStartupVolume(int direction);
         void CycleAmbientVolume(int direction);
+
+        // --- Settings > Platforms -----------------------------------------
+        // Rebuilds the row list from the catalogue + the live model, then
+        // clamps the cursor if the list shrank.
+        void RefreshPlatformRows();
+        // Left/Right on a platform row: sets the state outright.
+        void ToggleSelectedPlatform(bool visible);
+        void SetPlatformVisibility(size_t platform_row_idx, bool visible);
+        void ApplyPlatformVisibility();
+
         static size_t GetOptionsCount(size_t cat_idx);
         static size_t GetCategoriesCount();
         static size_t GetSelectableRomPathRowCount();

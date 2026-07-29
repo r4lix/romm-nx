@@ -7,6 +7,7 @@
 #include "LibraryMenuModal.hpp"
 #include "StatusBar.hpp"
 #include "UninstallConfirmModal.hpp"
+#include "../i18n/I18n.hpp"
 
 namespace romm::ui {
 
@@ -16,7 +17,8 @@ namespace romm::ui {
         // Background color: Web Dark Slate (#101216)
         this->SetBackgroundColor(pu::ui::Color(16, 18, 22, 255));
 
-        // Create Title text block (Orbitron Black, Very light text #EDE5FB)
+        // Create Title text block (Orbitron Black, Very light text #EDE5FB).
+        // "ROMM" is the product name — not translated in any language.
         title_text = pu::ui::elm::TextBlock::New(60, 30, "ROMM");
         title_text->SetFont("Orbitron@45");
         title_text->SetColor(pu::ui::Color(237, 229, 251, 255));
@@ -27,7 +29,7 @@ namespace romm::ui {
         this->Add(status_bar);
 
         // Create hint text block (Ubuntu, Light lavender #BEB4E1)
-        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, "A Select   |   B Back   |   X Mark   |   ZR Download marked   |   Y Menu   |   + Exit");
+        hint_text = pu::ui::elm::TextBlock::New(60, 1080 - 65, romm::i18n::tr("hint.library"));
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(hint_text);
@@ -61,6 +63,15 @@ namespace romm::ui {
     }
 
     LibraryLayout::~LibraryLayout() {}
+
+    void LibraryLayout::RefreshTranslations() {
+        if (hint_text) hint_text->SetText(romm::i18n::tr("hint.library"));
+        // The sidebar's status cards and the grid's status/info strips are
+        // pre-rendered textures, so they need an explicit rebuild; everything
+        // else on this screen is drawn from tr() each frame.
+        if (sidebar) sidebar->RefreshTranslations();
+        if (grid) grid->RefreshTranslations();
+    }
 
     void LibraryLayout::OnSelectionUpdated() {
         auto nav = nav_mgr.lock();

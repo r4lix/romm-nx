@@ -2,6 +2,8 @@
 #include "RomPathManager.hpp"
 #include "JsonUtil.hpp"
 #include "DataModel.hpp"
+#include "PlatformCatalog.hpp"
+#include "../i18n/I18n.hpp"
 #include <cstdio>
 #include <iostream>
 #include <sys/stat.h>
@@ -46,6 +48,63 @@ namespace romm::model {
         rom_paths["gbc"] = "sdmc:/roms/gbc/";
         rom_paths["gba"] = "sdmc:/roms/gba/";
         rom_paths["3ds"] = "sdmc:/roms/3ds/";
+
+        // Seed the shipped defaults so a first launch (or a config file that
+        // predates this setting) already hides the right platforms without
+        // waiting for Load() to say so.
+        ResetPlatformVisibilityDefaults();
+    }
+
+    // --- Platform visibility -------------------------------------------------
+
+    bool ConfigManager::IsPlatformVisible(const std::string& slug) const {
+        const std::string id = NormalizePlatformId(slug);
+        if (id.empty()) return true; // nothing to key on; never hide it
+        return hidden_platforms.find(id) == hidden_platforms.end();
+    }
+
+    void ConfigManager::SetPlatformVisible(const std::string& slug, bool visible) {
+        const std::string id = NormalizePlatformId(slug);
+        if (id.empty()) return;
+        known_platforms.insert(id);
+        if (visible) {
+            hidden_platforms.erase(id);
+        } else {
+            hidden_platforms.insert(id);
+        }
+    }
+
+    void ConfigManager::ResetPlatformVisibilityDefaults() {
+        hidden_platforms.clear();
+        for (const auto& id : GetDefaultHiddenPlatformIds()) {
+            hidden_platforms.insert(id);
+        }
+        // Server-only platforms aren't in the catalogue, so "default" for them
+        // is hidden — same rule new detections get.
+        for (const auto& id : known_platforms) {
+            if (!IsPlatformVisibleByDefault(id)) {
+                hidden_platforms.insert(id);
+            }
+        }
+    }
+
+    void ConfigManager::ShowAllPlatforms() {
+        hidden_platforms.clear();
+    }
+
+    bool ConfigManager::RegisterDetectedPlatforms(const std::vector<std::string>& slugs) {
+        bool changed = false;
+        for (const auto& slug : slugs) {
+            const std::string id = NormalizePlatformId(slug);
+            if (id.empty()) continue;
+            if (!known_platforms.insert(id).second) continue; // already seen
+            changed = true;
+            if (!IsPlatformVisibleByDefault(id)) {
+                hidden_platforms.insert(id);
+                std::cout << "[PLATFORMS] New platform '" << id << "' detected, hidden by default" << std::endl;
+            }
+        }
+        return changed;
     }
 
     namespace {
@@ -164,6 +223,13 @@ namespace romm::model {
 
         // Load other standard fields
         jsonExtractString(content, "language", language);
+        // Guard against a hand-edited config naming a language romm-nx doesn't
+        // ship. "auto" is the safe answer: it resolves to the console language
+        // and, failing that, to English — never a missing dictionary.
+        if (language != "auto" && language != "en" && language != "fr") {
+            std::cerr << "[CONFIG] Unknown language \"" << language << "\", using \"auto\"" << std::endl;
+            language = "auto";
+        }
         jsonExtractString(content, "theme", theme);
         
         std::string quality_str;
@@ -220,6 +286,42 @@ namespace romm::model {
         jsonExtractString(content, "update_channel", update_channel);
         jsonExtractBool(content, "check_updates_on_startup", check_updates_on_startup);
         jsonExtractString(content, "dismissed_update_version", dismissed_update_version);
+
+        // Platform visibility. A config written before this setting existed has
+        // neither key — the constructor's defaults then stand, which is exactly
+        // the "initialize the default hidden platforms" case. Malformed data
+        // (key present but not a string array) makes jsonExtractStringArray
+        // return false and is treated the same way. Every id is re-normalized
+        // on the way in, so a hand-edited "playstation-2" still matches "ps2".
+        {
+            std::vector<std::string> hidden_list;
+            if (jsonExtractStringArray(content, "hidden_platforms", hidden_list)) {
+                hidden_platforms.clear();
+                for (const auto& raw : hidden_list) {
+                    std::string id = NormalizePlatformId(raw);
+                    if (!id.empty()) hidden_platforms.insert(id);
+                }
+            }
+
+            std::vector<std::string> known_list;
+            if (jsonExtractStringArray(content, "known_platforms", known_list)) {
+                known_platforms.clear();
+                for (const auto& raw : known_list) {
+                    std::string id = NormalizePlatformId(raw);
+                    if (!id.empty()) known_platforms.insert(id);
+                }
+            }
+            // Seed the known set from what we can prove was known: everything
+            // in the catalogue plus anything already hidden. Without this, a
+            // config carrying only hidden_platforms would treat every built-in
+            // platform as brand new on the next fetch and re-hide it.
+            for (const auto& entry : GetPlatformCatalog()) {
+                known_platforms.insert(entry.id);
+            }
+            for (const auto& id : hidden_platforms) {
+                known_platforms.insert(id);
+            }
+        }
 
         // Per-platform grid view mode overrides (set via the in-game Y-Menu;
         // independent of the global grid_view_mode default above).
@@ -358,7 +460,24 @@ namespace romm::model {
         content += "  \"update_manifest_url\": \"" + update_manifest_url + "\",\n";
         content += "  \"update_channel\": \"" + update_channel + "\",\n";
         content += "  \"check_updates_on_startup\": " + std::string(check_updates_on_startup ? "true" : "false") + ",\n";
-        content += "  \"dismissed_update_version\": \"" + dismissed_update_version + "\"\n";
+        content += "  \"dismissed_update_version\": \"" + dismissed_update_version + "\",\n";
+
+        // Settings > Platforms. hidden_platforms is the user-facing list;
+        // known_platforms is bookkeeping so a platform detected later can be
+        // hidden by default exactly once, instead of every launch.
+        auto writeIdArray = [&content](const char* key, const std::set<std::string>& ids, bool last) {
+            content += std::string("  \"") + key + "\": [";
+            bool first_id = true;
+            for (const auto& id : ids) {
+                if (!first_id) content += ", ";
+                first_id = false;
+                content += "\"" + id + "\"";
+            }
+            content += last ? "]\n" : "],\n";
+        };
+        writeIdArray("hidden_platforms", hidden_platforms, false);
+        writeIdArray("known_platforms", known_platforms, true);
+
         content += "}\n";
 
         size_t written = fwrite(content.c_str(), 1, content.size(), f);
@@ -393,7 +512,7 @@ namespace romm::model {
     }
 
     std::string ConfigManager::GetMaskedApiKey() const {
-        if (api_key.empty()) return "Not Configured";
+        if (api_key.empty()) return romm::i18n::tr("settings.connection.not_configured");
         if (api_key.size() >= 12) {
             return api_key.substr(0, 8) + "..." + api_key.substr(api_key.size() - 4);
         }

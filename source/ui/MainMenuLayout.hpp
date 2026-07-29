@@ -17,7 +17,9 @@ namespace romm::ui {
 
         std::vector<pu::sdl2::Texture> selected_texs;
         std::vector<pu::sdl2::Texture> unselected_texs;
-        std::vector<std::string> item_names;
+
+        // i18n keys for the six dashboard cards, in navigation order.
+        static const char* const kItemKeys[6];
 
         s32 card_w;
         s32 card_h;
@@ -32,6 +34,11 @@ namespace romm::ui {
     public:
         MenuGrid(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav);
         ~MenuGrid() override;
+
+        static constexpr size_t GetItemCount() { return 6; }
+
+        // Re-rasterises the card labels in the current language.
+        void RefreshTranslations();
 
         s32 GetX() override { return x; }
         s32 GetY() override { return y; }
@@ -54,11 +61,13 @@ namespace romm::ui {
         std::shared_ptr<UpdateAvailableModal> update_modal;
         pu::ui::elm::TextBlock::Ref header_text;
         pu::ui::elm::TextBlock::Ref hint_text;
+        pu::ui::elm::TextBlock::Ref language_text;
 
     public:
         MainMenuLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);
 
         void OnSelectionUpdated();
+        void RefreshTranslations();
 
         PU_SMART_CTOR(MainMenuLayout)
     };

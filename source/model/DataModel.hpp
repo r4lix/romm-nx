@@ -4,6 +4,7 @@
 #include <vector>
 #include <map>
 #include <cctype>
+#include <cstdint>
 
 namespace romm::model {
 
@@ -149,7 +150,19 @@ namespace romm::model {
 
     class DataModel {
     private:
+        // Everything the server returned, in server order. Never filtered —
+        // Settings > Platforms enumerates from here, and it's what makes
+        // re-enabling a platform free (no second API request).
+        std::vector<Platform> all_platforms;
+        // The visible subset the whole UI indexes into.
+        //
+        // Ownership invariant: a platform's fetched games live in exactly ONE
+        // of these two vectors — in `platforms` while it's visible, parked back
+        // on `all_platforms` while it's hidden. That keeps hiding a platform
+        // free of any copy, but it means neither vector alone sees every game;
+        // anything searching across platforms must go through FindGameByRomId().
         std::vector<Platform> platforms;
+        uint64_t platforms_generation = 0;
         ApiState platform_state;
         ApiState roms_state;
 
@@ -158,10 +171,27 @@ namespace romm::model {
 
     public:
         DataModel();
-        
+
         const std::vector<Platform>& GetPlatforms() const;
+        const std::vector<Platform>& GetAllPlatforms() const { return all_platforms; }
         void SetPlatforms(const std::vector<Platform>& new_plats);
+
+        // Re-applies the Settings > Platforms filter to the cached server list.
+        // Purely local: no request, and already-fetched ROMs survive a
+        // hide/show round trip.
+        void RebuildVisiblePlatforms();
+
+        // Bumped on every rebuild. UI elements that cache per-platform state
+        // watch this so a visibility change that happens to leave the list
+        // length unchanged still invalidates them.
+        uint64_t GetPlatformsGeneration() const { return platforms_generation; }
         const Platform* GetPlatformById(const std::string& id) const;
+
+        // Looks a fetched game up across every platform, visible or hidden.
+        // Hiding a platform is a browser filter, not a data eviction — callers
+        // that resolve a ROM by id (installed-list cover lookup, for one) must
+        // keep finding it. nullptr if no platform has fetched that ROM yet.
+        const Game* FindGameByRomId(int rom_id) const;
         void UpdatePlatformGames(const std::string& platform_id, const std::vector<Game>& games);
         void SetPlatformRomsState(const std::string& platform_id, ApiState state);
 

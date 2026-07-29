@@ -3,6 +3,7 @@
 #include "DownloadManager.hpp"
 #include "JsonUtil.hpp"
 #include "../Version.hpp"
+#include "../i18n/I18n.hpp"
 extern "C" {
 #include <switch.h>
 #include <switch/crypto/sha256.h>
@@ -176,7 +177,7 @@ namespace romm::model {
         std::string temp_new_path = current_path + ".new_tmp";
 
         if (!FileExists(backup_path)) {
-            SetError("Backup file does not exist");
+            SetError(romm::i18n::tr("update.error.backup_missing"));
             return false;
         }
 
@@ -188,7 +189,7 @@ namespace romm::model {
         if (FileExists(current_path)) {
             if (rename(current_path.c_str(), temp_new_path.c_str()) != 0) {
                 romfsInit();
-                SetError("Failed to rename current NRO to temporary path");
+                SetError(romm::i18n::tr("update.error.rename_current"));
                 return false;
             }
         }
@@ -200,7 +201,7 @@ namespace romm::model {
                 rename(temp_new_path.c_str(), current_path.c_str());
             }
             romfsInit();
-            SetError("Failed to restore backup NRO");
+            SetError(romm::i18n::tr("update.error.restore_backup"));
             return false;
         }
 
@@ -229,7 +230,8 @@ namespace romm::model {
 
         auto http_res = HttpClient::getSync(manifest_url, {});
         if (!http_res.success) {
-            SetError("Failed to fetch manifest: " + (http_res.error.empty() ? "HTTP " + std::to_string(http_res.statusCode) : http_res.error));
+            SetError(romm::i18n::format("update.error.fetch_manifest",
+                {{"error", http_res.error.empty() ? "HTTP " + std::to_string(http_res.statusCode) : http_res.error}}));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -262,7 +264,7 @@ namespace romm::model {
         jsonExtractStringArray(http_res.body, "changelog", manifest.changelog);
 
         if (!parse_ok) {
-            SetError("Failed to parse update manifest JSON");
+            SetError(romm::i18n::tr("update.error.parse_manifest"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -271,7 +273,7 @@ namespace romm::model {
 
         // Validate manifest content
         if (manifest.schema != 1) {
-            SetError("Unsupported manifest schema version: " + std::to_string(manifest.schema));
+            SetError(romm::i18n::format("update.error.schema", {{"schema", std::to_string(manifest.schema)}}));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -279,7 +281,7 @@ namespace romm::model {
         }
 
         if (manifest.app != "romm-nx") {
-            SetError("Manifest app mismatch: " + manifest.app);
+            SetError(romm::i18n::format("update.error.app_mismatch", {{"app", manifest.app}}));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -288,7 +290,8 @@ namespace romm::model {
 
         std::string expected_channel = ConfigManager::Instance().GetUpdateChannel();
         if (manifest.channel != expected_channel) {
-            SetError("Manifest channel mismatch: " + manifest.channel + " (expected " + expected_channel + ")");
+            SetError(romm::i18n::format("update.error.channel_mismatch",
+                {{"channel", manifest.channel}, {"expected", expected_channel}}));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -296,7 +299,7 @@ namespace romm::model {
         }
 
         if (manifest.nro.url.empty()) {
-            SetError("NRO URL is missing in update manifest");
+            SetError(romm::i18n::tr("update.error.no_url"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -304,7 +307,7 @@ namespace romm::model {
         }
 
         if (manifest.nro.size <= 0) {
-            SetError("NRO size must be greater than zero");
+            SetError(romm::i18n::tr("update.error.bad_size"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -312,7 +315,7 @@ namespace romm::model {
         }
 
         if (manifest.nro.sha256.size() != 64) {
-            SetError("Invalid SHA-256 hash length in manifest");
+            SetError(romm::i18n::tr("update.error.bad_hash"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -320,7 +323,7 @@ namespace romm::model {
         }
 
         if (!IsSafeNroUrl(manifest.nro.url)) {
-            SetError("Unsafe NRO URL in update manifest");
+            SetError(romm::i18n::tr("update.error.unsafe_url"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             check_in_progress = false;
@@ -366,7 +369,7 @@ namespace romm::model {
         auto active_dl = DownloadManager::Instance().GetActiveDownloadSnapshot();
         auto dl_queue = DownloadManager::Instance().GetQueueSnapshot();
         if (active_dl.rom_id > 0 || !dl_queue.empty()) {
-            SetError("Stop current downloads before updating romm-nx.");
+            SetError(romm::i18n::tr("update.error.downloads_active"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             install_in_progress = false;
@@ -397,7 +400,7 @@ namespace romm::model {
         std::cout << "[UPDATE_NRO_URL_RESOLVED] url=" << nro_url << std::endl;
 
         if (nro_url.rfind("http://", 0) != 0 && nro_url.rfind("https://", 0) != 0) {
-            SetError("Invalid NRO URL: must start with http:// or https://");
+            SetError(romm::i18n::tr("update.error.invalid_url"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             install_in_progress = false;
@@ -414,7 +417,7 @@ namespace romm::model {
         // Before starting curl, open file for binary writing
         FILE* file = fopen(part_path.c_str(), "wb");
         if (!file) {
-            SetError("Failed to open update NRO part file for writing");
+            SetError(romm::i18n::tr("update.error.open_part"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             install_in_progress = false;
@@ -424,7 +427,7 @@ namespace romm::model {
         CURL* curl = curl_easy_init();
         if (!curl) {
             fclose(file);
-            SetError("Failed to initialize curl for NRO download");
+            SetError(romm::i18n::tr("update.error.curl_init"));
             SetState(UpdateState::Error);
             std::lock_guard<std::mutex> lock(state_mutex);
             install_in_progress = false;
@@ -470,7 +473,10 @@ namespace romm::model {
 
         if (code != CURLE_OK || http_code < 200 || http_code >= 300) {
             std::string curl_err = curl_easy_strerror(code);
-            std::string err_msg = "Download failed: " + curl_err + " (HTTP " + std::to_string(http_code) + ")";
+            // curl_err is the library's own English diagnostic; only the sentence
+            // around it is localized.
+            std::string err_msg = romm::i18n::format("update.error.download_failed",
+                {{"error", curl_err}, {"code", std::to_string(http_code)}});
             
             std::cout << "[UPDATE_DOWNLOAD_ERROR] curl_code=" << (int)code
                       << " message=" << curl_err
@@ -494,7 +500,7 @@ namespace romm::model {
         }
 
         if (final_size != total_bytes.load()) {
-            SetError("Downloaded NRO file size mismatch");
+            SetError(romm::i18n::tr("update.error.size_mismatch"));
             SetState(UpdateState::Error);
             remove(part_path.c_str());
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -511,7 +517,7 @@ namespace romm::model {
         std::transform(expected_sha.begin(), expected_sha.end(), expected_sha.begin(), ::tolower);
 
         if (calculated_sha != expected_sha) {
-            SetError("SHA-256 hash mismatch");
+            SetError(romm::i18n::tr("update.error.hash_mismatch"));
             SetState(UpdateState::Error);
             remove(part_path.c_str());
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -523,7 +529,7 @@ namespace romm::model {
 
         // Rename verified part path to new path
         if (rename(part_path.c_str(), new_path.c_str()) != 0) {
-            SetError("Failed to rename temporary download file");
+            SetError(romm::i18n::tr("update.error.rename_temp"));
             SetState(UpdateState::Error);
             remove(part_path.c_str());
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -553,7 +559,7 @@ namespace romm::model {
                 backup_created = true;
             } else {
                 romfsInit();
-                SetError("Failed to backup current application executable");
+                SetError(romm::i18n::tr("update.error.backup_current"));
                 SetState(UpdateState::Error);
                 remove(new_path.c_str());
                 std::lock_guard<std::mutex> lock(state_mutex);
@@ -569,7 +575,7 @@ namespace romm::model {
                 rename(backup_path.c_str(), current_app_path.c_str());
             }
             romfsInit();
-            SetError("Failed to install the new application executable");
+            SetError(romm::i18n::tr("update.error.install"));
             SetState(UpdateState::Error);
             remove(new_path.c_str());
             std::lock_guard<std::mutex> lock(state_mutex);
