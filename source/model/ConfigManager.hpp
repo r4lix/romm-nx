@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -17,6 +18,12 @@ namespace romm::model {
         Default,
         Big,
         Detail // Single-column title list with a live detail panel beside it.
+    };
+
+    // How the library's left sidebar draws the platform list.
+    enum class PlatformSelectorStyle {
+        Text,   // Scrolling list of platform names (the original, and default)
+        Banners // Column of platform logo art, selection pinned to a fixed slot
     };
 
     class ConfigManager {
@@ -50,6 +57,12 @@ namespace romm::model {
 
         const std::string& GetTheme() const { return theme; }
         void SetTheme(const std::string& t) { theme = t; }
+
+        // Library sidebar style (Settings > Theme). Text is the default so an
+        // existing config — which has no key at all — keeps the list it had.
+        PlatformSelectorStyle GetPlatformSelectorStyle() const { return platform_selector_style; }
+        void SetPlatformSelectorStyle(PlatformSelectorStyle s) { platform_selector_style = s; }
+        std::string GetPlatformSelectorStyleString() const;
 
         CoversQuality GetCoversQuality() const { return covers_quality; }
         void SetCoversQuality(CoversQuality q) { covers_quality = q; }
@@ -118,11 +131,40 @@ namespace romm::model {
         const std::string& GetAudioBaseUrl() const { return audio_base_url; }
         void SetAudioBaseUrl(const std::string& url) { audio_base_url = url; }
 
-        std::string GetUpdateManifestUrl() const { return update_manifest_url; }
-        void SetUpdateManifestUrl(const std::string& url) { update_manifest_url = url; }
+        // --- OTA update channels ------------------------------------------
+        // Two independent manifests sit side by side under the base URL, one
+        // directory per channel: <base>/<channel>/manifest.json, with that
+        // channel's NRO next to it (nro.url is relative to the manifest).
+        static constexpr const char* kChannelStable = "stable";
+        static constexpr const char* kChannelTesting = "testing";
+        // Anything that isn't a known channel — a hand-edited config, a value
+        // written by a future build — falls back to stable.
+        static std::string NormalizeUpdateChannel(const std::string& channel);
 
-        std::string GetUpdateChannel() const { return update_channel; }
-        void SetUpdateChannel(const std::string& channel) { update_channel = channel; }
+        // Channel the user is tracking (Settings > Updates).
+        const std::string& GetUpdateChannel() const { return update_channel; }
+        void SetUpdateChannel(const std::string& channel) { update_channel = NormalizeUpdateChannel(channel); }
+
+        // Channel the running NRO was installed from. Differs from the tracked
+        // channel only between a channel switch and the install that follows
+        // it — that gap is what lets UpdateManager offer a build whose
+        // version_code is *lower* than the running one (testing -> stable).
+        const std::string& GetInstalledUpdateChannel() const { return installed_update_channel; }
+        void SetInstalledUpdateChannel(const std::string& channel) { installed_update_channel = NormalizeUpdateChannel(channel); }
+
+        // Manifest URL for the tracked channel, or for a named one. Returns
+        // the override verbatim when one is set.
+        std::string GetUpdateManifestUrl() const;
+        std::string GetUpdateManifestUrlForChannel(const std::string& channel) const;
+
+        const std::string& GetUpdateBaseUrl() const { return update_base_url; }
+        void SetUpdateBaseUrl(const std::string& url);
+
+        // Pins the manifest URL, bypassing the channel layout entirely. Only
+        // reachable by hand-editing config.json with a URL that doesn't follow
+        // the <base>/<channel>/manifest.json convention (see Load).
+        const std::string& GetUpdateManifestUrlOverride() const { return update_manifest_url_override; }
+        void SetUpdateManifestUrlOverride(const std::string& url) { update_manifest_url_override = url; }
 
         bool CheckUpdatesOnStartup() const { return check_updates_on_startup; }
         void SetCheckUpdatesOnStartup(bool check) { check_updates_on_startup = check; }
@@ -163,6 +205,11 @@ namespace romm::model {
     private:
         ConfigManager();
 
+        // Serializes the config.json write. UpdateManager records the installed
+        // channel from its worker thread, which can otherwise interleave with a
+        // save triggered from the UI and leave a truncated file behind.
+        std::mutex save_mutex;
+
         std::string romm_host;
         std::string api_key;
         std::string psx_download_dir = "sdmc:/roms/ps1/";
@@ -171,6 +218,7 @@ namespace romm::model {
 
         std::string language = "auto";
         std::string theme = "romm_brand";
+        PlatformSelectorStyle platform_selector_style = PlatformSelectorStyle::Text;
         CoversQuality covers_quality = CoversQuality::Balanced;
         GridViewMode grid_view_mode = GridViewMode::Default;
         bool auto_clear_enabled = false;
@@ -190,8 +238,11 @@ namespace romm::model {
         // existing update_manifest_url — confirm or correct via Settings.
         std::string audio_base_url = "https://romm-nx.aaaoz.fr/romm-nx/audio/";
 
-        std::string update_manifest_url = "https://romm-nx.aaaoz.fr/romm-nx/stable/manifest.json";
-        std::string update_channel = "stable";
+        // Directory holding the per-channel subdirectories; always ends in '/'.
+        std::string update_base_url = "https://romm-nx.aaaoz.fr/romm-nx/";
+        std::string update_manifest_url_override;
+        std::string update_channel = kChannelStable;
+        std::string installed_update_channel = kChannelStable;
         bool check_updates_on_startup = true;
         std::string dismissed_update_version;
 

@@ -109,6 +109,20 @@ namespace romm::ui {
             return key;
         }
 
+        // OTA update channels, in the order the Channel row cycles through
+        // them. Stable first — it's the default and where most users stay.
+        const std::vector<std::string> kUpdateChannelKeys = {
+            romm::model::ConfigManager::kChannelStable,
+            romm::model::ConfigManager::kChannelTesting,
+        };
+
+        std::string UpdateChannelDisplayName(const std::string& channel) {
+            if (channel == romm::model::ConfigManager::kChannelTesting) {
+                return romm::i18n::tr("settings.updates.channel.testing");
+            }
+            return romm::i18n::tr("settings.updates.channel.stable");
+        }
+
         // The full catalogue of downloadable packs (startup chimes + ambience
         // loops) — "Download Sound Pack" fetches every one of these that
         // isn't already cached, in a single batch. "none" is excluded —
@@ -539,6 +553,10 @@ namespace romm::ui {
             options.push_back({romm::i18n::tr("settings.theme.startup_volume"), "", false, config.GetStartupVolume()});
             options.push_back({romm::i18n::tr("settings.theme.menu_ambience"), ThemeSoundDisplayName(config.GetThemeSound())});
             options.push_back({romm::i18n::tr("settings.theme.ambience_volume"), "", false, config.GetAmbientVolume()});
+            options.push_back({romm::i18n::tr("settings.theme.platform_selector"),
+                               romm::i18n::tr(config.GetPlatformSelectorStyle() == romm::model::PlatformSelectorStyle::Banners
+                                                  ? "settings.theme.platform_selector.banners"
+                                                  : "settings.theme.platform_selector.text")});
         }
         else if (active_cat == 2) { // Connection
             // Host URL and masked key are configuration values, shown as-is.
@@ -583,7 +601,17 @@ namespace romm::ui {
             // translatable words.
             options.push_back({romm::i18n::tr("settings.updates.current_version"), romm::ROMM_NX_VERSION});
             options.push_back({romm::i18n::tr("settings.updates.current_version_code"), std::to_string(romm::ROMM_NX_VERSION_CODE)});
-            options.push_back({romm::i18n::tr("settings.updates.channel"), config.GetUpdateChannel()});
+            // Between switching channel and installing that channel's build,
+            // the row spells out both: the tracked channel is what will be
+            // checked, the installed one is what's running right now.
+            std::string channel_value = UpdateChannelDisplayName(config.GetUpdateChannel());
+            if (config.GetUpdateChannel() != config.GetInstalledUpdateChannel()) {
+                channel_value = romm::i18n::format("settings.updates.channel.pending", {
+                    {"channel", channel_value},
+                    {"installed", UpdateChannelDisplayName(config.GetInstalledUpdateChannel())}
+                });
+            }
+            options.push_back({romm::i18n::tr("settings.updates.channel"), channel_value});
             options.push_back({romm::i18n::tr("settings.updates.manifest_url"), config.GetUpdateManifestUrl()});
             options.push_back({romm::i18n::tr("settings.updates.check_on_startup"), on_off(config.CheckUpdatesOnStartup())});
             options.push_back({romm::i18n::tr("settings.updates.check_now"), romm::i18n::tr("settings.updates.trigger_check"), true});
@@ -593,7 +621,14 @@ namespace romm::ui {
             std::string status_str = romm::i18n::tr("settings.updates.status.idle");
             if (state == romm::model::UpdateState::Checking) status_str = romm::i18n::tr("settings.updates.status.checking");
             else if (state == romm::model::UpdateState::NoUpdateAvailable) status_str = romm::i18n::tr("settings.updates.status.up_to_date");
-            else if (state == romm::model::UpdateState::UpdateAvailable) status_str = romm::i18n::tr("settings.updates.status.available");
+            else if (state == romm::model::UpdateState::UpdateAvailable) {
+                // "Update" would be wrong for a channel switch: moving from
+                // testing back to stable normally installs an older build.
+                status_str = um.IsOfferedBuildChannelSwitch()
+                    ? romm::i18n::format("settings.updates.status.switch_available",
+                                         {{"channel", UpdateChannelDisplayName(config.GetUpdateChannel())}})
+                    : romm::i18n::tr("settings.updates.status.available");
+            }
             else if (state == romm::model::UpdateState::Downloading) {
                 char cur_buf[32], tot_buf[32];
                 std::snprintf(cur_buf, sizeof(cur_buf), "%.2f", (double)um.GetDownloadedBytes() / (1024.0 * 1024.0));
@@ -612,8 +647,11 @@ namespace romm::ui {
 
             if (state == romm::model::UpdateState::UpdateAvailable) {
                 auto manifest = um.GetRemoteManifest();
-                options.push_back({romm::i18n::tr("settings.updates.available"),
-                                   romm::i18n::format("settings.updates.available.install", {
+                const bool is_switch = um.IsOfferedBuildChannelSwitch();
+                options.push_back({romm::i18n::tr(is_switch ? "settings.updates.switch_available"
+                                                            : "settings.updates.available"),
+                                   romm::i18n::format(is_switch ? "settings.updates.available.switch"
+                                                                : "settings.updates.available.install", {
                                        {"version", manifest.version},
                                        {"code", std::to_string(manifest.version_code)}
                                    }), true});
@@ -625,7 +663,15 @@ namespace romm::ui {
             }
         }
         else if (active_cat == 7) { // Debug
-            options.push_back({romm::i18n::tr("settings.debug.build_version"), "v" + romm::ROMM_NX_VERSION});
+            options.push_back({romm::i18n::tr("settings.debug.build_version"),
+                               "v" + romm::ROMM_NX_VERSION + " (" + std::to_string(romm::ROMM_NX_VERSION_CODE) + ")"});
+            // Both channels, unconditionally: which one is selected and which
+            // one the running NRO actually came from is the first thing worth
+            // knowing when an update behaves unexpectedly.
+            options.push_back({romm::i18n::tr("settings.debug.update_channel"),
+                               UpdateChannelDisplayName(config.GetUpdateChannel())});
+            options.push_back({romm::i18n::tr("settings.debug.installed_channel"),
+                               UpdateChannelDisplayName(config.GetInstalledUpdateChannel())});
             options.push_back({romm::i18n::tr("settings.debug.config_path"), truncatePath("sdmc:/switch/romm-nx/config.json")});
             options.push_back({romm::i18n::tr("settings.debug.index_entries"), std::to_string(romm::model::DownloadManager::Instance().GetInstalledIndex().size())});
 
@@ -1321,6 +1367,15 @@ namespace romm::ui {
                     }
                 }
             }
+            else if (opt_idx == 6) { // Platform Selector
+                // The library sidebar reads this every frame, so no refresh
+                // hop is needed — it picks the change up on the way back.
+                const auto current = config.GetPlatformSelectorStyle();
+                config.SetPlatformSelectorStyle(current == romm::model::PlatformSelectorStyle::Text
+                                                    ? romm::model::PlatformSelectorStyle::Banners
+                                                    : romm::model::PlatformSelectorStyle::Text);
+                config.Save();
+            }
             // opt_idx 2 (Startup Sound), 3 (Startup Volume), 4 (Menu
             // Ambience), 5 (Menu Ambience Volume): all four are Left/Right-
             // only (NavigationManager) — A does nothing on any of them.
@@ -1448,6 +1503,7 @@ namespace romm::ui {
             const bool has_update = (um.GetState() == romm::model::UpdateState::UpdateAvailable);
             const bool can_restore = um.CanRestoreBackup();
 
+            constexpr size_t kRowChannel = 2;
             constexpr size_t kRowCheckOnStartup = 4;
             constexpr size_t kRowCheckForUpdates = 5;
             constexpr size_t kFixedRowCount = 7; // through "Status"
@@ -1456,7 +1512,28 @@ namespace romm::ui {
             const size_t restore_row = can_restore ? (has_update ? kFixedRowCount + 1 : kFixedRowCount)
                                                    : SIZE_MAX;
 
-            if (opt_idx == kRowCheckOnStartup) {
+            if (opt_idx == kRowChannel) {
+                const std::string next = CycleKey(kUpdateChannelKeys, config.GetUpdateChannel());
+                config.SetUpdateChannel(next);
+                // A dismissal ("Later" on the startup popup) applies to the
+                // version it was shown for on the channel it came from; the
+                // other channel's build deserves its own prompt.
+                config.SetDismissedUpdateVersion("");
+                config.Save();
+
+                // Anything learned from the old channel — manifest, changelog,
+                // "update available" — describes a build we're no longer
+                // tracking, so it goes before the new check starts. The check
+                // is skipped when the updater is mid-install or waiting for a
+                // restart; the new channel is still recorded and takes effect
+                // on the next check.
+                if (um.ResetForChannelChange()) {
+                    um.CheckForUpdates();
+                }
+                std::cout << "[SETTINGS] [UPDATES] Channel set to " << next
+                          << " (manifest " << config.GetUpdateManifestUrl() << ")" << std::endl;
+            }
+            else if (opt_idx == kRowCheckOnStartup) {
                 config.SetCheckUpdatesOnStartup(!config.CheckUpdatesOnStartup());
                 config.Save();
             }
@@ -1464,9 +1541,15 @@ namespace romm::ui {
                 um.CheckForUpdates();
             }
             else if (opt_idx == update_row) {
+                // The switch wording doesn't promise a newer version — going
+                // back to stable usually means installing an older build.
+                const bool is_switch = um.IsOfferedBuildChannelSwitch();
                 confirm_modal->Show(
-                    romm::i18n::tr("settings.confirm.install_update.title"),
-                    romm::i18n::tr("settings.confirm.install_update.message"),
+                    romm::i18n::tr(is_switch ? "settings.confirm.switch_channel.title"
+                                             : "settings.confirm.install_update.title"),
+                    is_switch ? romm::i18n::format("settings.confirm.switch_channel.message",
+                                                   {{"channel", UpdateChannelDisplayName(config.GetUpdateChannel())}})
+                              : romm::i18n::tr("settings.confirm.install_update.message"),
                     ConfirmAction::InstallUpdate,
                     [&um]() {
                         um.StartDownloadAndInstall();
@@ -1485,11 +1568,16 @@ namespace romm::ui {
             }
         }
         else if (cat_idx == 7) { // Debug
-            if (opt_idx == 5) {
+            // Rows 0-6 are read-only diagnostics (build, both update channels,
+            // config path, index count, active download, queue); Export is last.
+            if (opt_idx == 7) {
                 std::string debug_path = "sdmc:/switch/romm-nx/debug.txt";
                 FILE* f = fopen(debug_path.c_str(), "w");
                 if (f) {
-                    fprintf(f, "Build Version: v%s\n", romm::ROMM_NX_VERSION.c_str());
+                    fprintf(f, "Build Version: v%s (code %d)\n", romm::ROMM_NX_VERSION.c_str(), romm::ROMM_NX_VERSION_CODE);
+                    fprintf(f, "Update Channel (selected): %s\n", config.GetUpdateChannel().c_str());
+                    fprintf(f, "Update Channel (installed): %s\n", config.GetInstalledUpdateChannel().c_str());
+                    fprintf(f, "Update Manifest URL: %s\n", config.GetUpdateManifestUrl().c_str());
                     fprintf(f, "RomM Host: %s\n", config.GetRommHost().c_str());
                     fprintf(f, "Config Path: sdmc:/switch/romm-nx/config.json\n");
                     fprintf(f, "Installed Index Path: sdmc:/switch/romm-nx/installed_index.json\n");
@@ -1556,7 +1644,7 @@ namespace romm::ui {
     size_t SettingsLayout::GetOptionsCount(size_t cat_idx) {
         switch (cat_idx) {
             case 0: return 8; // General
-            case 1: return 6; // Theme
+            case 1: return 7; // Theme
             case 2: return 3; // Connection
             case 3: return 2; // ROM Paths (ROMs and Cover cache)
             // Platforms: Show All + Reset Defaults + one row per canonical
@@ -1575,7 +1663,7 @@ namespace romm::ui {
                 }
                 return count;
             }
-            case 7: return 6; // Debug
+            case 7: return 8; // Debug (build, 2 channels, config path, index, active dl, queue, export)
             default: return 0;
         }
     }

@@ -32,6 +32,48 @@ namespace romm::model {
             }
             return "";
         }
+
+        // Splits "<base>/<channel>/manifest.json" into its base and channel.
+        // Returns false for any URL that doesn't follow that convention, which
+        // is what marks a hand-written URL as an explicit override.
+        bool splitChannelManifestUrl(const std::string& url, std::string& base_out, std::string& channel_out) {
+            static const std::string kSuffix = "/manifest.json";
+            if (url.size() <= kSuffix.size()) return false;
+            if (url.compare(url.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) return false;
+
+            const std::string without_file = url.substr(0, url.size() - kSuffix.size());
+            const size_t slash = without_file.find_last_of('/');
+            if (slash == std::string::npos) return false;
+
+            const std::string channel = without_file.substr(slash + 1);
+            if (channel != ConfigManager::kChannelStable && channel != ConfigManager::kChannelTesting) {
+                return false;
+            }
+
+            base_out = without_file.substr(0, slash + 1);
+            channel_out = channel;
+            return true;
+        }
+    }
+
+    std::string ConfigManager::NormalizeUpdateChannel(const std::string& channel) {
+        return (channel == kChannelTesting) ? kChannelTesting : kChannelStable;
+    }
+
+    void ConfigManager::SetUpdateBaseUrl(const std::string& url) {
+        update_base_url = url;
+        if (!update_base_url.empty() && update_base_url.back() != '/') {
+            update_base_url += '/';
+        }
+    }
+
+    std::string ConfigManager::GetUpdateManifestUrlForChannel(const std::string& channel) const {
+        if (!update_manifest_url_override.empty()) return update_manifest_url_override;
+        return update_base_url + NormalizeUpdateChannel(channel) + "/manifest.json";
+    }
+
+    std::string ConfigManager::GetUpdateManifestUrl() const {
+        return GetUpdateManifestUrlForChannel(update_channel);
     }
 
     ConfigManager& ConfigManager::Instance() {
@@ -120,6 +162,18 @@ namespace romm::model {
             if (s == "Detail" || s == "detail") return GridViewMode::Detail;
             return GridViewMode::Default;
         }
+
+        std::string PlatformSelectorStyleToString(PlatformSelectorStyle s) {
+            return s == PlatformSelectorStyle::Banners ? "Banners" : "Text";
+        }
+        PlatformSelectorStyle PlatformSelectorStyleFromString(const std::string& s) {
+            if (s == "Banners" || s == "banners") return PlatformSelectorStyle::Banners;
+            return PlatformSelectorStyle::Text;
+        }
+    }
+
+    std::string ConfigManager::GetPlatformSelectorStyleString() const {
+        return PlatformSelectorStyleToString(platform_selector_style);
     }
 
     GridViewMode ConfigManager::GetGridViewMode(const std::string& platform_slug) const {
@@ -231,7 +285,14 @@ namespace romm::model {
             language = "auto";
         }
         jsonExtractString(content, "theme", theme);
-        
+
+        std::string selector_style_str;
+        if (jsonExtractString(content, "platform_selector_style", selector_style_str)) {
+            platform_selector_style = PlatformSelectorStyleFromString(selector_style_str);
+        } else {
+            platform_selector_style = PlatformSelectorStyle::Text;
+        }
+
         std::string quality_str;
         if (jsonExtractString(content, "covers_quality", quality_str)) {
             if (quality_str == "SD" || quality_str == "sd") covers_quality = CoversQuality::SD;
@@ -282,8 +343,46 @@ namespace romm::model {
         startup_volume = std::max(0, std::min(100, startup_volume));
         ambient_volume = std::max(0, std::min(100, ambient_volume));
 
-        jsonExtractString(content, "update_manifest_url", update_manifest_url);
-        jsonExtractString(content, "update_channel", update_channel);
+        // Update channels. The manifest URL isn't stored as such: it's derived
+        // from the base URL plus the tracked channel, so switching channels
+        // repoints it without any per-channel URL bookkeeping.
+        {
+            std::string base_url;
+            if (jsonExtractString(content, "update_base_url", base_url) && !base_url.empty()) {
+                SetUpdateBaseUrl(base_url);
+            }
+
+            // update_manifest_url is what every config written before channels
+            // existed carries (and what this build still writes, so an older
+            // NRO restored from backup keeps working). A URL following the
+            // <base>/<channel>/manifest.json convention only tells us the base
+            // — the channel itself comes from update_channel below. Anything
+            // else is a custom endpoint and gets pinned as an override.
+            std::string manifest_url;
+            if (jsonExtractString(content, "update_manifest_url", manifest_url) && !manifest_url.empty()) {
+                std::string parsed_base, parsed_channel;
+                if (splitChannelManifestUrl(manifest_url, parsed_base, parsed_channel)) {
+                    if (base_url.empty()) SetUpdateBaseUrl(parsed_base);
+                    update_manifest_url_override.clear();
+                } else {
+                    update_manifest_url_override = manifest_url;
+                }
+            }
+
+            std::string channel;
+            if (jsonExtractString(content, "update_channel", channel)) {
+                update_channel = NormalizeUpdateChannel(channel);
+            }
+
+            // Absent on every config written before channels existed, and the
+            // build those configs belong to shipped from stable — which is
+            // exactly the default.
+            std::string installed_channel;
+            if (jsonExtractString(content, "installed_update_channel", installed_channel)) {
+                installed_update_channel = NormalizeUpdateChannel(installed_channel);
+            }
+        }
+
         jsonExtractBool(content, "check_updates_on_startup", check_updates_on_startup);
         jsonExtractString(content, "dismissed_update_version", dismissed_update_version);
 
@@ -387,6 +486,8 @@ namespace romm::model {
     }
 
     bool ConfigManager::Save() {
+        std::lock_guard<std::mutex> lock(save_mutex);
+
         // Attempt to create switch and romm-nx directories on SD card
         mkdir("sdmc:/switch", 0777);
         mkdir("sdmc:/switch/romm-nx", 0777);
@@ -415,6 +516,7 @@ namespace romm::model {
         content += "  \"api_key\": \"" + api_key + "\",\n";
         content += "  \"language\": \"" + language + "\",\n";
         content += "  \"theme\": \"" + theme + "\",\n";
+        content += "  \"platform_selector_style\": \"" + GetPlatformSelectorStyleString() + "\",\n";
         content += "  \"covers_quality\": \"" + GetCoversQualityString() + "\",\n";
         content += "  \"grid_view_mode\": \"" + GetGridViewModeString() + "\",\n";
         content += "  \"platform_grid_view_mode\": {\n";
@@ -457,8 +559,14 @@ namespace romm::model {
         content += "  \"startup_volume\": " + std::to_string(startup_volume) + ",\n";
         content += "  \"ambient_volume\": " + std::to_string(ambient_volume) + ",\n";
         content += "  \"audio_base_url\": \"" + audio_base_url + "\",\n";
-        content += "  \"update_manifest_url\": \"" + update_manifest_url + "\",\n";
+        content += "  \"update_base_url\": \"" + update_base_url + "\",\n";
+        // The resolved URL for the tracked channel, kept in the same key older
+        // builds read so a backup NRO restored later still checks for updates.
+        // Load() turns it back into a base + channel, or keeps it as an
+        // override when it doesn't follow the channel convention.
+        content += "  \"update_manifest_url\": \"" + GetUpdateManifestUrl() + "\",\n";
         content += "  \"update_channel\": \"" + update_channel + "\",\n";
+        content += "  \"installed_update_channel\": \"" + installed_update_channel + "\",\n";
         content += "  \"check_updates_on_startup\": " + std::string(check_updates_on_startup ? "true" : "false") + ",\n";
         content += "  \"dismissed_update_version\": \"" + dismissed_update_version + "\",\n";
 

@@ -27,7 +27,13 @@ namespace romm::ui {
         pu::ui::Color text_color(237, 229, 251, 255);
         pu::ui::Color sub_color(190, 180, 225, 255);
 
-        auto title_tex = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("modal.update.title"), text_color);
+        // A pending channel switch offers whatever that channel ships, which is
+        // routinely an older build than the one running — calling that an
+        // "update" would misstate what pressing A leads to.
+        const bool is_switch = romm::model::UpdateManager::Instance().IsOfferedBuildChannelSwitch();
+
+        auto title_tex = pu::ui::render::RenderText("Orbitron@30",
+            romm::i18n::tr(is_switch ? "modal.update.title_switch" : "modal.update.title"), text_color);
         if (title_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(title_tex);
             drawer->RenderTexture(title_tex, modal_x + (modal_w - tw) / 2, modal_y + 35);
@@ -38,7 +44,8 @@ namespace romm::ui {
         // not a translatable word.
         std::string sub_text = manifest.version.empty()
             ? romm::i18n::tr("modal.update.body_generic")
-            : romm::i18n::format("modal.update.body", {{"version", manifest.version}});
+            : romm::i18n::format(is_switch ? "modal.update.body_switch" : "modal.update.body",
+                                 {{"version", manifest.version}});
         auto sub_tex = pu::ui::render::RenderText("Ubuntu@20", sub_text, sub_color);
         if (sub_tex) {
             s32 tw = pu::ui::render::GetTextureWidth(sub_tex);
