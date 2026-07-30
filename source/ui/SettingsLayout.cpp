@@ -116,6 +116,54 @@ namespace romm::ui {
             romm::model::ConfigManager::kChannelTesting,
         };
 
+        // Splits `text` into lines of at most `max_chars` characters, breaking
+        // on a space when there is one and mid-word otherwise (URLs have none).
+        //
+        // Budgeted by character count rather than measured in pixels: the
+        // settings screen re-renders every visible string each frame, so
+        // measuring candidate widths would multiply an already hot cost. The
+        // budgets passed in are conservative for the panel width. Counts
+        // characters, not bytes, so an accented French string is never cut in
+        // the middle of a codepoint and drawn as a broken glyph.
+        std::vector<std::string> WrapText(const std::string& text, size_t max_chars) {
+            std::vector<std::string> lines;
+            if (max_chars == 0 || text.empty()) return lines;
+
+            size_t line_start = 0;
+            size_t chars = 0;
+            size_t last_space = std::string::npos;
+
+            size_t i = 0;
+            while (i < text.size()) {
+                const unsigned char c = static_cast<unsigned char>(text[i]);
+                if (c == ' ') last_space = i;
+
+                if (chars >= max_chars) {
+                    const bool break_on_space = (last_space != std::string::npos && last_space > line_start);
+                    const size_t brk = break_on_space ? last_space : i;
+                    lines.push_back(text.substr(line_start, brk - line_start));
+                    line_start = break_on_space ? brk + 1 : brk;
+                    chars = 0;
+                    last_space = std::string::npos;
+                    i = line_start;
+                    continue;
+                }
+
+                // Advance one UTF-8 codepoint.
+                size_t adv = 1;
+                if (c >= 0xF0) adv = 4;
+                else if (c >= 0xE0) adv = 3;
+                else if (c >= 0xC0) adv = 2;
+
+                chars++;
+                i += adv;
+            }
+            if (line_start < text.size()) {
+                lines.push_back(text.substr(line_start));
+            }
+            return lines;
+        }
+
         std::string UpdateChannelDisplayName(const std::string& channel) {
             if (channel == romm::model::ConfigManager::kChannelTesting) {
                 return romm::i18n::tr("settings.updates.channel.testing");
@@ -597,53 +645,18 @@ namespace romm::ui {
                                romm::i18n::format("settings.advanced.age_value", {{"days", std::to_string(config.GetMaxAgeDays())}})});
         }
         else if (active_cat == 6) { // Updates
-            // Version strings, the channel and the manifest URL are values, not
-            // translatable words.
-            options.push_back({romm::i18n::tr("settings.updates.current_version"), romm::ROMM_NX_VERSION});
-            options.push_back({romm::i18n::tr("settings.updates.current_version_code"), std::to_string(romm::ROMM_NX_VERSION_CODE)});
-            // Between switching channel and installing that channel's build,
-            // the row spells out both: the tracked channel is what will be
-            // checked, the installed one is what's running right now.
-            std::string channel_value = UpdateChannelDisplayName(config.GetUpdateChannel());
-            if (config.GetUpdateChannel() != config.GetInstalledUpdateChannel()) {
-                channel_value = romm::i18n::format("settings.updates.channel.pending", {
-                    {"channel", channel_value},
-                    {"installed", UpdateChannelDisplayName(config.GetInstalledUpdateChannel())}
-                });
-            }
-            options.push_back({romm::i18n::tr("settings.updates.channel"), channel_value});
-            options.push_back({romm::i18n::tr("settings.updates.manifest_url"), config.GetUpdateManifestUrl()});
+            // Rows are the things you can act on, and nothing else — every row
+            // value here is a short word or a version. The read-only detail
+            // (build, installed channel, manifest URL, status, changelog) is
+            // drawn in the bounded info panel below the list, where it can wrap
+            // instead of running into its own label.
+            auto& um = romm::model::UpdateManager::Instance();
+            const auto state = um.GetState();
+
+            options.push_back({romm::i18n::tr("settings.updates.channel"),
+                               UpdateChannelDisplayName(config.GetUpdateChannel())});
             options.push_back({romm::i18n::tr("settings.updates.check_on_startup"), on_off(config.CheckUpdatesOnStartup())});
             options.push_back({romm::i18n::tr("settings.updates.check_now"), romm::i18n::tr("settings.updates.trigger_check"), true});
-
-            auto& um = romm::model::UpdateManager::Instance();
-            auto state = um.GetState();
-            std::string status_str = romm::i18n::tr("settings.updates.status.idle");
-            if (state == romm::model::UpdateState::Checking) status_str = romm::i18n::tr("settings.updates.status.checking");
-            else if (state == romm::model::UpdateState::NoUpdateAvailable) status_str = romm::i18n::tr("settings.updates.status.up_to_date");
-            else if (state == romm::model::UpdateState::UpdateAvailable) {
-                // "Update" would be wrong for a channel switch: moving from
-                // testing back to stable normally installs an older build.
-                status_str = um.IsOfferedBuildChannelSwitch()
-                    ? romm::i18n::format("settings.updates.status.switch_available",
-                                         {{"channel", UpdateChannelDisplayName(config.GetUpdateChannel())}})
-                    : romm::i18n::tr("settings.updates.status.available");
-            }
-            else if (state == romm::model::UpdateState::Downloading) {
-                char cur_buf[32], tot_buf[32];
-                std::snprintf(cur_buf, sizeof(cur_buf), "%.2f", (double)um.GetDownloadedBytes() / (1024.0 * 1024.0));
-                std::snprintf(tot_buf, sizeof(tot_buf), "%.2f", (double)um.GetTotalBytes() / (1024.0 * 1024.0));
-                status_str = romm::i18n::format("settings.updates.status.downloading",
-                                                {{"downloaded", cur_buf}, {"total", tot_buf}});
-            }
-            else if (state == romm::model::UpdateState::Verifying) status_str = romm::i18n::tr("settings.updates.status.verifying");
-            else if (state == romm::model::UpdateState::Installing) status_str = romm::i18n::tr("settings.updates.status.installing");
-            else if (state == romm::model::UpdateState::InstalledRestartRequired) status_str = romm::i18n::tr("settings.updates.status.restart_required");
-            // The wrapper is localized; the diagnostic inside it comes from
-            // UpdateManager and stays in English (see the note there).
-            else if (state == romm::model::UpdateState::Error) status_str = romm::i18n::format("settings.updates.status.error", {{"error", um.GetLatestError()}});
-
-            options.push_back({romm::i18n::tr("settings.updates.status"), status_str});
 
             if (state == romm::model::UpdateState::UpdateAvailable) {
                 auto manifest = um.GetRemoteManifest();
@@ -788,40 +801,136 @@ namespace romm::ui {
             }
 
             if (active_cat == 6) {
+                // Update info panel: everything read-only, in the space left
+                // under the rows. Its top follows the row count and every line
+                // is gated on a hard bottom limit, so it can neither sit on top
+                // of a row (the old fixed y+550 did, once there were more than
+                // five) nor spill past the card however long the changelog is.
                 auto& um = romm::model::UpdateManager::Instance();
-                auto state = um.GetState();
-                if (state == romm::model::UpdateState::UpdateAvailable) {
-                    auto manifest = um.GetRemoteManifest();
-                    if (!manifest.changelog.empty()) {
-                        s32 cy = y_coord + 550;
-                        pu::ui::Color title_color(230, 199, 167, 255); // Cream
-                        auto title_tex = pu::ui::render::RenderText("Ubuntu@24", romm::i18n::tr("settings.updates.changelog"), title_color);
-                        if (title_tex) {
-                            drawer->RenderTexture(title_tex, opt_panel_x + 30, cy);
-                            pu::ui::render::DeleteTexture(title_tex);
+                const auto state = um.GetState();
+
+                const s32 info_x = opt_panel_x + 30;
+                const s32 info_w = opt_panel_w - 60;
+                const s32 line_h = 30;
+                const s32 block_top = opt_start_y + (s32)options.size() * (opt_row_h + opt_spacing) + 5;
+                const s32 block_bottom = y_coord + h - 25;
+
+                if (block_top + line_h < block_bottom) {
+                    const pu::ui::Color panel_border(45, 50, 62, 255);
+                    const pu::ui::Color panel_bg(16, 18, 22, 255);
+                    const pu::ui::Color label_color(150, 143, 180, 255);
+                    const pu::ui::Color value_color(237, 229, 251, 255);
+                    const pu::ui::Color dim_color(140, 134, 170, 255);
+                    const pu::ui::Color accent_color(230, 199, 167, 255);
+
+                    drawer->RenderRoundedRectangleFill(panel_border, info_x - 12, block_top,
+                                                       info_w + 24, block_bottom - block_top, 8);
+                    drawer->RenderRoundedRectangleFill(panel_bg, info_x - 10, block_top + 2,
+                                                       info_w + 20, block_bottom - block_top - 4, 6);
+
+                    s32 cy = block_top + 18;
+                    const s32 value_x = info_x + 220;
+
+                    // Every draw below is a no-op once the cursor runs out of
+                    // panel, which is what keeps the block inside the card.
+                    auto draw_text = [&](const std::string& text, const char* font,
+                                         pu::ui::Color color, s32 x) {
+                        if (cy + line_h > block_bottom || text.empty()) return;
+                        auto tex = pu::ui::render::RenderText(font, text, color);
+                        if (tex) {
+                            drawer->RenderTexture(tex, x, cy);
+                            pu::ui::render::DeleteTexture(tex);
                         }
-                        cy += 45;
-                        pu::ui::Color item_color(190, 180, 225, 255); // Light lavender
-                        size_t max_items = std::min(manifest.changelog.size(), (size_t)4);
-                        for (size_t k = 0; k < max_items; ++k) {
-                            std::string bullet = "- " + manifest.changelog[k];
-                            if (bullet.size() > 80) {
-                                bullet = bullet.substr(0, 77) + "...";
+                    };
+                    auto draw_field = [&](const std::string& label, const std::string& value,
+                                          pu::ui::Color vcolor) {
+                        if (cy + line_h > block_bottom) return;
+                        draw_text(label, "Ubuntu@20", label_color, info_x);
+                        draw_text(value, "Ubuntu@20", vcolor, value_x);
+                        cy += line_h;
+                    };
+
+                    draw_field(romm::i18n::tr("settings.updates.current_version"),
+                               "v" + romm::ROMM_NX_VERSION + " (" + std::to_string(romm::ROMM_NX_VERSION_CODE) + ")",
+                               value_color);
+                    // Which channel the running NRO came from. Read next to the
+                    // Channel row above, a difference between the two is the
+                    // pending-switch state, spelled out rather than encoded.
+                    draw_field(romm::i18n::tr("settings.updates.installed_channel"),
+                               UpdateChannelDisplayName(config.GetInstalledUpdateChannel()),
+                               value_color);
+                    draw_field(romm::i18n::tr("settings.updates.manifest_url"),
+                               config.GetUpdateManifestUrl(), dim_color);
+
+                    cy += 12;
+
+                    // Status, colour-coded, wrapped: an error carries curl's
+                    // diagnostic and is far too long for a single line.
+                    std::string status_str = romm::i18n::tr("settings.updates.status.idle");
+                    pu::ui::Color status_color(190, 180, 225, 255);
+                    if (state == romm::model::UpdateState::Checking) {
+                        status_str = romm::i18n::tr("settings.updates.status.checking");
+                    } else if (state == romm::model::UpdateState::NoUpdateAvailable) {
+                        status_str = romm::i18n::tr("settings.updates.status.up_to_date");
+                        status_color = pu::ui::Color(126, 200, 145, 255); // Green
+                    } else if (state == romm::model::UpdateState::UpdateAvailable) {
+                        // "Update" would be wrong for a channel switch: moving
+                        // from testing back to stable installs an older build.
+                        status_str = um.IsOfferedBuildChannelSwitch()
+                            ? romm::i18n::format("settings.updates.status.switch_available",
+                                                 {{"channel", UpdateChannelDisplayName(config.GetUpdateChannel())}})
+                            : romm::i18n::tr("settings.updates.status.available");
+                        status_color = accent_color;
+                    } else if (state == romm::model::UpdateState::Downloading) {
+                        char cur_buf[32], tot_buf[32];
+                        std::snprintf(cur_buf, sizeof(cur_buf), "%.2f", (double)um.GetDownloadedBytes() / (1024.0 * 1024.0));
+                        std::snprintf(tot_buf, sizeof(tot_buf), "%.2f", (double)um.GetTotalBytes() / (1024.0 * 1024.0));
+                        status_str = romm::i18n::format("settings.updates.status.downloading",
+                                                        {{"downloaded", cur_buf}, {"total", tot_buf}});
+                    } else if (state == romm::model::UpdateState::Verifying) {
+                        status_str = romm::i18n::tr("settings.updates.status.verifying");
+                    } else if (state == romm::model::UpdateState::Installing) {
+                        status_str = romm::i18n::tr("settings.updates.status.installing");
+                    } else if (state == romm::model::UpdateState::InstalledRestartRequired) {
+                        status_str = romm::i18n::tr("settings.updates.status.restart_required");
+                        status_color = pu::ui::Color(126, 200, 145, 255); // Green
+                    } else if (state == romm::model::UpdateState::Error) {
+                        // The wrapper is localized; the diagnostic inside comes
+                        // from UpdateManager and stays in English (see there).
+                        status_str = romm::i18n::format("settings.updates.status.error", {{"error", um.GetLatestError()}});
+                        status_color = pu::ui::Color(232, 118, 118, 255); // Red
+                    }
+
+                    for (const auto& line : WrapText(status_str, 84)) {
+                        if (cy + line_h > block_bottom) break;
+                        draw_text(line, "Ubuntu@24", status_color, info_x);
+                        cy += line_h;
+                    }
+
+                    if (state == romm::model::UpdateState::UpdateAvailable) {
+                        auto manifest = um.GetRemoteManifest();
+                        if (!manifest.changelog.empty() && cy + line_h * 2 <= block_bottom) {
+                            cy += 12;
+                            draw_text(romm::i18n::tr("settings.updates.changelog"), "Ubuntu@20", accent_color, info_x);
+                            cy += line_h;
+
+                            size_t shown = 0;
+                            for (const auto& entry : manifest.changelog) {
+                                bool out_of_room = false;
+                                for (const auto& line : WrapText("- " + entry, 104)) {
+                                    if (cy + line_h > block_bottom) { out_of_room = true; break; }
+                                    draw_text(line, "Ubuntu@20", dim_color, info_x + 16);
+                                    cy += line_h;
+                                }
+                                if (out_of_room) break;
+                                shown++;
                             }
-                            auto item_tex = pu::ui::render::RenderText("Ubuntu@24", bullet, item_color);
-                            if (item_tex) {
-                                drawer->RenderTexture(item_tex, opt_panel_x + 50, cy);
-                                pu::ui::render::DeleteTexture(item_tex);
-                            }
-                            cy += 35;
-                        }
-                        if (manifest.changelog.size() > 4) {
-                            std::string extra = romm::i18n::format("settings.updates.changelog_more",
-                                {{"count", std::to_string(manifest.changelog.size() - 4)}});
-                            auto extra_tex = pu::ui::render::RenderText("Ubuntu@24", extra, item_color);
-                            if (extra_tex) {
-                                drawer->RenderTexture(extra_tex, opt_panel_x + 50, cy);
-                                pu::ui::render::DeleteTexture(extra_tex);
+
+                            if (shown < manifest.changelog.size() && cy + line_h <= block_bottom) {
+                                draw_text(romm::i18n::format("settings.updates.changelog_more",
+                                                             {{"count", std::to_string(manifest.changelog.size() - shown)}}),
+                                          "Ubuntu@20", dim_color, info_x + 16);
+                                cy += line_h;
                             }
                         }
                     }
@@ -1496,17 +1605,18 @@ namespace romm::ui {
             // Dispatched by row index rather than by rebuilding a shadow copy
             // of the option list and matching on its labels — those labels are
             // translated now, so string comparison would silently stop matching
-            // in French. Indices 0-6 are the fixed rows drawn in OnRender;
+            // in French. Indices 0-2 are the fixed rows drawn in OnRender;
             // "Update available" and "Restore backup" follow, in that order,
-            // when their conditions hold.
+            // when their conditions hold. Everything read-only lives in the
+            // info panel below the rows and is not addressable here.
             auto& um = romm::model::UpdateManager::Instance();
             const bool has_update = (um.GetState() == romm::model::UpdateState::UpdateAvailable);
             const bool can_restore = um.CanRestoreBackup();
 
-            constexpr size_t kRowChannel = 2;
-            constexpr size_t kRowCheckOnStartup = 4;
-            constexpr size_t kRowCheckForUpdates = 5;
-            constexpr size_t kFixedRowCount = 7; // through "Status"
+            constexpr size_t kRowChannel = 0;
+            constexpr size_t kRowCheckOnStartup = 1;
+            constexpr size_t kRowCheckForUpdates = 2;
+            constexpr size_t kFixedRowCount = 3;
 
             const size_t update_row = has_update ? kFixedRowCount : SIZE_MAX;
             const size_t restore_row = can_restore ? (has_update ? kFixedRowCount + 1 : kFixedRowCount)
@@ -1653,7 +1763,7 @@ namespace romm::ui {
             case 4: return kPlatformActionRows + PlatformRows().size();
             case 5: return 7; // Advanced
             case 6: { // Updates
-                size_t count = 7; // Current version, code, channel, URL, Check on startup, Check for updates, Status
+                size_t count = 3; // Channel, Check on startup, Check for updates
                 auto state = romm::model::UpdateManager::Instance().GetState();
                 if (state == romm::model::UpdateState::UpdateAvailable) {
                     count += 1; // Update available

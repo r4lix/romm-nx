@@ -291,7 +291,13 @@ namespace romm::navigation {
             current_screen = Screen::Settings;
             selected_settings_category_idx = 6; // Updates
             settings_focus = romm::ui::SettingsFocusArea::OptionList;
-            selected_settings_option_idx = 0;
+            // Land on the install row, not row 0 — row 0 cycles the update
+            // channel, and the popup's A button means "take me to this
+            // update". The install row sits right after the three fixed rows
+            // (Channel, Check on startup, Check for updates) whenever one is
+            // being offered, which is exactly the case that raised the popup.
+            selected_settings_option_idx =
+                (romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) ? 3 : 0;
             if (settings_layout) {
                 app->LoadLayout(settings_layout);
             }
