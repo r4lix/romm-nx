@@ -117,7 +117,6 @@
   "detail.btn.preparing": "PREPARING...",
   "detail.btn.downloaded": "DOWNLOADED",
   "detail.btn.retry": "RETRY",
-  "detail.btn.unsupported": "UNSUPPORTED",
   "detail.btn.uninstall": "UNINSTALL",
   "detail.btn.confirm_uninstall": "CONFIRM? (A=Yes, B=No)",
   "detail.btn.add_to_queue": "ADD TO QUEUE",

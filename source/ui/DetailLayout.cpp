@@ -382,7 +382,6 @@ namespace romm::ui {
         tex_btn_preparing = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.preparing"), text_color);
         tex_btn_downloaded = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.downloaded"), text_color);
         tex_btn_failed = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.retry"), text_color);
-        tex_btn_unsupported = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.unsupported"), text_color);
 
         tex_btn_uninstall = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.uninstall"), text_color);
         tex_btn_confirm_uninstall = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.confirm_uninstall"), text_color);
@@ -411,7 +410,6 @@ namespace romm::ui {
         if (tex_btn_preparing) { pu::ui::render::DeleteTexture(tex_btn_preparing); tex_btn_preparing = nullptr; }
         if (tex_btn_downloaded) { pu::ui::render::DeleteTexture(tex_btn_downloaded); tex_btn_downloaded = nullptr; }
         if (tex_btn_failed) { pu::ui::render::DeleteTexture(tex_btn_failed); tex_btn_failed = nullptr; }
-        if (tex_btn_unsupported) { pu::ui::render::DeleteTexture(tex_btn_unsupported); tex_btn_unsupported = nullptr; }
         
         if (tex_btn_uninstall) { pu::ui::render::DeleteTexture(tex_btn_uninstall); tex_btn_uninstall = nullptr; }
         if (tex_btn_confirm_uninstall) { pu::ui::render::DeleteTexture(tex_btn_confirm_uninstall); tex_btn_confirm_uninstall = nullptr; }
@@ -771,8 +769,6 @@ namespace romm::ui {
 
             current_action_state = ComputeDownloadActionState(rom_id, platform_slug, model->GetCachedDetail(rom_id));
 
-            bool is_ps1 = ctx.is_ps1;
-
             if (current_action_state == DownloadActionState::Uninstall) {
                 active_btn_tex = tex_btn_uninstall;
             } else if (current_action_state == DownloadActionState::Downloading) {
@@ -806,11 +802,9 @@ namespace romm::ui {
             } else if (current_action_state == DownloadActionState::Failed) {
                 active_btn_tex = tex_btn_failed;
             } else if (current_action_state == DownloadActionState::AddToQueue) {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
-                else active_btn_tex = tex_btn_add_to_queue;
+                active_btn_tex = tex_btn_add_to_queue;
             } else {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
-                else active_btn_tex = tex_btn_download;
+                active_btn_tex = tex_btn_download;
             }
             
             if (!new_dynamic_text.empty()) {

@@ -117,7 +117,6 @@
   "detail.btn.preparing": "PRÉPARATION...",
   "detail.btn.downloaded": "TÉLÉCHARGÉ",
   "detail.btn.retry": "RÉESSAYER",
-  "detail.btn.unsupported": "NON PRIS EN CHARGE",
   "detail.btn.uninstall": "DÉSINSTALLER",
   "detail.btn.confirm_uninstall": "CONFIRMER ? (A=Oui, B=Non)",
   "detail.btn.add_to_queue": "METTRE EN FILE",

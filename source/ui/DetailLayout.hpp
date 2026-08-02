@@ -100,7 +100,6 @@ namespace romm::ui {
         pu::sdl2::Texture tex_btn_preparing = nullptr;
         pu::sdl2::Texture tex_btn_downloaded = nullptr;
         pu::sdl2::Texture tex_btn_failed = nullptr;
-        pu::sdl2::Texture tex_btn_unsupported = nullptr;
         
         pu::sdl2::Texture tex_btn_uninstall = nullptr;
         pu::sdl2::Texture tex_btn_confirm_uninstall = nullptr;

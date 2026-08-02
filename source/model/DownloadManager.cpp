@@ -819,12 +819,12 @@ namespace romm::model {
         
         std::string resolved_slug = NormalizePlatformSlug(platform_slug);
 
-        if (resolved_slug != "psx" && resolved_slug != "psp" && resolved_slug != "nds" &&
-            resolved_slug != "gb" && resolved_slug != "gbc" && resolved_slug != "gba" &&
-            resolved_slug != "ps2" && resolved_slug != "3ds") {
-            std::cerr << "[Download] Downloads are not implemented for platform: " << resolved_slug << std::endl;
-            return;
-        }
+        // No platform allow-list. Downloading is the same operation for every
+        // system — fetch the file and put it somewhere — and the destination
+        // already resolves for anything the server reports: GetRomPath() falls
+        // back to "sdmc:/roms/<slug>/" for a platform it has no entry for.
+        // Refusing by hardcoded slug just meant a ROM romm-nx could happily
+        // fetch was unreachable because nobody had added its name to a list.
 
         // Assemble the list of physical files. Single-disc games have one; a
         // multi-disc game (folder > discs on RomM) has one entry per disc, each
