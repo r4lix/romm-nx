@@ -18,7 +18,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	romm-nx
 BUILD		:=	build
-SOURCES		:=	source source/ui source/model source/navigation source/i18n
+SOURCES		:=	source source/ui source/model source/navigation source/i18n source/nso
 DATA		:=	data
 INCLUDES	:=	include temp_plutonium/Plutonium/include
 ROMFS		:=	romfs

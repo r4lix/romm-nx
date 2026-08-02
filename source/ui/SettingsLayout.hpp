@@ -151,12 +151,16 @@ namespace romm::ui {
         PU_SMART_CTOR(SettingsCard)
     };
 
+    class NsoSnesModal;
+
     class SettingsLayout : public pu::ui::Layout {
     private:
         std::weak_ptr<romm::navigation::NavigationManager> nav_mgr;
 
         std::shared_ptr<SettingsCard> card;
         std::shared_ptr<SettingsConfirmModal> confirm_modal;
+        // Settings > Advanced > SNES Online Injection Test (experimental).
+        std::shared_ptr<NsoSnesModal> nso_snes_modal;
         pu::ui::elm::TextBlock::Ref settings_title_text;
         pu::ui::elm::TextBlock::Ref hint_text;
 
@@ -170,6 +174,12 @@ namespace romm::ui {
 
         bool IsConfirmModalActive() const { return confirm_modal && confirm_modal->IsActive(); }
         void HandleConfirmModalInput(u64 keys_down) { if (confirm_modal) confirm_modal->HandleInput(keys_down); }
+
+        // Same input-forwarding contract as the confirm modal above: while this
+        // is up, NavigationManager sends every button here and nothing reaches
+        // the settings list underneath.
+        bool IsNsoSnesModalActive() const;
+        void HandleNsoSnesModalInput(u64 keys_down);
         void HandleOptionAction(size_t cat_idx, size_t opt_idx);
         void CycleStartupSound(int direction);
         void CycleThemeSound(int direction);

@@ -1136,6 +1136,14 @@ namespace romm::navigation {
             }
         }
         else if (current_screen == Screen::Settings) {
+            // The experimental SNES Online screen owns the whole display while
+            // it is open, so it gets first refusal on input — ahead of the
+            // confirm modal and of the settings list itself.
+            if (settings_layout && settings_layout->IsNsoSnesModalActive()) {
+                settings_layout->HandleNsoSnesModalInput(keys_down);
+                return;
+            }
+
             // Forward input to settings layout if confirmation modal is open
             if (settings_layout && settings_layout->IsConfirmModalActive()) {
                 settings_layout->HandleConfirmModalInput(keys_down);

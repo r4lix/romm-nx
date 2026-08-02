@@ -11,6 +11,7 @@
 #include "LibraryLayout.hpp"
 #include "MainApplication.hpp"
 #include "GlobalProgressBar.hpp"
+#include "NsoSnesModal.hpp"
 #include "../model/AudioManager.hpp"
 #include "../model/PlatformCatalog.hpp"
 #include "../model/DataModel.hpp"
@@ -643,6 +644,8 @@ namespace romm::ui {
                                romm::i18n::format("settings.advanced.size_value", {{"size", std::to_string(config.GetMaxSizeMb())}})});
             options.push_back({romm::i18n::tr("settings.advanced.max_age"),
                                romm::i18n::format("settings.advanced.age_value", {{"days", std::to_string(config.GetMaxAgeDays())}})});
+            options.push_back({romm::i18n::tr("settings.advanced.nso_snes"),
+                               romm::i18n::tr("settings.advanced.nso_snes_open"), true});
         }
         else if (active_cat == 6) { // Updates
             // Rows are the things you can act on, and nothing else — every row
@@ -1276,6 +1279,11 @@ namespace romm::ui {
         confirm_modal = SettingsConfirmModal::New();
         this->Add(confirm_modal);
 
+        // Added after the confirm modal so it draws on top of everything else
+        // on this screen while it is open.
+        nso_snes_modal = NsoSnesModal::New(nav);
+        this->Add(nso_snes_modal);
+
         auto global_progress = romm::ui::GlobalProgressBar::New(850, 15, 400, 60, nav);
         this->Add(global_progress);
 
@@ -1599,6 +1607,8 @@ namespace romm::ui {
                         config.Save();
                     }
                 }
+            } else if (opt_idx == 7) {
+                if (nso_snes_modal) nso_snes_modal->Show();
             }
         }
         else if (cat_idx == 6) { // Updates
@@ -1761,7 +1771,7 @@ namespace romm::ui {
             // platform. Grows with whatever the server reports, so it's derived
             // rather than a literal.
             case 4: return kPlatformActionRows + PlatformRows().size();
-            case 5: return 7; // Advanced
+            case 5: return 8; // Advanced (7 cache rows + the experimental SNES Online row)
             case 6: { // Updates
                 size_t count = 3; // Channel, Check on startup, Check for updates
                 auto state = romm::model::UpdateManager::Instance().GetState();
@@ -1780,6 +1790,14 @@ namespace romm::ui {
     
     size_t SettingsLayout::GetCategoriesCount() {
         return kSettingsCategoryKeys.size();
+    }
+
+    bool SettingsLayout::IsNsoSnesModalActive() const {
+        return nso_snes_modal && nso_snes_modal->IsActive();
+    }
+
+    void SettingsLayout::HandleNsoSnesModalInput(u64 keys_down) {
+        if (nso_snes_modal) nso_snes_modal->HandleInput(keys_down);
     }
 
     size_t SettingsLayout::GetSelectableRomPathRowCount() {
