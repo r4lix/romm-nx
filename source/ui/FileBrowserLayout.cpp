@@ -212,22 +212,11 @@ namespace romm::ui {
             return true;
         }
 
-        // Default policy: writes only inside the ROMs tree — sdmc:/roms/ plus
-        // any custom per-platform ROM path configured in Settings.
-        if (normalized == "sdmc:/roms" || normalized.rfind("sdmc:/roms/", 0) == 0) {
+        // Default policy: writes only inside the ROMs tree — <base>/roms/,
+        // where every platform's games live (one subfolder per system).
+        std::string roms_tree = config.GetRomsBaseDir() + "roms";
+        if (normalized == roms_tree || normalized.rfind(roms_tree + "/", 0) == 0) {
             return true;
-        }
-        static const char* kRomSlugs[] = {"psx", "psp", "nds", "gb", "gbc", "gba", "ps2", "3ds"};
-        for (const char* slug : kRomSlugs) {
-            std::string root = config.GetRomPath(slug);
-            if (root.empty()) continue;
-            if (root.back() == '/') {
-                if (normalized == root.substr(0, root.size() - 1) || normalized.rfind(root, 0) == 0) {
-                    return true;
-                }
-            } else if (normalized == root || normalized.rfind(root + "/", 0) == 0) {
-                return true;
-            }
         }
         return false;
     }
@@ -262,17 +251,12 @@ namespace romm::ui {
             std::string path;
         };
 
+        auto& config = romm::model::ConfigManager::Instance();
         std::vector<LocDef> defs = {
             {romm::i18n::tr("filebrowser.location.sd_root"), "sdmc:/"},
             {romm::i18n::tr("filebrowser.location.romm_folder"), "sdmc:/switch/romm-nx/"},
-            {romm::i18n::tr("filebrowser.location.roms_folder"), "sdmc:/roms/"}
+            {romm::i18n::tr("filebrowser.location.roms_folder"), config.GetRomsBaseDir() + "roms/"}
         };
-
-        auto& config = romm::model::ConfigManager::Instance();
-        std::string psp_path = config.GetRomPath("psp");
-        if (!psp_path.empty() && psp_path != "sdmc:/roms/psp/") {
-            defs.push_back({romm::i18n::tr("filebrowser.location.psp_path"), psp_path});
-        }
 
         pu::ui::Color selected_clr(237, 229, 251, 255);
         pu::ui::Color unselected_clr(190, 180, 225, 255);
@@ -1397,7 +1381,9 @@ namespace romm::ui {
 
                 if (option == FileOption::Mount) {
                     current_mount_idx = (current_mount_idx + 1) % 3;
-                    std::string mount_paths[] = { "sdmc:/", "sdmc:/switch/romm-nx/", "sdmc:/roms/" };
+                    auto& fbconfig = romm::model::ConfigManager::Instance();
+                    std::string mount_paths[] = { "sdmc:/", "sdmc:/switch/romm-nx/",
+                                                  fbconfig.GetRomsBaseDir() + "roms/" };
                     current_path = mount_paths[current_mount_idx];
                     
                     std::cout << "[FILE_BROWSER] mount_cycle idx=" << current_mount_idx << " path=" << current_path << std::endl;

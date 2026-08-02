@@ -39,9 +39,6 @@ namespace romm::model {
 
         const std::string& GetApiKey() const { return api_key; }
         void SetApiKey(const std::string& key) { api_key = key; }
-        
-        const std::string& GetPsxDownloadDir() const { return psx_download_dir; }
-        void SetPsxDownloadDir(const std::string& dir);
 
         bool IsValid() const { return is_valid; }
         const std::string& GetErrorMessage() const { return error_message; }
@@ -175,9 +172,11 @@ namespace romm::model {
         const std::string& GetDismissedUpdateVersion() const { return dismissed_update_version; }
         void SetDismissedUpdateVersion(const std::string& version) { dismissed_update_version = version; }
 
-        // ROM paths for different platforms
+        // Single configurable base directory. Games always install to
+        // <base>/roms/<system>/, so an override per platform is unnecessary.
+        const std::string& GetRomsBaseDir() const { return roms_base_dir; }
+        void SetRomsBaseDir(const std::string& dir);
         std::string GetRomPath(const std::string& platform) const;
-        void SetRomPath(const std::string& platform, const std::string& path);
 
         // --- Platform visibility (Settings > Platforms) -------------------
         // Purely a UI filter over the platform browser: nothing here touches
@@ -212,7 +211,6 @@ namespace romm::model {
 
         std::string romm_host;
         std::string api_key;
-        std::string psx_download_dir = "sdmc:/roms/ps1/";
         bool is_valid = false;
         std::string error_message;
 
@@ -238,6 +236,10 @@ namespace romm::model {
         // existing update_manifest_url — confirm or correct via Settings.
         std::string audio_base_url = "https://romm-nx.aaaoz.fr/romm-nx/audio/";
 
+        // Root under which every platform's games live, one subfolder per
+        // system ("roms/" + slug). Always ends in '/'.
+        std::string roms_base_dir = "sdmc:/romm-nx/";
+
         // Directory holding the per-channel subdirectories; always ends in '/'.
         std::string update_base_url = "https://romm-nx.aaaoz.fr/romm-nx/";
         std::string update_manifest_url_override;
@@ -246,7 +248,6 @@ namespace romm::model {
         bool check_updates_on_startup = true;
         std::string dismissed_update_version;
 
-        std::map<std::string, std::string> rom_paths;
         std::map<std::string, GridViewMode> platform_grid_view_mode;
 
         // Canonical ids the user has hidden from the platform browser, and

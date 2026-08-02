@@ -819,13 +819,6 @@ namespace romm::model {
         
         std::string resolved_slug = NormalizePlatformSlug(platform_slug);
 
-        if (resolved_slug != "psx" && resolved_slug != "psp" && resolved_slug != "nds" &&
-            resolved_slug != "gb" && resolved_slug != "gbc" && resolved_slug != "gba" &&
-            resolved_slug != "ps2" && resolved_slug != "3ds") {
-            std::cerr << "[Download] Downloads are not implemented for platform: " << resolved_slug << std::endl;
-            return;
-        }
-
         // Assemble the list of physical files. Single-disc games have one; a
         // multi-disc game (folder > discs on RomM) has one entry per disc, each
         // downloaded individually by its own file id.
@@ -1311,7 +1304,6 @@ namespace romm::model {
         // Base offset so the shared progress counter reads cumulatively across discs.
         active_base_bytes.store(base_bytes);
 
-        mkdir("sdmc:/roms", 0777);
         std::string platform_dir = ConfigManager::Instance().GetRomPath(task.platform_slug);
         RomPathManager::CreateFolderIfMissing(platform_dir);
         // Ensure the file's parent exists — this creates the per-game subfolder for

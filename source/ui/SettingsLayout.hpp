@@ -34,38 +34,11 @@ namespace romm::ui {
         DownloadSoundPack
     };
 
-    enum class PathStatus {
-        Valid,
-        Missing,
-        Invalid,
-        ReadOnly,
-        ComingLater
-    };
-
     struct OptionRenderEntry {
         std::string label;
         std::string value;
         bool is_action = false;
         int volume_percent = -1; // >= 0 draws a HorizonOS-style slider bar instead of `value` text
-    };
-
-    struct PlatformPathStatus {
-        PathStatus roms_status = PathStatus::Missing;
-        PathStatus cover_status = PathStatus::ReadOnly;
-        PathStatus bios_status = PathStatus::ComingLater;
-        PathStatus save_status = PathStatus::ComingLater;
-    };
-
-    struct PlatformPathDescriptor {
-        std::string tab_label;
-        std::string display_name;
-        std::string internal_slug;
-        std::string display_slug;
-        bool download_supported;
-        bool rom_path_editable;
-        bool cover_path_editable;
-        bool bios_path_supported;
-        bool save_path_supported;
     };
 
     class SettingsConfirmModal : public pu::ui::elm::Element {
@@ -114,13 +87,6 @@ namespace romm::ui {
         std::string connection_test_status;
         pu::ui::Color connection_status_color;
 
-        // ROM Paths status cache
-        std::vector<PlatformPathStatus> cached_statuses;
-        // ROM Paths platform tab bar: index of the first visible tab. Tabs
-        // stay a fixed, legible width — this scrolls the visible window
-        // instead of shrinking tabs to force-fit an arbitrary platform count
-        // (which just overlaps again once the count grows further).
-        size_t rom_path_tab_scroll_offset = 0;
         // Settings > Platforms row list: index of the first visible row. The
         // list is open-ended (catalogue + server-detected), so it scrolls
         // rather than assuming it fits the panel.
@@ -143,7 +109,6 @@ namespace romm::ui {
         void TriggerConnectionTest();
         void TriggerRecalculateCache();
         void RecalculateCacheSize();
-        void RefreshPathStatuses();
 
         void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override;
         void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}
@@ -187,12 +152,11 @@ namespace romm::ui {
 
         static size_t GetOptionsCount(size_t cat_idx);
         static size_t GetCategoriesCount();
-        static size_t GetSelectableRomPathRowCount();
-        static size_t GetSupportedPlatformsCount();
 
-        void EditSelectedRomPath();
-        void ValidateOrCreateSelectedPath();
-        void ResetSelectedRomPath();
+        // A on the ROM Paths base-directory row: opens the keyboard and
+        // persists the new base, where every system installs under
+        // <base>/roms/<system>/.
+        void EditBaseDirectory();
 
         PU_SMART_CTOR(SettingsLayout)
     };

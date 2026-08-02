@@ -62,24 +62,6 @@ namespace romm::ui {
             return path.substr(0, max_len - 3) + "...";
         }
 
-        const std::vector<PlatformPathDescriptor> SUPPORTED_PLATFORMS = {
-            {"PS1", "PlayStation", "psx", "ps1", true, true, false, false, false},
-            {"PS2", "PlayStation 2", "ps2", "ps2", true, true, false, false, false},
-            {"PSP", "PSP", "psp", "psp", true, true, false, false, false},
-            {"DS", "Nintendo DS", "nds", "nds", true, true, false, false, false},
-            {"GB", "Game Boy", "gb", "gb", true, true, false, false, false},
-            {"GBC", "Game Boy Color", "gbc", "gbc", true, true, false, false, false},
-            {"GBA", "Game Boy Advance", "gba", "gba", true, true, false, false, false},
-            {"3DS", "Nintendo 3DS", "3ds", "3ds", true, true, false, false, false}
-        };
-
-        std::string GetCoverCachePath(const std::string& internal_slug) {
-            if (internal_slug == "psx") {
-                return "sdmc:/switch/romm-nx/cache/covers/small/";
-            }
-            return "sdmc:/switch/romm-nx/cache/covers/" + internal_slug + "/";
-        }
-
         // Ordered so cycling (A to advance) has a stable, predictable order —
         // must match ConfigManager's validation lists.
         const std::vector<std::string> kStartupSoundKeys = {"none", "ps1", "ps2", "ps3", "ps3-old", "ps4", "ps5", "psp"};
@@ -276,12 +258,6 @@ namespace romm::ui {
             return g_platform_rows;
         }
 
-        // Which ROM Paths rows are selectable (BIOS/Save data are "Coming
-        // later" placeholders) — OnRender's rows_data and NavigationManager's
-        // row-navigation clamp both read this instead of independently
-        // hardcoding the same count. Assumes enabled rows are a contiguous
-        // prefix (true today: ROMs, Cover cache enabled; BIOS, Save data not).
-        const std::vector<bool> kRomPathRowDisabled = {false, false, true, true};
     }
 
     // --- SettingsConfirmModal Implementation ---
@@ -363,10 +339,8 @@ namespace romm::ui {
 
     SettingsCard::SettingsCard(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element::Element(), x(x), y(y), w(w), h(h), nav_mgr(nav), connection_status_color(190, 180, 225, 255) {
-        cached_statuses.resize(SUPPORTED_PLATFORMS.size());
         ResetConnectionStatus();
         TriggerRecalculateCache();
-        RefreshPathStatuses();
     }
 
     void SettingsCard::RefreshConfigTextures() {
@@ -432,44 +406,6 @@ namespace romm::ui {
 
     void SettingsCard::RecalculateCacheSize() {
         TriggerRecalculateCache();
-    }
-
-    void SettingsCard::RefreshPathStatuses() {
-        auto& config = romm::model::ConfigManager::Instance();
-        for (size_t i = 0; i < SUPPORTED_PLATFORMS.size(); ++i) {
-            const auto& plat = SUPPORTED_PLATFORMS[i];
-            
-            // ROMs / Downloads
-            std::string rom_path = config.GetRomPath(plat.internal_slug);
-            bool pattern_ok = romm::model::RomPathManager::ValidatePath(rom_path);
-            if (!pattern_ok) {
-                cached_statuses[i].roms_status = PathStatus::Invalid;
-            } else {
-                struct stat st;
-                bool exists = (stat(rom_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-                if (exists) {
-                    cached_statuses[i].roms_status = PathStatus::Valid;
-                } else {
-                    cached_statuses[i].roms_status = PathStatus::Missing;
-                }
-            }
-
-            // Cover cache
-            std::string cover_path = GetCoverCachePath(plat.internal_slug);
-            struct stat st_cov;
-            bool cov_exists = (stat(cover_path.c_str(), &st_cov) == 0 && S_ISDIR(st_cov.st_mode));
-            if (cov_exists) {
-                cached_statuses[i].cover_status = PathStatus::ReadOnly;
-            } else {
-                cached_statuses[i].cover_status = PathStatus::ReadOnly;
-            }
-
-            // BIOS
-            cached_statuses[i].bios_status = PathStatus::ComingLater;
-
-            // Save data
-            cached_statuses[i].save_status = PathStatus::ComingLater;
-        }
     }
 
     void SettingsCard::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x_coord, const s32 y_coord) {
@@ -613,7 +549,10 @@ namespace romm::ui {
             options.push_back({romm::i18n::tr("settings.connection.test"), connection_test_status, true});
         }
         else if (active_cat == 3) { // ROM Paths
-            // Custom drawing logic handles this
+            // One configurable base directory; every system installs to
+            // <base>/roms/<system>/. Value is a config value shown as-is.
+            options.push_back({romm::i18n::tr("settings.rom_paths.base_dir"),
+                               truncatePath(config.GetRomsBaseDir()), true});
         }
         else if (active_cat == 4) { // Platforms
             // Custom drawing logic handles this (needs its own scroll window)
@@ -702,7 +641,7 @@ namespace romm::ui {
             options.push_back({romm::i18n::tr("settings.debug.export"), romm::i18n::tr("settings.debug.trigger_export"), true});
         }
 
-        if (active_cat != 3 && active_cat != 4) {
+        if (active_cat != 4) {
             // Draw Options List (real rows only)
             s32 opt_start_y = y_coord + 40;
             s32 opt_row_h = 75;
@@ -1043,210 +982,6 @@ namespace romm::ui {
                     }
                 }
             }
-        } else {
-            // Draw Custom ROM Paths layout
-            // 1. Draw Platform Tab Bar
-            s32 tab_y = y_coord + 40;
-            s32 tab_h = 60;
-            s32 tab_w = 160;
-            s32 tab_spacing = 20;
-            s32 tab_start_x = opt_panel_x + 50;
-
-            size_t selected_tab = nav->GetSelectedRomPathPlatformIdx();
-            bool is_rows_focused = nav->IsRomPathRowsFocused();
-            bool is_option_list_focused = (!is_cat_focused);
-
-            // The platform count is open-ended (started at 7, now 8 with
-            // 3DS, more will follow), and a fixed-width tab bar can't grow
-            // to fit an unbounded list without eventually overlapping the
-            // panel edge or shrinking tabs into illegibility. Instead this
-            // scrolls a fixed-size window — same approach as the file
-            // browser's and queue's row lists — so tabs always stay a
-            // legible, constant 160px regardless of how many platforms
-            // exist; L/R past the visible edge scrolls the window with the
-            // selection, and small arrow glyphs in the side margins signal
-            // there's more off-screen.
-            size_t plat_count = SUPPORTED_PLATFORMS.size();
-            s32 available_w = opt_panel_w - 100; // symmetric 50px margins
-            size_t visible_count = (size_t)std::max(1, (available_w + tab_spacing) / (tab_w + tab_spacing));
-            if (visible_count > plat_count) visible_count = plat_count;
-
-            if (selected_tab < rom_path_tab_scroll_offset) {
-                rom_path_tab_scroll_offset = selected_tab;
-            } else if (selected_tab >= rom_path_tab_scroll_offset + visible_count) {
-                rom_path_tab_scroll_offset = selected_tab - visible_count + 1;
-            }
-            // Clamp defensively (e.g. platform count shrank under us).
-            if (rom_path_tab_scroll_offset + visible_count > plat_count) {
-                rom_path_tab_scroll_offset = (plat_count > visible_count) ? (plat_count - visible_count) : 0;
-            }
-
-            for (size_t i = rom_path_tab_scroll_offset; i < rom_path_tab_scroll_offset + visible_count; ++i) {
-                s32 tx = tab_start_x + (s32)(i - rom_path_tab_scroll_offset) * (tab_w + tab_spacing);
-                bool is_current_tab = (i == selected_tab);
-
-                pu::ui::Color t_bg;
-                pu::ui::Color t_border;
-                s32 t_border_w = 2;
-
-                if (is_current_tab) {
-                    if (is_option_list_focused && !is_rows_focused) {
-                        t_bg = pu::ui::Color(85, 63, 152, 255); // Violet highlight capsule
-                        t_border = pu::ui::Color(230, 199, 167, 255); // Cream border
-                        t_border_w = 3;
-                    } else {
-                        t_bg = pu::ui::Color(85, 63, 152, 120); // Subdued violet capsule
-                        t_border = pu::ui::Color(45, 50, 62, 255);
-                    }
-                } else {
-                    t_bg = pu::ui::Color(16, 18, 22, 255);
-                    t_border = pu::ui::Color(45, 50, 62, 255);
-                }
-
-                drawer->RenderRoundedRectangleFill(t_border, tx, tab_y, tab_w, tab_h, 8);
-                drawer->RenderRoundedRectangleFill(t_bg, tx + t_border_w, tab_y + t_border_w, tab_w - (t_border_w * 2), tab_h - (t_border_w * 2), 6);
-
-                pu::ui::Color text_color(237, 229, 251, 255);
-                auto t_tex = pu::ui::render::RenderText("Orbitron@24", SUPPORTED_PLATFORMS[i].tab_label, text_color);
-                if (t_tex) {
-                    s32 tw = pu::ui::render::GetTextureWidth(t_tex);
-                    s32 th = pu::ui::render::GetTextureHeight(t_tex);
-                    drawer->RenderTexture(t_tex, tx + (tab_w - tw) / 2, tab_y + (tab_h - th) / 2);
-                    pu::ui::render::DeleteTexture(t_tex);
-                }
-            }
-
-            // Scroll arrows in the side margins, only when there's more off-screen
-            {
-                pu::ui::Color arrow_clr(190, 180, 225, 200);
-                s32 arrow_y = tab_y + (tab_h / 2) - 12;
-                if (rom_path_tab_scroll_offset > 0) {
-                    auto lt = pu::ui::render::RenderText("Orbitron@24", "<", arrow_clr);
-                    if (lt) {
-                        drawer->RenderTexture(lt, opt_panel_x + 15, arrow_y);
-                        pu::ui::render::DeleteTexture(lt);
-                    }
-                }
-                if (rom_path_tab_scroll_offset + visible_count < plat_count) {
-                    auto rt = pu::ui::render::RenderText("Orbitron@24", ">", arrow_clr);
-                    if (rt) {
-                        s32 rtw = pu::ui::render::GetTextureWidth(rt);
-                        drawer->RenderTexture(rt, opt_panel_x + opt_panel_w - 15 - rtw, arrow_y);
-                        pu::ui::render::DeleteTexture(rt);
-                    }
-                }
-            }
-
-            // 2. Draw Selected Platform Name
-            s32 plat_title_y = tab_y + tab_h + 30;
-            const auto& active_plat = SUPPORTED_PLATFORMS[selected_tab];
-            auto plat_name_tex = pu::ui::render::RenderText("Orbitron@30", active_plat.display_name, pu::ui::Color(237, 229, 251, 255));
-            if (plat_name_tex) {
-                drawer->RenderTexture(plat_name_tex, opt_panel_x + 50, plat_title_y);
-                pu::ui::render::DeleteTexture(plat_name_tex);
-            }
-
-            // 3. Draw Path Rows
-            s32 rows_start_y = plat_title_y + 60;
-            s32 row_h = 85;
-            s32 row_spacing = 15;
-            s32 row_w = opt_panel_w - 100;
-
-            struct RowData {
-                std::string label;
-                std::string path;
-                PathStatus status;
-                bool disabled;
-            };
-
-            // Row labels are localized; the paths beside them are filesystem
-            // values shown verbatim (only truncated to fit).
-            const std::string coming_later = romm::i18n::tr("settings.rom_paths.coming_later");
-            std::vector<RowData> rows_data = {
-                {romm::i18n::tr("settings.rom_paths.roms"), truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, kRomPathRowDisabled[0]},
-                {romm::i18n::tr("settings.rom_paths.cover_cache"), truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, kRomPathRowDisabled[1]},
-                {romm::i18n::tr("settings.rom_paths.bios"), coming_later, cached_statuses[selected_tab].bios_status, kRomPathRowDisabled[2]},
-                {romm::i18n::tr("settings.rom_paths.save_data"), coming_later, cached_statuses[selected_tab].save_status, kRomPathRowDisabled[3]}
-            };
-
-            size_t selected_row = nav->GetSelectedRomPathRowIdx();
-
-            for (size_t j = 0; j < rows_data.size(); ++j) {
-                s32 ry = rows_start_y + j * (row_h + row_spacing);
-                bool is_current_row = (j == selected_row && is_rows_focused && is_option_list_focused);
-
-                pu::ui::Color r_bg;
-                pu::ui::Color r_border;
-                s32 r_border_w = 2;
-
-                if (rows_data[j].disabled) {
-                    r_bg = pu::ui::Color(10, 11, 13, 255);
-                    r_border = pu::ui::Color(30, 34, 43, 255);
-                } else if (is_current_row) {
-                    r_bg = pu::ui::Color(85, 63, 152, 255);
-                    r_border = pu::ui::Color(230, 199, 167, 255);
-                    r_border_w = 3;
-                } else {
-                    r_bg = pu::ui::Color(16, 18, 22, 255);
-                    r_border = pu::ui::Color(45, 50, 62, 255);
-                }
-
-                s32 rx = opt_panel_x + 50;
-
-                drawer->RenderRoundedRectangleFill(r_border, rx, ry, row_w, row_h, 8);
-                drawer->RenderRoundedRectangleFill(r_bg, rx + r_border_w, ry + r_border_w, row_w - (r_border_w * 2), row_h - (r_border_w * 2), 6);
-
-                // Draw Label
-                pu::ui::Color label_color = rows_data[j].disabled ? pu::ui::Color(110, 110, 120, 255) : pu::ui::Color(237, 229, 251, 255);
-                auto l_tex = pu::ui::render::RenderText("Ubuntu@24", rows_data[j].label, label_color);
-                if (l_tex) {
-                    drawer->RenderTexture(l_tex, rx + 25, ry + 12);
-                    pu::ui::render::DeleteTexture(l_tex);
-                }
-
-                // Draw Path
-                pu::ui::Color path_color = rows_data[j].disabled ? pu::ui::Color(80, 80, 90, 255) : pu::ui::Color(190, 180, 225, 255);
-                auto p_tex = pu::ui::render::RenderText("Ubuntu@20", rows_data[j].path, path_color);
-                if (p_tex) {
-                    drawer->RenderTexture(p_tex, rx + 25, ry + 46);
-                    pu::ui::render::DeleteTexture(p_tex);
-                }
-
-                // Draw Status Indicator
-                std::string status_text;
-                pu::ui::Color status_color;
-
-                switch (rows_data[j].status) {
-                    case PathStatus::Valid:
-                        status_text = romm::i18n::tr("settings.path_status.valid");
-                        status_color = pu::ui::Color(46, 204, 113, 255);
-                        break;
-                    case PathStatus::Missing:
-                        status_text = romm::i18n::tr("settings.path_status.missing");
-                        status_color = pu::ui::Color(241, 196, 15, 255);
-                        break;
-                    case PathStatus::Invalid:
-                        status_text = romm::i18n::tr("settings.path_status.invalid");
-                        status_color = pu::ui::Color(231, 76, 60, 255);
-                        break;
-                    case PathStatus::ReadOnly:
-                        status_text = romm::i18n::tr("settings.path_status.readonly");
-                        status_color = pu::ui::Color(150, 150, 160, 255);
-                        break;
-                    case PathStatus::ComingLater:
-                        status_text = romm::i18n::tr("settings.path_status.coming_later");
-                        status_color = pu::ui::Color(100, 100, 110, 255);
-                        break;
-                }
-
-                auto s_tex = pu::ui::render::RenderText("Ubuntu@24", status_text, status_color);
-                if (s_tex) {
-                    s32 sw = pu::ui::render::GetTextureWidth(s_tex);
-                    s32 sh = pu::ui::render::GetTextureHeight(s_tex);
-                    drawer->RenderTexture(s_tex, rx + row_w - sw - 30, ry + (row_h - sh) / 2);
-                    pu::ui::render::DeleteTexture(s_tex);
-                }
-            }
         }
     }
 
@@ -1285,9 +1020,6 @@ namespace romm::ui {
     void SettingsLayout::OnSelectionUpdated() {
         auto nav = nav_mgr.lock();
         if (!nav) return;
-        if (card && nav->GetSelectedSettingsCategoryIdx() == 3) {
-            card->RefreshPathStatuses();
-        }
         if (nav->GetSelectedSettingsCategoryIdx() == 4) {
             RefreshPlatformRows();
         }
@@ -1296,7 +1028,6 @@ namespace romm::ui {
     void SettingsLayout::RefreshConfig() {
         if (card) {
             card->RefreshConfigTextures();
-            card->RefreshPathStatuses();
         }
         RefreshPlatformRows();
     }
@@ -1357,18 +1088,8 @@ namespace romm::ui {
         auto nav = nav_mgr.lock();
         if (!nav) return;
 
-        if (nav->GetSelectedSettingsCategoryIdx() == 3) {
-            if (!nav->IsRomPathRowsFocused()) {
-                hint_text->SetText(romm::i18n::tr("hint.settings.rompath.tabs"));
-            } else {
-                if (nav->GetSelectedRomPathRowIdx() == 0) {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.roms"));
-                } else if (nav->GetSelectedRomPathRowIdx() == 1) {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.cover"));
-                } else {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.other"));
-                }
-            }
+        if (nav->GetSelectedSettingsCategoryIdx() == 3 && focus != SettingsFocusArea::CategoryList) {
+            hint_text->SetText(romm::i18n::tr("hint.settings.rompath.base"));
             return;
         }
 
@@ -1522,8 +1243,10 @@ namespace romm::ui {
                 }
             }
         }
-        else if (cat_idx == 3) { // ROM Paths
-            // Handled via explicit actions EditSelectedRomPath(), ValidateOrCreateSelectedPath(), and ResetSelectedRomPath()
+        else if (cat_idx == 3) { // ROM Paths (base directory)
+            if (opt_idx == 0) {
+                EditBaseDirectory();
+            }
         }
         else if (cat_idx == 4) { // Platforms
             const auto& plat_rows = PlatformRows();
@@ -1756,7 +1479,7 @@ namespace romm::ui {
             case 0: return 8; // General
             case 1: return 7; // Theme
             case 2: return 3; // Connection
-            case 3: return 2; // ROM Paths (ROMs and Cover cache)
+            case 3: return 1; // ROM Paths (base directory)
             // Platforms: Show All + Reset Defaults + one row per canonical
             // platform. Grows with whatever the server reports, so it's derived
             // rather than a literal.
@@ -1782,123 +1505,25 @@ namespace romm::ui {
         return kSettingsCategoryKeys.size();
     }
 
-    size_t SettingsLayout::GetSelectableRomPathRowCount() {
-        size_t count = 0;
-        for (bool disabled : kRomPathRowDisabled) {
-            if (disabled) break; // enabled rows are a contiguous prefix
-            count++;
-        }
-        return count;
-    }
-
-    size_t SettingsLayout::GetSupportedPlatformsCount() {
-        return SUPPORTED_PLATFORMS.size();
-    }
-
-    void SettingsLayout::EditSelectedRomPath() {
-        auto nav = nav_mgr.lock();
-        if (!nav) return;
-
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
+    void SettingsLayout::EditBaseDirectory() {
         auto& config = romm::model::ConfigManager::Instance();
 
-        if (row_idx == 0) { // ROMs / Downloads is editable
-            // Platform name and the example path are values; only the wording
-            // around them is localized.
-            std::string current = config.GetRomPath(plat.internal_slug);
-            std::string title = romm::i18n::format("keyboard.rom_path.header", {{"platform", plat.display_name}});
-            std::string prompt = romm::i18n::format("keyboard.rom_path.subtext",
-                                                    {{"path", "sdmc:/roms/" + plat.display_slug + "/"}});
-            std::string val = romm::navigation::NavigationManager::ShowKeyboard(title, prompt, current);
-            if (!val.empty() && val != current) {
-                if (romm::model::RomPathManager::ValidatePath(val)) {
-                    config.SetRomPath(plat.internal_slug, val);
-                    config.Save();
-                    std::cout << "[ROM_PATH] platform=" << plat.internal_slug << " path=" << val << std::endl;
-                }
-            }
-        }
-        
-        // Refresh statuses after editing
-        if (card) {
-            card->RefreshPathStatuses();
-        }
-        UpdateFooterHints(nav->GetSettingsFocus());
-    }
-
-    void SettingsLayout::ValidateOrCreateSelectedPath() {
-        auto nav = nav_mgr.lock();
-        if (!nav) return;
-
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
-        auto& config = romm::model::ConfigManager::Instance();
-
-        if (row_idx == 0) { // ROMs / Downloads
-            std::string p = config.GetRomPath(plat.internal_slug);
-            bool pattern_ok = romm::model::RomPathManager::ValidatePath(p);
-            if (!pattern_ok) {
-                std::cout << "[ROM_PATH] Validate failed: Invalid pattern for " << plat.display_name << std::endl;
+        std::string current = config.GetRomsBaseDir();
+        std::string example = current + "roms/nes/";
+        std::string val = romm::navigation::NavigationManager::ShowKeyboard(
+            romm::i18n::tr("keyboard.base_dir.header"),
+            romm::i18n::format("keyboard.base_dir.subtext", {{"path", example}}),
+            current);
+        if (!val.empty() && val != current) {
+            if (romm::model::RomPathManager::ValidatePath(val)) {
+                // Normalize trailing slash, persist, and create the base on disk.
+                config.SetRomsBaseDir(val);
+                romm::model::RomPathManager::CreateFolderIfMissing(config.GetRomsBaseDir());
+                config.Save();
+                std::cout << "[ROM_PATH] base dir=" << config.GetRomsBaseDir() << std::endl;
             } else {
-                struct stat st;
-                bool exists = (stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-                if (exists) {
-                    std::cout << "[ROM_PATH] Validated: " << p << " exists." << std::endl;
-                } else {
-                    std::cout << "[ROM_PATH] Missing directory " << p << ". Creating folder..." << std::endl;
-                    bool ok = romm::model::RomPathManager::CreateFolderIfMissing(p);
-                    if (ok) {
-                        std::cout << "[ROM_PATH] Successfully created " << p << std::endl;
-                    } else {
-                        std::cout << "[ROM_PATH] Failed to create folder " << p << std::endl;
-                    }
-                }
+                std::cout << "[ROM_PATH] Invalid base dir: " << val << std::endl;
             }
-        } else if (row_idx == 1) { // Cover Cache
-            std::string cover_path = GetCoverCachePath(plat.internal_slug);
-            struct stat st_cov;
-            bool exists = (stat(cover_path.c_str(), &st_cov) == 0 && S_ISDIR(st_cov.st_mode));
-            std::cout << "[ROM_PATH] Cover cache validation for " << plat.display_name 
-                      << " path=" << cover_path << " exists=" << (exists ? "yes" : "no") << std::endl;
-        }
-
-        // Refresh statuses
-        if (card) {
-            card->RefreshPathStatuses();
-        }
-        UpdateFooterHints(nav->GetSettingsFocus());
-    }
-
-    void SettingsLayout::ResetSelectedRomPath() {
-        auto nav = nav_mgr.lock();
-        if (!nav) return;
-
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
-        auto& config = romm::model::ConfigManager::Instance();
-
-        if (row_idx == 0) { // ROMs / Downloads
-            std::string default_path = romm::model::RomPathManager::GetDefaultPath(plat.internal_slug);
-            confirm_modal->Show(
-                romm::i18n::format("settings.confirm.reset_path.title", {{"platform", plat.display_name}}),
-                romm::i18n::format("settings.confirm.reset_path.message", {
-                    {"platform", plat.display_name},
-                    {"path", default_path}
-                }),
-                ConfirmAction::ResetRomPath,
-                [this, &config, plat, default_path]() {
-                    config.SetRomPath(plat.internal_slug, default_path);
-                    config.Save();
-                    std::cout << "[ROM_PATH] platform=" << plat.internal_slug << " path=" << default_path << std::endl;
-                    if (card) {
-                        card->RefreshPathStatuses();
-                    }
-                }
-            );
         }
     }
 

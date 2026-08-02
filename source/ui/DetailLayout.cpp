@@ -67,7 +67,7 @@ namespace romm::ui {
         std::vector<std::string> lines;
         std::string current_line;
         std::string word;
-        
+
         for (char c : text) {
             if (c == ' ' || c == '\n') {
                 std::string test_line = current_line;
@@ -75,7 +75,7 @@ namespace romm::ui {
                     test_line += " ";
                 }
                 test_line += word;
-                
+
                 s32 test_w = pu::ui::render::GetTextWidth(font_name, test_line);
                 if (test_w > max_width_px && !current_line.empty()) {
                     lines.push_back(current_line);
@@ -84,7 +84,7 @@ namespace romm::ui {
                     current_line = test_line;
                 }
                 word.clear();
-                
+
                 if (c == '\n') {
                     lines.push_back(current_line);
                     current_line.clear();
@@ -155,7 +155,7 @@ namespace romm::ui {
 
         // Try to pre-populate cover_tex with a cached grid texture immediately to avoid blanking
         std::string norm_slug = romm::model::NormalizePlatformSlug(ctx.platform_slug);
-        
+
         // Fixed cover art viewport container (stable per platform aspect ratio)
         s32 cover_x = x + 40;
         s32 cover_y = y + 40;
@@ -278,14 +278,14 @@ namespace romm::ui {
         FullscreenKeys keys;
         auto nav = nav_mgr.lock();
         if (!nav) return keys;
-        
+
         auto model = nav->GetModel();
         if (!model) return keys;
-        
+
         int rom_id = ctx.rom_id;
         const auto* detail = model->GetCachedDetail(rom_id);
         std::string norm_slug = romm::model::NormalizePlatformSlug(ctx.platform_slug);
-        
+
         bool is_psp = (norm_slug == "psp");
         bool is_nds = (norm_slug == "nds" || norm_slug == "nintendo-ds" || norm_slug == "nintendo_ds" || norm_slug == "Nintendo DS");
         bool is_3ds = (norm_slug == "3ds");
@@ -304,7 +304,7 @@ namespace romm::ui {
         if (is_nds || is_3ds || is_gameboy_family) { small_w = 380; small_h = 344; }
         else if (is_psp) { small_w = 247; small_h = 378; }
         else if (is_ps1) { small_w = 240; small_h = 240; }
-        
+
         // 1. Miximage Key
         if (detail && !detail->miximage_v2_url.empty()) {
             keys.miximage_key.rom_id = rom_id;
@@ -314,7 +314,7 @@ namespace romm::ui {
             keys.miximage_key.requested_width = big_w;
             keys.miximage_key.requested_height = big_h;
         }
-        
+
         // 2. Large Cover Key
         std::string large_source = "";
         if (detail && !detail->path_cover_large.empty()) {
@@ -330,7 +330,7 @@ namespace romm::ui {
             keys.large_key.requested_width = big_w;
             keys.large_key.requested_height = big_h;
         }
-        
+
         // 3. Small Cover Key
         if (!ctx.cover_path.empty()) {
             keys.small_key.rom_id = rom_id;
@@ -340,7 +340,7 @@ namespace romm::ui {
             keys.small_key.requested_width = small_w;
             keys.small_key.requested_height = small_h;
         }
-        
+
         return keys;
     }
 
@@ -363,7 +363,7 @@ namespace romm::ui {
     void DetailCard::InitTextures() {
         ClearTextures();
         pu::ui::Color text_color(237, 229, 251, 255); // #EDE5FB
-        
+
         // The action button is 430px wide; these labels are sized to fit there
         // in every shipped language.
         tex_btn_download = pu::ui::render::RenderText("Orbitron@30", romm::i18n::tr("detail.btn.download"), text_color);
@@ -400,12 +400,12 @@ namespace romm::ui {
         if (tex_btn_downloaded) { pu::ui::render::DeleteTexture(tex_btn_downloaded); tex_btn_downloaded = nullptr; }
         if (tex_btn_failed) { pu::ui::render::DeleteTexture(tex_btn_failed); tex_btn_failed = nullptr; }
         if (tex_btn_unsupported) { pu::ui::render::DeleteTexture(tex_btn_unsupported); tex_btn_unsupported = nullptr; }
-        
+
         if (tex_btn_uninstall) { pu::ui::render::DeleteTexture(tex_btn_uninstall); tex_btn_uninstall = nullptr; }
         if (tex_btn_confirm_uninstall) { pu::ui::render::DeleteTexture(tex_btn_confirm_uninstall); tex_btn_confirm_uninstall = nullptr; }
         if (tex_btn_add_to_queue) { pu::ui::render::DeleteTexture(tex_btn_add_to_queue); tex_btn_add_to_queue = nullptr; }
         if (tex_btn_remove_from_queue) { pu::ui::render::DeleteTexture(tex_btn_remove_from_queue); tex_btn_remove_from_queue = nullptr; }
-        
+
         if (dynamic_download_tex) { pu::ui::render::DeleteTexture(dynamic_download_tex); dynamic_download_tex = nullptr; }
 
         if (details_tex) { pu::ui::render::DeleteTexture(details_tex); details_tex = nullptr; }
@@ -554,7 +554,7 @@ namespace romm::ui {
             cover_tex = result.texture;
             displayed_key = result.key;
             request_state = DetailRequestState::Idle;
-            
+
             if (result.key.variant == "miximage_v2") {
                 display_state = DetailDisplayState::MiximageReady;
                 cover_state = DetailCoverState::UsingMiximage;
@@ -674,9 +674,9 @@ namespace romm::ui {
         s32 btn_h = 80;
         s32 btn_w = cover_w; // 430
         s32 btn_x = cover_x; // 190
-        
+
         bool actions_focused = (nav->GetDetailFocus() == romm::navigation::DetailFocus::Actions);
-        
+
         pu::ui::Color btn_bg(16, 18, 22, 255); // Web Dark Slate (#101216)
         pu::ui::Color btn_border;
         s32 btn_border_w = 0;
@@ -699,7 +699,7 @@ namespace romm::ui {
 
         int rom_id = ctx.rom_id;
         auto model = nav->GetModel();
-        
+
         if (rom_id > 0 && model) {
             auto& dl_mgr = romm::model::DownloadManager::Instance();
             auto task_snap = dl_mgr.GetTaskSnapshot(rom_id);
@@ -774,13 +774,11 @@ namespace romm::ui {
             } else if (current_action_state == DownloadActionState::Failed) {
                 active_btn_tex = tex_btn_failed;
             } else if (current_action_state == DownloadActionState::AddToQueue) {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
-                else active_btn_tex = tex_btn_add_to_queue;
+                active_btn_tex = tex_btn_add_to_queue;
             } else {
-                if (!is_ps1 && platform_slug != "psp" && platform_slug != "nds" && platform_slug != "gb" && platform_slug != "gbc" && platform_slug != "gba" && platform_slug != "ps2" && platform_slug != "3ds") active_btn_tex = tex_btn_unsupported;
-                else active_btn_tex = tex_btn_download;
+                active_btn_tex = tex_btn_download;
             }
-            
+
             if (!new_dynamic_text.empty()) {
                 if (current_dynamic_text != new_dynamic_text || dynamic_download_tex == nullptr) {
                     if (dynamic_download_tex) {
@@ -806,10 +804,10 @@ namespace romm::ui {
             s32 pb_w = btn_w;
             s32 pb_x = btn_x;
             s32 pb_y = btn_y + btn_h + 10;
-            
+
             pu::ui::Color pb_bg(16, 18, 22, 255);
             pu::ui::Color pb_fill(85, 63, 152, 255); // Violet accent
-            
+
             drawer->RenderRoundedRectangleFill(pb_bg, pb_x, pb_y, pb_w, pb_h, 6);
             if (progress_pct > 0.0f) {
                 s32 fill_w = (s32)(pb_w * progress_pct);
@@ -874,7 +872,7 @@ namespace romm::ui {
 
         // Render Game Title with Marquee Scrolling
         s32 max_title_w = 1060;
-        
+
         // Update delta time
         auto marquee_now = std::chrono::steady_clock::now();
         float marquee_dt = 0.0f;
@@ -980,7 +978,7 @@ namespace romm::ui {
     }
 
     void DetailCard::OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
-        // NavigationManager handles inputs, we don't need to do much here, 
+        // NavigationManager handles inputs, we don't need to do much here,
         // except we could use this if we wanted isolated input.
     }
 
@@ -1130,9 +1128,9 @@ namespace romm::ui {
                 // RomM's description verbatim; only the empty-state line is ours.
                 std::string desc = detail->description;
                 if (desc.empty()) desc = romm::i18n::tr("detail.no_description");
-                
+
                 std::cout << "[DETAIL] Description source rom=" << detail->rom_id << std::endl;
-                
+
                 descriptionLines = WordWrapLinesPixel("Ubuntu@30", desc, 1020);
 
                 const s32 card_y = 150;
@@ -1198,7 +1196,7 @@ namespace romm::ui {
 
     void DetailLayout::ScrollDescription(int direction) {
         if (descriptionLines.empty() || maxDescriptionScrollOffset <= 0) return;
-        
+
         const s32 card_y = 150;
         const s32 tabs_bottom = card_y + TAB_Y_OFFSET + TAB_HEIGHT; // 380
         const s32 section_title_y = tabs_bottom + TABS_TO_SECTION_GAP; // 400
@@ -1216,7 +1214,7 @@ namespace romm::ui {
                 descriptionScrollOffset--;
             }
         }
-        
+
         std::string visible_desc;
         for (size_t i = 0; i < max_visible && (descriptionScrollOffset + i) < descriptionLines.size(); ++i) {
             visible_desc += descriptionLines[descriptionScrollOffset + i];
@@ -1229,17 +1227,17 @@ namespace romm::ui {
 
     void DetailLayout::UpdateFooterHints() {
         if (!hint_text) return;
-        
+
         auto nav = nav_mgr.lock();
         if (!nav) return;
-        
+
         bool has_image = false;
         if (card && card->GetCoverTexture() != nullptr &&
             card->GetCoverState() != DetailCoverState::Placeholder &&
             card->GetCoverState() != DetailCoverState::Failed) {
             has_image = true;
         }
-        
+
         auto focus = nav->GetDetailFocus();
 
         // Four whole hint lines rather than a base string with translated
@@ -1301,7 +1299,7 @@ namespace romm::ui {
             bool valid = false;
             if (cur == 0 && keys.miximage_key.rom_id > 0 && !keys.miximage_key.cover_source.empty()) valid = true;
             if (cur == 1 && keys.large_key.rom_id > 0 && !keys.large_key.cover_source.empty()) valid = true;
-            
+
             if (valid) {
                 next = cur;
                 break;
