@@ -289,7 +289,7 @@ namespace romm::navigation {
             // changelog/confirm UI there instead of duplicating it here.
             update_modal_active = false;
             current_screen = Screen::Settings;
-            selected_settings_category_idx = 6; // Updates
+            selected_settings_category_idx = romm::ui::CategoryIndex(romm::ui::SettingsCategory::Updates);
             settings_focus = romm::ui::SettingsFocusArea::OptionList;
             // Land on the install row, not row 0 — row 0 cycles the update
             // channel, and the popup's A button means "take me to this
@@ -540,7 +540,7 @@ namespace romm::navigation {
                     std::cout << "[NAV] Opening Queue layout" << std::endl;
                 } else if (selected_menu_idx == 5) { // Settings
                     current_screen = Screen::Settings;
-                    selected_settings_category_idx = 0;
+                    selected_settings_category_idx = romm::ui::CategoryIndex(romm::ui::SettingsCategory::General);
                     selected_settings_option_idx = 0;
                     settings_focus = SettingsFocusArea::CategoryList;
                     state_changed = true;
@@ -1179,7 +1179,9 @@ namespace romm::navigation {
                 else if (keys_down & HidNpadButton_A) {
                     settings_focus = SettingsFocusArea::OptionList;
                     selected_settings_option_idx = 0;
-                    if (selected_settings_category_idx == 3) {
+                    if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Platforms) {
+                        // Always land on the platform list, never inside a
+                        // platform's rows.
                         rom_path_rows_focused = false;
                         selected_rom_path_row_idx = 0;
                     }
@@ -1189,10 +1191,13 @@ namespace romm::navigation {
             }
             else {
                 // OptionList Focus
-                if (selected_settings_category_idx == 3) {
-                    // Custom ROM Paths navigation
+                if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Platforms) {
+                    // Platforms is two-level: the platform list, and the rows
+                    // for whichever platform is selected. This replaces the old
+                    // ROM Paths tab bar, which could only ever address the eight
+                    // platforms hardcoded in SUPPORTED_PLATFORMS.
                     if (rom_path_rows_focused) {
-                        // Path-row focus
+                        // Level 2: rows for one platform.
                         if (keys_down & HidNpadButton_B) {
                             rom_path_rows_focused = false;
                             state_changed = true;
@@ -1211,7 +1216,7 @@ namespace romm::navigation {
                         }
                         else if (keys_down & HidNpadButton_A) {
                             if (settings_layout) {
-                                settings_layout->EditSelectedRomPath();
+                                settings_layout->ActivateSelectedPlatformRow();
                                 state_changed = true;
                             }
                         }
@@ -1229,38 +1234,50 @@ namespace romm::navigation {
                         }
                     }
                     else {
-                        // Platform-tab focus
+                        // Level 1: the platform list. Show All / Reset Defaults
+                        // sit above it and act immediately; a platform row opens
+                        // its settings with A and toggles visibility with
+                        // Left/Right, so the list stays scannable.
+                        const size_t row_count = romm::ui::SettingsLayout::GetOptionsCount(selected_settings_category_idx);
                         if (keys_down & HidNpadButton_B) {
                             settings_focus = SettingsFocusArea::CategoryList;
                             state_changed = true;
                         }
-                        else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
-                            size_t max_idx = romm::ui::SettingsLayout::GetSupportedPlatformsCount() - 1;
-                            if (selected_rom_path_platform_idx > 0) {
-                                selected_rom_path_platform_idx--;
-                            } else {
-                                selected_rom_path_platform_idx = max_idx;
+                        else if ((keys_effective & HidNpadButton_Up) || (keys_effective & HidNpadButton_StickLUp)) {
+                            if (selected_settings_option_idx > 0) {
+                                selected_settings_option_idx--;
+                                state_changed = true;
                             }
-                            state_changed = true;
+                        }
+                        else if ((keys_effective & HidNpadButton_Down) || (keys_effective & HidNpadButton_StickLDown)) {
+                            if (selected_settings_option_idx + 1 < row_count) {
+                                selected_settings_option_idx++;
+                                state_changed = true;
+                            }
+                        }
+                        else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
                             if (settings_layout) {
-                                settings_layout->OnSelectionUpdated(); // Refreshes status on platform tab switch
+                                settings_layout->ToggleSelectedPlatform(false);
+                                state_changed = true;
                             }
                         }
                         else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                            size_t max_idx = romm::ui::SettingsLayout::GetSupportedPlatformsCount() - 1;
-                            if (selected_rom_path_platform_idx < max_idx) {
-                                selected_rom_path_platform_idx++;
-                            } else {
-                                selected_rom_path_platform_idx = 0;
-                            }
-                            state_changed = true;
                             if (settings_layout) {
-                                settings_layout->OnSelectionUpdated(); // Refreshes status on platform tab switch
+                                settings_layout->ToggleSelectedPlatform(true);
+                                state_changed = true;
                             }
                         }
                         else if (keys_down & HidNpadButton_A) {
-                            rom_path_rows_focused = true;
-                            selected_rom_path_row_idx = 0;
+                            if (selected_settings_option_idx < romm::ui::SettingsLayout::GetPlatformActionRowCount()) {
+                                // Show All / Reset Defaults act in place.
+                                if (settings_layout) {
+                                    settings_layout->HandleOptionAction(selected_settings_category_idx,
+                                                                        selected_settings_option_idx);
+                                }
+                            } else {
+                                rom_path_rows_focused = true;
+                                selected_rom_path_row_idx = 0;
+                            }
                             state_changed = true;
                         }
                     }
@@ -1286,42 +1303,36 @@ namespace romm::navigation {
                         }
                     }
                     // Left/Right on the Startup Sound / Startup Volume / Menu
-                    // Ambience / Menu Ambience Volume rows, same as the ROM
-                    // Paths platform-tab pattern. No-op on every other
-                    // row/category (Download Sound Pack is now a single
-                    // A-press action, not browsable).
+                    // Ambience / Menu Ambience Volume rows. No-op on every other
+                    // row/category (Download Sound Pack is now a single A-press
+                    // action, not browsable). Platforms handles its own
+                    // Left/Right above and never reaches here.
                     else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
-                        if (selected_settings_category_idx == 4 && settings_layout) {
-                            settings_layout->ToggleSelectedPlatform(false); // Left = Hidden
-                            state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                        if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 2 && settings_layout) {
                             settings_layout->CycleStartupSound(-1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 3 && settings_layout) {
                             settings_layout->CycleStartupVolume(-1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 4 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 4 && settings_layout) {
                             settings_layout->CycleThemeSound(-1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 5 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 5 && settings_layout) {
                             settings_layout->CycleAmbientVolume(-1);
                             state_changed = true;
                         }
                     }
                     else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                        if (selected_settings_category_idx == 4 && settings_layout) {
-                            settings_layout->ToggleSelectedPlatform(true); // Right = Shown
-                            state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 2 && settings_layout) {
+                        if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 2 && settings_layout) {
                             settings_layout->CycleStartupSound(1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 3 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 3 && settings_layout) {
                             settings_layout->CycleStartupVolume(1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 4 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 4 && settings_layout) {
                             settings_layout->CycleThemeSound(1);
                             state_changed = true;
-                        } else if (selected_settings_category_idx == 1 && selected_settings_option_idx == 5 && settings_layout) {
+                        } else if (romm::ui::CategoryAt(selected_settings_category_idx) == romm::ui::SettingsCategory::Theme && selected_settings_option_idx == 5 && settings_layout) {
                             settings_layout->CycleAmbientVolume(1);
                             state_changed = true;
                         }

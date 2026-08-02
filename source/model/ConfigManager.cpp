@@ -13,6 +13,39 @@
 namespace romm::model {
 
     namespace {
+        // Every "key": "value" pair inside a named block, rather than probing
+        // for keys the caller already knows about. Lets rom_paths round-trip
+        // whatever platforms are actually in the file, including ones this
+        // build has never heard of.
+        bool extractObject(const std::string& content, const std::string& block_name,
+                           std::map<std::string, std::string>& out) {
+            const std::string marker = "\"" + block_name + "\"";
+            size_t pos = content.find(marker);
+            if (pos == std::string::npos) return false;
+            pos = content.find('{', pos + marker.size());
+            if (pos == std::string::npos) return false;
+
+            // Brace matching that ignores braces inside strings, so a path
+            // containing one can't end the block early.
+            size_t end = std::string::npos;
+            int depth = 0;
+            bool in_string = false;
+            for (size_t i = pos; i < content.size(); ++i) {
+                const char c = content[i];
+                if (c == '"' && (i == 0 || content[i - 1] != '\\')) { in_string = !in_string; continue; }
+                if (in_string) continue;
+                if (c == '{') ++depth;
+                else if (c == '}' && --depth == 0) { end = i; break; }
+            }
+            if (end == std::string::npos) return false;
+
+            const std::string block = content.substr(pos, end - pos + 1);
+            std::map<std::string, std::string> parsed;
+            if (!jsonParseFlatStringMap(block, parsed)) return false;
+            for (const auto& entry : parsed) out[entry.first] = entry.second;
+            return !parsed.empty();
+        }
+
         std::string extractPlatformPath(const std::string& content, const std::string& block_name, const std::string& platform_key) {
             size_t block_pos = content.find("\"" + block_name + "\"");
             if (block_pos != std::string::npos) {
@@ -453,21 +486,30 @@ namespace romm::model {
         }
         rom_paths["psx"] = psx_download_dir;
 
-        // Extract any other platforms if they exist
-        std::vector<std::string> known_platforms = {"ps2", "psp", "nds", "gb", "gbc", "gba", "3ds"};
-        for (const auto& plat : known_platforms) {
-            std::string plat_path = extractPlatformPath(content, "rom_paths", plat);
-            if (plat_path.empty()) {
-                plat_path = extractPlatformPath(content, "download_dirs", plat);
-            }
-            if (!plat_path.empty()) {
-                if (plat_path.back() != '/') plat_path += "/";
-                if (!romm::model::RomPathManager::ValidatePath(plat_path)) {
-                    plat_path = (plat == "psp" ? "sdmc:/roms/psp/" : "sdmc:/roms/" + plat + "/");
+        // Every platform present in the file, not a fixed list.
+        //
+        // Save() has always written the whole rom_paths map, but Load() only
+        // read back seven hardcoded slugs — so a path set for anything else was
+        // written to config.json and then silently ignored on the next launch.
+        // That asymmetry is why paths were only ever editable for the platforms
+        // someone had remembered to add here.
+        //
+        // Anything absent keeps its default from GetRomPath(), which resolves
+        // to "sdmc:/roms/<slug>/" — so nothing needs seeding, and a platform
+        // romm-nx has never heard of still lands somewhere sensible.
+        {
+            std::map<std::string, std::string> stored;
+            if (extractObject(content, "rom_paths", stored) ||
+                extractObject(content, "download_dirs", stored)) {
+                for (const auto& entry : stored) {
+                    if (entry.first.empty() || entry.second.empty()) continue;
+                    std::string plat_path = entry.second;
+                    if (plat_path.back() != '/') plat_path += "/";
+                    // A tampered or malformed path falls back to the default
+                    // rather than being trusted.
+                    if (!romm::model::RomPathManager::ValidatePath(plat_path)) continue;
+                    rom_paths[entry.first] = plat_path;
                 }
-                rom_paths[plat] = plat_path;
-            } else {
-                rom_paths[plat] = (plat == "psp" ? "sdmc:/roms/psp/" : "sdmc:/roms/" + plat + "/");
             }
         }
 

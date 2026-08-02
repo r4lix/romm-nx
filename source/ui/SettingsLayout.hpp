@@ -18,6 +18,34 @@ namespace romm::ui {
     std::string TranslateViewMode(const std::string& stored_mode);
     std::string TranslateCoversQuality(const std::string& stored_quality);
 
+    // The settings tabs, by name.
+    //
+    // These used to be bare integers compared inline in five different places
+    // (the option builder, the custom-draw branches, the action dispatcher, the
+    // row-count table, and NavigationManager's input handling). Inserting or
+    // removing a tab shifted every index after it, and nothing complained —
+    // rows simply became unreachable, which is how General's last two rows and
+    // the whole Theme tab were silently broken once already.
+    //
+    // Everything now switches on this enum with no `default:` label, so -Wswitch
+    // turns "you forgot a tab somewhere" into a compile-time error instead of a
+    // bug someone finds months later.
+    enum class SettingsCategory {
+        General,
+        Theme,
+        Connection,
+        Platforms,
+        Advanced,
+        Updates,
+        Debug,
+        Count
+    };
+
+    // Display order of the tabs; index <-> category conversion goes through
+    // these two so the order lives in exactly one place.
+    SettingsCategory CategoryAt(size_t index);
+    size_t CategoryIndex(SettingsCategory category);
+
     enum class SettingsFocusArea {
         CategoryList,
         OptionList
@@ -47,6 +75,12 @@ namespace romm::ui {
         std::string value;
         bool is_action = false;
         int volume_percent = -1; // >= 0 draws a HorizonOS-style slider bar instead of `value` text
+    };
+
+    // One row of the platform list: a canonical id plus the name to show.
+    struct PlatformVisibilityRow {
+        std::string canonical_id;
+        std::string display_name;
     };
 
     struct PlatformPathStatus {
@@ -195,11 +229,19 @@ namespace romm::ui {
         void SetPlatformVisibility(size_t platform_row_idx, bool visible);
         void ApplyPlatformVisibility();
 
+        // The platform whose rows are on screen, or nullptr when the cursor is
+        // on an action row or the list shrank under it.
+        const PlatformVisibilityRow* SelectedPlatformRow() const;
+
         static size_t GetOptionsCount(size_t cat_idx);
         static size_t GetCategoriesCount();
         static size_t GetSelectableRomPathRowCount();
-        static size_t GetSupportedPlatformsCount();
+        // Rows above the platform list (Show All, Reset Defaults), which act in
+        // place rather than opening a platform.
+        static size_t GetPlatformActionRowCount();
 
+        // A on a row of the per-platform screen.
+        void ActivateSelectedPlatformRow();
         void EditSelectedRomPath();
         void ValidateOrCreateSelectedPath();
         void ResetSelectedRomPath();

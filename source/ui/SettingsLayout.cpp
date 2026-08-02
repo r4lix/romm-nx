@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <sys/stat.h>
 #include <algorithm>
+#include <array>
 
 namespace romm::ui {
 
@@ -63,23 +64,7 @@ namespace romm::ui {
             return path.substr(0, max_len - 3) + "...";
         }
 
-        const std::vector<PlatformPathDescriptor> SUPPORTED_PLATFORMS = {
-            {"PS1", "PlayStation", "psx", "ps1", true, true, false, false, false},
-            {"PS2", "PlayStation 2", "ps2", "ps2", true, true, false, false, false},
-            {"PSP", "PSP", "psp", "psp", true, true, false, false, false},
-            {"DS", "Nintendo DS", "nds", "nds", true, true, false, false, false},
-            {"GB", "Game Boy", "gb", "gb", true, true, false, false, false},
-            {"GBC", "Game Boy Color", "gbc", "gbc", true, true, false, false, false},
-            {"GBA", "Game Boy Advance", "gba", "gba", true, true, false, false, false},
-            {"3DS", "Nintendo 3DS", "3ds", "3ds", true, true, false, false, false}
-        };
 
-        std::string GetCoverCachePath(const std::string& internal_slug) {
-            if (internal_slug == "psx") {
-                return "sdmc:/switch/romm-nx/cache/covers/small/";
-            }
-            return "sdmc:/switch/romm-nx/cache/covers/" + internal_slug + "/";
-        }
 
         // Ordered so cycling (A to advance) has a stable, predictable order —
         // must match ConfigManager's validation lists.
@@ -210,17 +195,18 @@ namespace romm::ui {
 
         int ClampVolume(int v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
 
-        // Single source of truth for the category list — OnRender's list and
-        // NavigationManager's Down-navigation clamp (via GetCategoriesCount())
-        // both read this instead of independently hardcoding the same count.
-        // Index order is load-bearing: the per-category branches below and in
-        // HandleOptionAction()/GetOptionsCount() key off it, which is why these
-        // are i18n keys rather than display strings.
-        const std::vector<std::string> kSettingsCategoryKeys = {
+        // Display order of the tabs. Must stay parallel to SettingsCategory —
+        // the static_assert below is what stops the two drifting apart, and
+        // everything else converts through CategoryAt()/CategoryIndex() rather
+        // than assuming a number.
+        // A std::array sized by the enum, deliberately: add a tab to
+        // SettingsCategory without adding its key here (or vice versa) and this
+        // initializer no longer matches its declared size, which is a compile
+        // error rather than an off-by-one nobody notices.
+        const std::array<const char*, (size_t)SettingsCategory::Count> kSettingsCategoryKeys = {
             "settings.category.general",
             "settings.category.theme",
             "settings.category.connection",
-            "settings.category.rom_paths",
             "settings.category.platforms",
             "settings.category.advanced",
             "settings.category.updates",
@@ -232,11 +218,6 @@ namespace romm::ui {
         // (GetPlatformCatalog) merged with whatever the connected server
         // returned, de-duplicated by NormalizePlatformId so "ps1", "psx" and
         // "PlayStation" can never appear as three rows.
-        struct PlatformVisibilityRow {
-            std::string canonical_id;
-            std::string display_name;
-        };
-
         // The two fixed action rows that sit above the platform list.
         constexpr size_t kPlatformActionRows = 2; // 0 = Show All, 1 = Reset Defaults
 
@@ -282,7 +263,19 @@ namespace romm::ui {
         // row-navigation clamp both read this instead of independently
         // hardcoding the same count. Assumes enabled rows are a contiguous
         // prefix (true today: ROMs, Cover cache enabled; BIOS, Save data not).
-        const std::vector<bool> kRomPathRowDisabled = {false, false, true, true};
+        // Rows of the per-platform screen, in order: Visible, ROM folder, then
+        // BIOS / Save data / Emulator, which are placeholders until the features
+        // behind them exist. Selectable rows are a contiguous prefix.
+        const std::vector<bool> kRomPathRowDisabled = {false, false, true, true, true};
+    }
+
+    SettingsCategory CategoryAt(size_t index) {
+        if (index >= (size_t)SettingsCategory::Count) return SettingsCategory::General;
+        return (SettingsCategory)index;
+    }
+
+    size_t CategoryIndex(SettingsCategory category) {
+        return (size_t)category;
     }
 
     // --- SettingsConfirmModal Implementation ---
@@ -364,7 +357,6 @@ namespace romm::ui {
 
     SettingsCard::SettingsCard(s32 x, s32 y, s32 w, s32 h, std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element::Element(), x(x), y(y), w(w), h(h), nav_mgr(nav), connection_status_color(190, 180, 225, 255) {
-        cached_statuses.resize(SUPPORTED_PLATFORMS.size());
         ResetConnectionStatus();
         TriggerRecalculateCache();
         RefreshPathStatuses();
@@ -435,42 +427,12 @@ namespace romm::ui {
         TriggerRecalculateCache();
     }
 
+    // Kept as the hook every path edit calls; the per-platform screen reads
+    // the live filesystem state when it draws, so there is no longer a
+    // tab-indexed cache to rebuild. Left in place because it is also the
+    // natural place to hang future BIOS/save-path checks.
     void SettingsCard::RefreshPathStatuses() {
-        auto& config = romm::model::ConfigManager::Instance();
-        for (size_t i = 0; i < SUPPORTED_PLATFORMS.size(); ++i) {
-            const auto& plat = SUPPORTED_PLATFORMS[i];
-            
-            // ROMs / Downloads
-            std::string rom_path = config.GetRomPath(plat.internal_slug);
-            bool pattern_ok = romm::model::RomPathManager::ValidatePath(rom_path);
-            if (!pattern_ok) {
-                cached_statuses[i].roms_status = PathStatus::Invalid;
-            } else {
-                struct stat st;
-                bool exists = (stat(rom_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-                if (exists) {
-                    cached_statuses[i].roms_status = PathStatus::Valid;
-                } else {
-                    cached_statuses[i].roms_status = PathStatus::Missing;
-                }
-            }
-
-            // Cover cache
-            std::string cover_path = GetCoverCachePath(plat.internal_slug);
-            struct stat st_cov;
-            bool cov_exists = (stat(cover_path.c_str(), &st_cov) == 0 && S_ISDIR(st_cov.st_mode));
-            if (cov_exists) {
-                cached_statuses[i].cover_status = PathStatus::ReadOnly;
-            } else {
-                cached_statuses[i].cover_status = PathStatus::ReadOnly;
-            }
-
-            // BIOS
-            cached_statuses[i].bios_status = PathStatus::ComingLater;
-
-            // Save data
-            cached_statuses[i].save_status = PathStatus::ComingLater;
-        }
+        cached_statuses.clear();
     }
 
     void SettingsCard::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x_coord, const s32 y_coord) {
@@ -489,7 +451,7 @@ namespace romm::ui {
         drawer->RenderRoundedRectangleFill(border_color, x_coord, y_coord, cat_panel_w, h, 16);
         drawer->RenderRoundedRectangleFill(fill_color, x_coord + 4, y_coord + 4, cat_panel_w - 8, h - 8, 12);
 
-        const std::vector<std::string>& categories = kSettingsCategoryKeys;
+        const auto& categories = kSettingsCategoryKeys;
         s32 start_y = y_coord + 40;
         s32 row_h = 75;
         s32 row_spacing = 20;
@@ -533,7 +495,7 @@ namespace romm::ui {
             }
 
             // Keyed off the category's identity, not its translated label.
-            if (categories[i] == "settings.category.updates" &&
+            if (CategoryAt(i) == SettingsCategory::Updates &&
                 romm::model::UpdateManager::Instance().GetState() == romm::model::UpdateState::UpdateAvailable) {
                 s32 dot_radius = 7;
                 drawer->RenderCircleFill(pu::ui::Color(231, 76, 60, 255), rx + rw - dot_radius - 12, ry + dot_radius + 12, dot_radius);
@@ -556,7 +518,10 @@ namespace romm::ui {
         const std::string off_text = romm::i18n::tr("common.off");
         auto on_off = [&](bool value) { return value ? on_text : off_text; };
 
-        if (active_cat == 0) { // General
+        // No `default:` on purpose — -Wswitch then reports any tab this builder
+        // forgets, which is the failure mode the enum exists to prevent.
+        switch (CategoryAt(active_cat)) {
+        case SettingsCategory::General: {
             options.push_back({romm::i18n::tr("settings.general.language"),
                                LanguageSettingLabel(config.GetLanguage())});
             options.push_back({romm::i18n::tr("settings.general.show_build_version"), on_off(config.ShowBuildVersion())});
@@ -572,8 +537,9 @@ namespace romm::ui {
             options.push_back({romm::i18n::tr("settings.general.default_view_mode"),
                                romm::i18n::format("settings.general.default_view_mode.value",
                                                   {{"mode", TranslateViewMode(config.GetGridViewModeString())}})});
+            break;
         }
-        else if (active_cat == 1) { // Theme
+        case SettingsCategory::Theme: {
             auto& audio_mgr = romm::model::AudioManager::Instance();
             // "RomM Brand" is the theme's proper name, not a UI word.
             options.push_back({romm::i18n::tr("settings.theme.theme"), "RomM Brand"});
@@ -606,20 +572,20 @@ namespace romm::ui {
                                romm::i18n::tr(config.GetPlatformSelectorStyle() == romm::model::PlatformSelectorStyle::Banners
                                                   ? "settings.theme.platform_selector.banners"
                                                   : "settings.theme.platform_selector.text")});
+            break;
         }
-        else if (active_cat == 2) { // Connection
+        case SettingsCategory::Connection: {
             // Host URL and masked key are configuration values, shown as-is.
             options.push_back({romm::i18n::tr("settings.connection.server_url"), truncatePath(config.GetRommHost())});
             options.push_back({romm::i18n::tr("settings.connection.api_key"), config.GetMaskedApiKey()});
             options.push_back({romm::i18n::tr("settings.connection.test"), connection_test_status, true});
+            break;
         }
-        else if (active_cat == 3) { // ROM Paths
-            // Custom drawing logic handles this
-        }
-        else if (active_cat == 4) { // Platforms
-            // Custom drawing logic handles this (needs its own scroll window)
-        }
-        else if (active_cat == 5) { // Advanced
+        case SettingsCategory::Platforms:
+            // Custom drawing: the platform list and the selected platform's
+            // rows both need their own scroll windows.
+            break;
+        case SettingsCategory::Advanced: {
             std::string cover_sz = romm::i18n::tr("settings.advanced.calculating");
             std::string total_sz = cover_sz;
             if (!calculating_cache) {
@@ -646,8 +612,9 @@ namespace romm::ui {
                                romm::i18n::format("settings.advanced.age_value", {{"days", std::to_string(config.GetMaxAgeDays())}})});
             options.push_back({romm::i18n::tr("settings.advanced.nso_snes"),
                                romm::i18n::tr("settings.advanced.nso_snes_open"), true});
+            break;
         }
-        else if (active_cat == 6) { // Updates
+        case SettingsCategory::Updates: {
             // Rows are the things you can act on, and nothing else — every row
             // value here is a short word or a version. The read-only detail
             // (build, installed channel, manifest URL, status, changelog) is
@@ -677,8 +644,9 @@ namespace romm::ui {
                 options.push_back({romm::i18n::tr("settings.updates.restore_backup"),
                                    romm::i18n::tr("settings.updates.trigger_restore"), true});
             }
+            break;
         }
-        else if (active_cat == 7) { // Debug
+        case SettingsCategory::Debug: {
             options.push_back({romm::i18n::tr("settings.debug.build_version"),
                                "v" + romm::ROMM_NX_VERSION + " (" + std::to_string(romm::ROMM_NX_VERSION_CODE) + ")"});
             // Both channels, unconditionally: which one is selected and which
@@ -703,9 +671,13 @@ namespace romm::ui {
             options.push_back({romm::i18n::tr("settings.debug.active_download"), active_title});
             options.push_back({romm::i18n::tr("settings.debug.queue_count"), std::to_string(romm::model::DownloadManager::Instance().GetQueueSnapshot().size())});
             options.push_back({romm::i18n::tr("settings.debug.export"), romm::i18n::tr("settings.debug.trigger_export"), true});
+            break;
+        }
+        case SettingsCategory::Count:
+            break;
         }
 
-        if (active_cat != 3 && active_cat != 4) {
+        if (CategoryAt(active_cat) != SettingsCategory::Platforms) {
             // Draw Options List (real rows only)
             s32 opt_start_y = y_coord + 40;
             s32 opt_row_h = 75;
@@ -789,7 +761,7 @@ namespace romm::ui {
 
                     // Category + row index rather than the label text, which is
                     // now language-dependent (Connection tab, "Test Connection").
-                    if (active_cat == 2 && j == 2) {
+                    if (CategoryAt(active_cat) == SettingsCategory::Connection && j == 2) {
                         val_color = connection_status_color;
                     }
 
@@ -803,7 +775,7 @@ namespace romm::ui {
                 }
             }
 
-            if (active_cat == 6) {
+            if (CategoryAt(active_cat) == SettingsCategory::Updates) {
                 // Update info panel: everything read-only, in the space left
                 // under the rows. Its top follows the row count and every line
                 // is gated on a hard bottom limit, so it can neither sit on top
@@ -939,8 +911,8 @@ namespace romm::ui {
                     }
                 }
             }
-        } else if (active_cat == 4) {
-            // Draw Custom Platforms layout.
+        } else if (CategoryAt(active_cat) == SettingsCategory::Platforms && !nav->IsRomPathRowsFocused()) {
+            // Platforms, level 1: the platform list.
             //
             // Same row visuals as the generic option list, but with its own
             // scroll window: the row count is open-ended (catalogue + whatever
@@ -1047,207 +1019,94 @@ namespace romm::ui {
                 }
             }
         } else {
-            // Draw Custom ROM Paths layout
-            // 1. Draw Platform Tab Bar
-            s32 tab_y = y_coord + 40;
-            s32 tab_h = 60;
-            s32 tab_w = 160;
-            s32 tab_spacing = 20;
-            s32 tab_start_x = opt_panel_x + 50;
-
-            size_t selected_tab = nav->GetSelectedRomPathPlatformIdx();
-            bool is_rows_focused = nav->IsRomPathRowsFocused();
-            bool is_option_list_focused = (!is_cat_focused);
-
-            // The platform count is open-ended (started at 7, now 8 with
-            // 3DS, more will follow), and a fixed-width tab bar can't grow
-            // to fit an unbounded list without eventually overlapping the
-            // panel edge or shrinking tabs into illegibility. Instead this
-            // scrolls a fixed-size window — same approach as the file
-            // browser's and queue's row lists — so tabs always stay a
-            // legible, constant 160px regardless of how many platforms
-            // exist; L/R past the visible edge scrolls the window with the
-            // selection, and small arrow glyphs in the side margins signal
-            // there's more off-screen.
-            size_t plat_count = SUPPORTED_PLATFORMS.size();
-            s32 available_w = opt_panel_w - 100; // symmetric 50px margins
-            size_t visible_count = (size_t)std::max(1, (available_w + tab_spacing) / (tab_w + tab_spacing));
-            if (visible_count > plat_count) visible_count = plat_count;
-
-            if (selected_tab < rom_path_tab_scroll_offset) {
-                rom_path_tab_scroll_offset = selected_tab;
-            } else if (selected_tab >= rom_path_tab_scroll_offset + visible_count) {
-                rom_path_tab_scroll_offset = selected_tab - visible_count + 1;
+            // Platforms, level 2: the settings for one platform.
+            //
+            // This is the old ROM Paths screen, driven by the open-ended
+            // platform list instead of a fixed eight-entry tab bar. That tab bar
+            // was the reason paths were unreachable for every other system:
+            // adding a platform meant editing a hardcoded table, so nobody did.
+            const auto& plat_rows = PlatformRows();
+            const size_t sel = (active_opt >= kPlatformActionRows) ? (active_opt - kPlatformActionRows) : 0;
+            if (sel >= plat_rows.size()) {
+                // Selection moved out from under us (server list shrank).
+                return;
             }
-            // Clamp defensively (e.g. platform count shrank under us).
-            if (rom_path_tab_scroll_offset + visible_count > plat_count) {
-                rom_path_tab_scroll_offset = (plat_count > visible_count) ? (plat_count - visible_count) : 0;
+            const auto& plat = plat_rows[sel];
+            const bool shown = config.IsPlatformVisible(plat.canonical_id);
+            const size_t sel_row = nav->GetSelectedRomPathRowIdx();
+
+            // Header: which platform these rows belong to. The name is
+            // catalogue/RomM identity, never translated.
+            auto head_tex = pu::ui::render::RenderText("Orbitron@30", plat.display_name,
+                                                       pu::ui::Color(237, 229, 251, 255));
+            if (head_tex) {
+                drawer->RenderTexture(head_tex, opt_panel_x + 30, y_coord + 30);
+                pu::ui::render::DeleteTexture(head_tex);
             }
 
-            for (size_t i = rom_path_tab_scroll_offset; i < rom_path_tab_scroll_offset + visible_count; ++i) {
-                s32 tx = tab_start_x + (s32)(i - rom_path_tab_scroll_offset) * (tab_w + tab_spacing);
-                bool is_current_tab = (i == selected_tab);
-
-                pu::ui::Color t_bg;
-                pu::ui::Color t_border;
-                s32 t_border_w = 2;
-
-                if (is_current_tab) {
-                    if (is_option_list_focused && !is_rows_focused) {
-                        t_bg = pu::ui::Color(85, 63, 152, 255); // Violet highlight capsule
-                        t_border = pu::ui::Color(230, 199, 167, 255); // Cream border
-                        t_border_w = 3;
-                    } else {
-                        t_bg = pu::ui::Color(85, 63, 152, 120); // Subdued violet capsule
-                        t_border = pu::ui::Color(45, 50, 62, 255);
-                    }
-                } else {
-                    t_bg = pu::ui::Color(16, 18, 22, 255);
-                    t_border = pu::ui::Color(45, 50, 62, 255);
-                }
-
-                drawer->RenderRoundedRectangleFill(t_border, tx, tab_y, tab_w, tab_h, 8);
-                drawer->RenderRoundedRectangleFill(t_bg, tx + t_border_w, tab_y + t_border_w, tab_w - (t_border_w * 2), tab_h - (t_border_w * 2), 6);
-
-                pu::ui::Color text_color(237, 229, 251, 255);
-                auto t_tex = pu::ui::render::RenderText("Orbitron@24", SUPPORTED_PLATFORMS[i].tab_label, text_color);
-                if (t_tex) {
-                    s32 tw = pu::ui::render::GetTextureWidth(t_tex);
-                    s32 th = pu::ui::render::GetTextureHeight(t_tex);
-                    drawer->RenderTexture(t_tex, tx + (tab_w - tw) / 2, tab_y + (tab_h - th) / 2);
-                    pu::ui::render::DeleteTexture(t_tex);
-                }
-            }
-
-            // Scroll arrows in the side margins, only when there's more off-screen
-            {
-                pu::ui::Color arrow_clr(190, 180, 225, 200);
-                s32 arrow_y = tab_y + (tab_h / 2) - 12;
-                if (rom_path_tab_scroll_offset > 0) {
-                    auto lt = pu::ui::render::RenderText("Orbitron@24", "<", arrow_clr);
-                    if (lt) {
-                        drawer->RenderTexture(lt, opt_panel_x + 15, arrow_y);
-                        pu::ui::render::DeleteTexture(lt);
-                    }
-                }
-                if (rom_path_tab_scroll_offset + visible_count < plat_count) {
-                    auto rt = pu::ui::render::RenderText("Orbitron@24", ">", arrow_clr);
-                    if (rt) {
-                        s32 rtw = pu::ui::render::GetTextureWidth(rt);
-                        drawer->RenderTexture(rt, opt_panel_x + opt_panel_w - 15 - rtw, arrow_y);
-                        pu::ui::render::DeleteTexture(rt);
-                    }
-                }
-            }
-
-            // 2. Draw Selected Platform Name
-            s32 plat_title_y = tab_y + tab_h + 30;
-            const auto& active_plat = SUPPORTED_PLATFORMS[selected_tab];
-            auto plat_name_tex = pu::ui::render::RenderText("Orbitron@30", active_plat.display_name, pu::ui::Color(237, 229, 251, 255));
-            if (plat_name_tex) {
-                drawer->RenderTexture(plat_name_tex, opt_panel_x + 50, plat_title_y);
-                pu::ui::render::DeleteTexture(plat_name_tex);
-            }
-
-            // 3. Draw Path Rows
-            s32 rows_start_y = plat_title_y + 60;
-            s32 row_h = 85;
-            s32 row_spacing = 15;
-            s32 row_w = opt_panel_w - 100;
-
-            struct RowData {
+            const std::string coming_later = romm::i18n::tr("detail.coming_later");
+            struct DetailRow {
                 std::string label;
-                std::string path;
-                PathStatus status;
+                std::string value;
                 bool disabled;
+                pu::ui::Color value_color;
+            };
+            const pu::ui::Color accent(190, 180, 225, 255);
+            const pu::ui::Color green(46, 204, 113, 255);
+            const pu::ui::Color muted(140, 140, 150, 255);
+            const pu::ui::Color dim(100, 100, 110, 255);
+
+            std::vector<DetailRow> rows = {
+                {romm::i18n::tr("settings.platform.visible"),
+                 romm::i18n::tr(shown ? "settings.platforms.shown" : "settings.platforms.hidden"),
+                 false, shown ? green : muted},
+                {romm::i18n::tr("settings.platform.rom_path"),
+                 truncatePath(config.GetRomPath(plat.canonical_id)), false, accent},
+                {romm::i18n::tr("settings.platform.bios"), coming_later, true, dim},
+                {romm::i18n::tr("settings.platform.save_data"), coming_later, true, dim},
+                {romm::i18n::tr("settings.platform.emulator"), coming_later, true, dim}
             };
 
-            // Row labels are localized; the paths beside them are filesystem
-            // values shown verbatim (only truncated to fit).
-            const std::string coming_later = romm::i18n::tr("settings.rom_paths.coming_later");
-            std::vector<RowData> rows_data = {
-                {romm::i18n::tr("settings.rom_paths.roms"), truncatePath(config.GetRomPath(active_plat.internal_slug)), cached_statuses[selected_tab].roms_status, kRomPathRowDisabled[0]},
-                {romm::i18n::tr("settings.rom_paths.cover_cache"), truncatePath(GetCoverCachePath(active_plat.internal_slug)), cached_statuses[selected_tab].cover_status, kRomPathRowDisabled[1]},
-                {romm::i18n::tr("settings.rom_paths.bios"), coming_later, cached_statuses[selected_tab].bios_status, kRomPathRowDisabled[2]},
-                {romm::i18n::tr("settings.rom_paths.save_data"), coming_later, cached_statuses[selected_tab].save_status, kRomPathRowDisabled[3]}
-            };
+            s32 rows_start_y = y_coord + 100;
+            s32 row_h = 75;
+            s32 row_spacing = 15;
+            s32 row_w = opt_panel_w - 60;
+            s32 rx = opt_panel_x + 30;
 
-            size_t selected_row = nav->GetSelectedRomPathRowIdx();
+            for (size_t j = 0; j < rows.size(); ++j) {
+                s32 ry = rows_start_y + (s32)j * (row_h + row_spacing);
+                const bool is_selected = (j == sel_row);
 
-            for (size_t j = 0; j < rows_data.size(); ++j) {
-                s32 ry = rows_start_y + j * (row_h + row_spacing);
-                bool is_current_row = (j == selected_row && is_rows_focused && is_option_list_focused);
-
-                pu::ui::Color r_bg;
-                pu::ui::Color r_border;
+                pu::ui::Color r_bg(16, 18, 22, 255);
+                pu::ui::Color r_border(45, 50, 62, 255);
                 s32 r_border_w = 2;
-
-                if (rows_data[j].disabled) {
-                    r_bg = pu::ui::Color(10, 11, 13, 255);
-                    r_border = pu::ui::Color(30, 34, 43, 255);
-                } else if (is_current_row) {
+                if (rows[j].disabled) {
+                    r_bg = pu::ui::Color(20, 22, 27, 255);
+                } else if (is_selected) {
                     r_bg = pu::ui::Color(85, 63, 152, 255);
                     r_border = pu::ui::Color(230, 199, 167, 255);
                     r_border_w = 3;
-                } else {
-                    r_bg = pu::ui::Color(16, 18, 22, 255);
-                    r_border = pu::ui::Color(45, 50, 62, 255);
                 }
 
-                s32 rx = opt_panel_x + 50;
-
                 drawer->RenderRoundedRectangleFill(r_border, rx, ry, row_w, row_h, 8);
-                drawer->RenderRoundedRectangleFill(r_bg, rx + r_border_w, ry + r_border_w, row_w - (r_border_w * 2), row_h - (r_border_w * 2), 6);
+                drawer->RenderRoundedRectangleFill(r_bg, rx + r_border_w, ry + r_border_w,
+                                                   row_w - (r_border_w * 2), row_h - (r_border_w * 2), 6);
 
-                // Draw Label
-                pu::ui::Color label_color = rows_data[j].disabled ? pu::ui::Color(110, 110, 120, 255) : pu::ui::Color(237, 229, 251, 255);
-                auto l_tex = pu::ui::render::RenderText("Ubuntu@24", rows_data[j].label, label_color);
+                pu::ui::Color label_color = rows[j].disabled ? pu::ui::Color(110, 110, 120, 255)
+                                                             : pu::ui::Color(237, 229, 251, 255);
+                auto l_tex = pu::ui::render::RenderText("Ubuntu@24", rows[j].label, label_color);
                 if (l_tex) {
-                    drawer->RenderTexture(l_tex, rx + 25, ry + 12);
+                    s32 th = pu::ui::render::GetTextureHeight(l_tex);
+                    drawer->RenderTexture(l_tex, rx + 25, ry + (row_h - th) / 2);
                     pu::ui::render::DeleteTexture(l_tex);
                 }
 
-                // Draw Path
-                pu::ui::Color path_color = rows_data[j].disabled ? pu::ui::Color(80, 80, 90, 255) : pu::ui::Color(190, 180, 225, 255);
-                auto p_tex = pu::ui::render::RenderText("Ubuntu@20", rows_data[j].path, path_color);
-                if (p_tex) {
-                    drawer->RenderTexture(p_tex, rx + 25, ry + 46);
-                    pu::ui::render::DeleteTexture(p_tex);
-                }
-
-                // Draw Status Indicator
-                std::string status_text;
-                pu::ui::Color status_color;
-
-                switch (rows_data[j].status) {
-                    case PathStatus::Valid:
-                        status_text = romm::i18n::tr("settings.path_status.valid");
-                        status_color = pu::ui::Color(46, 204, 113, 255);
-                        break;
-                    case PathStatus::Missing:
-                        status_text = romm::i18n::tr("settings.path_status.missing");
-                        status_color = pu::ui::Color(241, 196, 15, 255);
-                        break;
-                    case PathStatus::Invalid:
-                        status_text = romm::i18n::tr("settings.path_status.invalid");
-                        status_color = pu::ui::Color(231, 76, 60, 255);
-                        break;
-                    case PathStatus::ReadOnly:
-                        status_text = romm::i18n::tr("settings.path_status.readonly");
-                        status_color = pu::ui::Color(150, 150, 160, 255);
-                        break;
-                    case PathStatus::ComingLater:
-                        status_text = romm::i18n::tr("settings.path_status.coming_later");
-                        status_color = pu::ui::Color(100, 100, 110, 255);
-                        break;
-                }
-
-                auto s_tex = pu::ui::render::RenderText("Ubuntu@24", status_text, status_color);
-                if (s_tex) {
-                    s32 sw = pu::ui::render::GetTextureWidth(s_tex);
-                    s32 sh = pu::ui::render::GetTextureHeight(s_tex);
-                    drawer->RenderTexture(s_tex, rx + row_w - sw - 30, ry + (row_h - sh) / 2);
-                    pu::ui::render::DeleteTexture(s_tex);
+                auto v_tex = pu::ui::render::RenderText("Ubuntu@20", rows[j].value, rows[j].value_color);
+                if (v_tex) {
+                    s32 vw = pu::ui::render::GetTextureWidth(v_tex);
+                    s32 vh = pu::ui::render::GetTextureHeight(v_tex);
+                    drawer->RenderTexture(v_tex, rx + row_w - vw - 30, ry + (row_h - vh) / 2);
+                    pu::ui::render::DeleteTexture(v_tex);
                 }
             }
         }
@@ -1365,23 +1224,15 @@ namespace romm::ui {
         auto nav = nav_mgr.lock();
         if (!nav) return;
 
-        if (nav->GetSelectedSettingsCategoryIdx() == 3) {
+        if (CategoryAt(nav->GetSelectedSettingsCategoryIdx()) == SettingsCategory::Platforms &&
+            focus != SettingsFocusArea::CategoryList) {
             if (!nav->IsRomPathRowsFocused()) {
-                hint_text->SetText(romm::i18n::tr("hint.settings.rompath.tabs"));
+                hint_text->SetText(romm::i18n::tr("hint.settings.platforms"));
+            } else if (nav->GetSelectedRomPathRowIdx() == 1) {
+                hint_text->SetText(romm::i18n::tr("hint.settings.platform.rom_path"));
             } else {
-                if (nav->GetSelectedRomPathRowIdx() == 0) {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.roms"));
-                } else if (nav->GetSelectedRomPathRowIdx() == 1) {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.cover"));
-                } else {
-                    hint_text->SetText(romm::i18n::tr("hint.settings.rompath.other"));
-                }
+                hint_text->SetText(romm::i18n::tr("hint.settings.platform.rows"));
             }
-            return;
-        }
-
-        if (nav->GetSelectedSettingsCategoryIdx() == 4 && focus != SettingsFocusArea::CategoryList) {
-            hint_text->SetText(romm::i18n::tr("hint.settings.platforms"));
             return;
         }
 
@@ -1406,7 +1257,10 @@ namespace romm::ui {
     void SettingsLayout::HandleOptionAction(size_t cat_idx, size_t opt_idx) {
         auto& config = romm::model::ConfigManager::Instance();
 
-        if (cat_idx == 0) { // General
+        // Same no-default switch as the option builder: an unhandled tab
+        // here means its rows do nothing when pressed.
+        switch (CategoryAt(cat_idx)) {
+        case SettingsCategory::General: {
             if (opt_idx == 0) {
                 // System default -> English -> Français -> System default.
                 // Persist the setting, apply it, then push the new strings
@@ -1457,7 +1311,8 @@ namespace romm::ui {
                 config.Save();
             }
         }
-        else if (cat_idx == 1) { // Theme
+            break;
+        case SettingsCategory::Theme: {
             if (opt_idx == 1) { // Download Sound Pack
                 // Downloads the whole catalogue in one go (whatever's not
                 // already cached) rather than one track at a time. Once it
@@ -1497,7 +1352,8 @@ namespace romm::ui {
             // Ambience), 5 (Menu Ambience Volume): all four are Left/Right-
             // only (NavigationManager) — A does nothing on any of them.
         }
-        else if (cat_idx == 2) { // Connection
+            break;
+        case SettingsCategory::Connection: {
             if (opt_idx == 0) {
                 std::string current = config.GetRommHost();
                 std::string val = romm::navigation::NavigationManager::ShowKeyboard(
@@ -1530,10 +1386,8 @@ namespace romm::ui {
                 }
             }
         }
-        else if (cat_idx == 3) { // ROM Paths
-            // Handled via explicit actions EditSelectedRomPath(), ValidateOrCreateSelectedPath(), and ResetSelectedRomPath()
-        }
-        else if (cat_idx == 4) { // Platforms
+            break;
+        case SettingsCategory::Platforms: {
             const auto& plat_rows = PlatformRows();
             if (opt_idx == 0) { // Show All
                 config.ShowAllPlatforms();
@@ -1550,7 +1404,8 @@ namespace romm::ui {
                                       !config.IsPlatformVisible(plat_rows[opt_idx - kPlatformActionRows].canonical_id));
             }
         }
-        else if (cat_idx == 5) { // Advanced
+            break;
+        case SettingsCategory::Advanced: {
             if (opt_idx == 2) {
                 confirm_modal->Show(
                     romm::i18n::tr("settings.confirm.clear_cover.title"),
@@ -1611,7 +1466,8 @@ namespace romm::ui {
                 if (nso_snes_modal) nso_snes_modal->Show();
             }
         }
-        else if (cat_idx == 6) { // Updates
+            break;
+        case SettingsCategory::Updates: {
             // Dispatched by row index rather than by rebuilding a shadow copy
             // of the option list and matching on its labels — those labels are
             // translated now, so string comparison would silently stop matching
@@ -1687,7 +1543,8 @@ namespace romm::ui {
                 );
             }
         }
-        else if (cat_idx == 7) { // Debug
+            break;
+        case SettingsCategory::Debug: {
             // Rows 0-6 are read-only diagnostics (build, both update channels,
             // config path, index count, active download, queue); Export is last.
             if (opt_idx == 7) {
@@ -1715,6 +1572,10 @@ namespace romm::ui {
                     std::cout << "[DEBUG] Exported debug info to " << debug_path << std::endl;
                 }
             }
+            break;
+        }
+        case SettingsCategory::Count:
+            break;
         }
     }
 
@@ -1762,17 +1623,17 @@ namespace romm::ui {
     // rows, then all of Theme). When you add a row to a tab, update its case
     // here in the same change.
     size_t SettingsLayout::GetOptionsCount(size_t cat_idx) {
-        switch (cat_idx) {
-            case 0: return 8; // General
-            case 1: return 7; // Theme
-            case 2: return 3; // Connection
-            case 3: return 2; // ROM Paths (ROMs and Cover cache)
-            // Platforms: Show All + Reset Defaults + one row per canonical
-            // platform. Grows with whatever the server reports, so it's derived
-            // rather than a literal.
-            case 4: return kPlatformActionRows + PlatformRows().size();
-            case 5: return 8; // Advanced (7 cache rows + the experimental SNES Online row)
-            case 6: { // Updates
+        // No `default:` — this is the table that made rows unreachable when it
+        // fell out of step with the option builder, so let the compiler check it.
+        switch (CategoryAt(cat_idx)) {
+            case SettingsCategory::General: return 8;
+            case SettingsCategory::Theme: return 7;
+            case SettingsCategory::Connection: return 3;
+            // Show All + Reset Defaults + one row per canonical platform. Grows
+            // with whatever the server reports, so it's derived, not a literal.
+            case SettingsCategory::Platforms: return kPlatformActionRows + PlatformRows().size();
+            case SettingsCategory::Advanced: return 8; // 7 cache rows + the experimental SNES Online row
+            case SettingsCategory::Updates: {
                 size_t count = 3; // Channel, Check on startup, Check for updates
                 auto state = romm::model::UpdateManager::Instance().GetState();
                 if (state == romm::model::UpdateState::UpdateAvailable) {
@@ -1783,11 +1644,16 @@ namespace romm::ui {
                 }
                 return count;
             }
-            case 7: return 8; // Debug (build, 2 channels, config path, index, active dl, queue, export)
-            default: return 0;
+            case SettingsCategory::Debug: return 8; // build, 2 channels, config path, index, active dl, queue, export
+            case SettingsCategory::Count: break;
         }
+        return 0;
     }
     
+    size_t SettingsLayout::GetPlatformActionRowCount() {
+        return kPlatformActionRows;
+    }
+
     size_t SettingsLayout::GetCategoriesCount() {
         return kSettingsCategoryKeys.size();
     }
@@ -1809,115 +1675,113 @@ namespace romm::ui {
         return count;
     }
 
-    size_t SettingsLayout::GetSupportedPlatformsCount() {
-        return SUPPORTED_PLATFORMS.size();
+
+    // The platform whose rows are on screen, or nullptr when the selection is
+    // on one of the action rows / has moved out from under us.
+    const PlatformVisibilityRow* SettingsLayout::SelectedPlatformRow() const {
+        auto nav = nav_mgr.lock();
+        if (!nav) return nullptr;
+        const size_t opt = nav->GetSelectedSettingsOptionIdx();
+        if (opt < kPlatformActionRows) return nullptr;
+        const auto& rows = PlatformRows();
+        const size_t idx = opt - kPlatformActionRows;
+        if (idx >= rows.size()) return nullptr;
+        return &rows[idx];
+    }
+
+    // A on a row of the per-platform screen.
+    void SettingsLayout::ActivateSelectedPlatformRow() {
+        auto nav = nav_mgr.lock();
+        if (!nav) return;
+        const PlatformVisibilityRow* plat = SelectedPlatformRow();
+        if (!plat) return;
+
+        auto& config = romm::model::ConfigManager::Instance();
+        switch (nav->GetSelectedRomPathRowIdx()) {
+            case 0: // Visible
+                SetPlatformVisibility(nav->GetSelectedSettingsOptionIdx() - kPlatformActionRows,
+                                      !config.IsPlatformVisible(plat->canonical_id));
+                break;
+            case 1: // ROM folder
+                EditSelectedRomPath();
+                break;
+            default:
+                break; // placeholder rows
+        }
     }
 
     void SettingsLayout::EditSelectedRomPath() {
         auto nav = nav_mgr.lock();
         if (!nav) return;
+        const PlatformVisibilityRow* plat = SelectedPlatformRow();
+        if (!plat) return;
 
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
         auto& config = romm::model::ConfigManager::Instance();
 
-        if (row_idx == 0) { // ROMs / Downloads is editable
-            // Platform name and the example path are values; only the wording
-            // around them is localized.
-            std::string current = config.GetRomPath(plat.internal_slug);
-            std::string title = romm::i18n::format("keyboard.rom_path.header", {{"platform", plat.display_name}});
-            std::string prompt = romm::i18n::format("keyboard.rom_path.subtext",
-                                                    {{"path", "sdmc:/roms/" + plat.display_slug + "/"}});
-            std::string val = romm::navigation::NavigationManager::ShowKeyboard(title, prompt, current);
-            if (!val.empty() && val != current) {
-                if (romm::model::RomPathManager::ValidatePath(val)) {
-                    config.SetRomPath(plat.internal_slug, val);
-                    config.Save();
-                    std::cout << "[ROM_PATH] platform=" << plat.internal_slug << " path=" << val << std::endl;
-                }
-            }
+        // Platform name and the example path are values; only the wording
+        // around them is localized.
+        const std::string current = config.GetRomPath(plat->canonical_id);
+        const std::string title = romm::i18n::format("keyboard.rom_path.header", {{"platform", plat->display_name}});
+        const std::string prompt = romm::i18n::format("keyboard.rom_path.subtext",
+                                                      {{"path", "sdmc:/roms/" + plat->canonical_id + "/"}});
+        const std::string val = romm::navigation::NavigationManager::ShowKeyboard(title, prompt, current);
+        if (!val.empty() && val != current && romm::model::RomPathManager::ValidatePath(val)) {
+            config.SetRomPath(plat->canonical_id, val);
+            config.Save();
+            std::cout << "[ROM_PATH] platform=" << plat->canonical_id << " path=" << val << std::endl;
         }
-        
-        // Refresh statuses after editing
-        if (card) {
-            card->RefreshPathStatuses();
-        }
+
+        if (card) card->RefreshPathStatuses();
         UpdateFooterHints(nav->GetSettingsFocus());
     }
 
     void SettingsLayout::ValidateOrCreateSelectedPath() {
         auto nav = nav_mgr.lock();
         if (!nav) return;
+        const PlatformVisibilityRow* plat = SelectedPlatformRow();
+        if (!plat || nav->GetSelectedRomPathRowIdx() != 1) return; // ROM folder row only
 
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
         auto& config = romm::model::ConfigManager::Instance();
-
-        if (row_idx == 0) { // ROMs / Downloads
-            std::string p = config.GetRomPath(plat.internal_slug);
-            bool pattern_ok = romm::model::RomPathManager::ValidatePath(p);
-            if (!pattern_ok) {
-                std::cout << "[ROM_PATH] Validate failed: Invalid pattern for " << plat.display_name << std::endl;
+        const std::string p = config.GetRomPath(plat->canonical_id);
+        if (!romm::model::RomPathManager::ValidatePath(p)) {
+            std::cout << "[ROM_PATH] Validate failed: invalid pattern for " << plat->display_name << std::endl;
+        } else {
+            struct stat st;
+            if (stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                std::cout << "[ROM_PATH] Validated: " << p << " exists." << std::endl;
+            } else if (romm::model::RomPathManager::CreateFolderIfMissing(p)) {
+                std::cout << "[ROM_PATH] Created: " << p << std::endl;
             } else {
-                struct stat st;
-                bool exists = (stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-                if (exists) {
-                    std::cout << "[ROM_PATH] Validated: " << p << " exists." << std::endl;
-                } else {
-                    std::cout << "[ROM_PATH] Missing directory " << p << ". Creating folder..." << std::endl;
-                    bool ok = romm::model::RomPathManager::CreateFolderIfMissing(p);
-                    if (ok) {
-                        std::cout << "[ROM_PATH] Successfully created " << p << std::endl;
-                    } else {
-                        std::cout << "[ROM_PATH] Failed to create folder " << p << std::endl;
-                    }
-                }
+                std::cout << "[ROM_PATH] Failed to create: " << p << std::endl;
             }
-        } else if (row_idx == 1) { // Cover Cache
-            std::string cover_path = GetCoverCachePath(plat.internal_slug);
-            struct stat st_cov;
-            bool exists = (stat(cover_path.c_str(), &st_cov) == 0 && S_ISDIR(st_cov.st_mode));
-            std::cout << "[ROM_PATH] Cover cache validation for " << plat.display_name 
-                      << " path=" << cover_path << " exists=" << (exists ? "yes" : "no") << std::endl;
         }
-
-        // Refresh statuses
-        if (card) {
-            card->RefreshPathStatuses();
-        }
-        UpdateFooterHints(nav->GetSettingsFocus());
+        if (card) card->RefreshPathStatuses();
     }
 
     void SettingsLayout::ResetSelectedRomPath() {
         auto nav = nav_mgr.lock();
         if (!nav) return;
+        const PlatformVisibilityRow* plat = SelectedPlatformRow();
+        if (!plat || nav->GetSelectedRomPathRowIdx() != 1) return; // ROM folder row only
 
-        size_t plat_idx = nav->GetSelectedRomPathPlatformIdx();
-        size_t row_idx = nav->GetSelectedRomPathRowIdx();
-        const auto& plat = SUPPORTED_PLATFORMS[plat_idx];
-        auto& config = romm::model::ConfigManager::Instance();
-
-        if (row_idx == 0) { // ROMs / Downloads
-            std::string default_path = romm::model::RomPathManager::GetDefaultPath(plat.internal_slug);
-            confirm_modal->Show(
-                romm::i18n::format("settings.confirm.reset_path.title", {{"platform", plat.display_name}}),
-                romm::i18n::format("settings.confirm.reset_path.message", {
-                    {"platform", plat.display_name},
-                    {"path", default_path}
-                }),
-                ConfirmAction::ResetRomPath,
-                [this, &config, plat, default_path]() {
-                    config.SetRomPath(plat.internal_slug, default_path);
-                    config.Save();
-                    std::cout << "[ROM_PATH] platform=" << plat.internal_slug << " path=" << default_path << std::endl;
-                    if (card) {
-                        card->RefreshPathStatuses();
-                    }
-                }
-            );
-        }
+        const std::string canonical = plat->canonical_id;
+        const std::string display = plat->display_name;
+        const std::string default_path = romm::model::RomPathManager::GetDefaultPath(canonical);
+        confirm_modal->Show(
+            romm::i18n::format("settings.confirm.reset_path.title", {{"platform", display}}),
+            romm::i18n::format("settings.confirm.reset_path.message", {
+                {"platform", display},
+                {"path", default_path}
+            }),
+            ConfirmAction::ResetRomPath,
+            [this, canonical, default_path]() {
+                auto& cfg = romm::model::ConfigManager::Instance();
+                cfg.SetRomPath(canonical, default_path);
+                cfg.Save();
+                std::cout << "[ROM_PATH] platform=" << canonical << " path=" << default_path << std::endl;
+                if (card) card->RefreshPathStatuses();
+            }
+        );
     }
 
 }
