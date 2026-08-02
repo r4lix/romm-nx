@@ -511,6 +511,19 @@ namespace romm::navigation {
                     current_screen = Screen::Library;
                     library_focus = LibraryFocus::Sidebar; // Reset focus to sidebar
                     state_changed = true;
+                    // FailedConnect is otherwise terminal for the session:
+                    // PollDeferredNetworkStart gives up after
+                    // NETWORK_WAIT_TIMEOUT_SECONDS and sets it, and nothing
+                    // retries afterwards — so a connection that drops and comes
+                    // back leaves the library stuck on "Failed to connect" until
+                    // the app is restarted. Re-entering Games is the natural
+                    // "try again" gesture, so treat it as one. Deliberately not
+                    // extended to Unauthorized: a bad API key fails identically
+                    // every time, and Settings already refetches when it changes.
+                    if (model->GetPlatformState() == romm::model::ApiState::FailedConnect) {
+                        std::cout << "[NAV] Entering Games after a failed fetch: retrying platforms." << std::endl;
+                        static_cast<romm::ui::MainApplication*>(app)->TriggerFetchPlatforms();
+                    }
                     app->LoadLayout(library_layout);
                     std::cout << "[NAV] [LAYOUT TRANSITION] Screen transition: Main Menu -> Library Screen" << std::endl;
                 } else if (selected_menu_idx == 1) { // Installed
@@ -559,6 +572,17 @@ namespace romm::navigation {
         else if (current_screen == Screen::Library) {
             const auto& platforms = model->GetPlatforms();
             if (platforms.empty()) {
+                // Retry in place. Without this, recovering from a dropped
+                // connection means backing out to the main menu and coming back
+                // in — which works, but isn't something the screen tells you.
+                // Skipped while a fetch is already in flight, where it would
+                // just cancel the request that's about to answer the question.
+                if ((keys_down & HidNpadButton_A) &&
+                    model->GetPlatformState() != romm::model::ApiState::Loading) {
+                    std::cout << "[NAV] [A PRESS] Retrying platform fetch from empty Library." << std::endl;
+                    static_cast<romm::ui::MainApplication*>(app)->TriggerFetchPlatforms();
+                    state_changed = true;
+                }
                 if (keys_down & HidNpadButton_B) {
                     current_screen = Screen::MainMenu;
                     state_changed = true;

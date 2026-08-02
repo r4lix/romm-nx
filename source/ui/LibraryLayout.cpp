@@ -65,7 +65,12 @@ namespace romm::ui {
     LibraryLayout::~LibraryLayout() {}
 
     void LibraryLayout::RefreshTranslations() {
-        if (hint_text) hint_text->SetText(romm::i18n::tr("hint.library"));
+        // Drop the memo rather than re-setting the hint here: which of the two
+        // hint strings applies depends on model state this function doesn't
+        // look at. Language only ever changes from Settings, so this layout is
+        // off-screen; OnSelectionUpdated re-picks the right string in the new
+        // language when navigation brings the library back up.
+        last_hint_key = nullptr;
         // The sidebar's status cards and the grid's status/info strips are
         // pre-rendered textures, so they need an explicit rebuild; everything
         // else on this screen is drawn from tr() each frame.
@@ -75,6 +80,19 @@ namespace romm::ui {
 
     void LibraryLayout::OnSelectionUpdated() {
         auto nav = nav_mgr.lock();
+        // With no platforms on screen every key in the normal hint is inert, and
+        // the one key that does something (A = retry the fetch) isn't in it.
+        // Swap the whole line rather than appending, so the hint never advertises
+        // Mark/Download against an empty grid.
+        if (hint_text && nav) {
+            auto model = nav->GetModel();
+            const bool empty = (!model || model->GetPlatforms().empty());
+            const char* key = empty ? "hint.library.empty" : "hint.library";
+            if (key != last_hint_key) {
+                last_hint_key = key;
+                hint_text->SetText(romm::i18n::tr(key));
+            }
+        }
         if (nav && grid) {
             if (sidebar) {
                 sidebar->Refresh();

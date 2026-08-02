@@ -1,5 +1,6 @@
 #include "CoverProfile.hpp"
 #include "../model/ConfigManager.hpp"
+#include <algorithm>
 #include <iostream>
 
 namespace romm::ui {
@@ -69,14 +70,22 @@ namespace romm::ui {
 
         if (platform.slug == "3ds" || platform.slug == "nintendo-3ds" ||
             platform.slug == "n3ds" || platform.slug == "nintendo_3ds") {
-            // Shares the DS/GB-family layout metrics — same physical cartridge
-            // box proportions — but keeps its own CoverProfileType so
-            // platform-specific logic elsewhere (e.g. the RomM cover URL
-            // rewrite quirk in CoverCache) isn't forced to treat it as NDS.
+            // 3DS carries the same landscape box proportions as NDS, but not the
+            // same column count. It used to borrow applyDsMetrics() (5x3 / 4x2),
+            // which was sized for a tile that AdjustProfileForHeight never
+            // actually gave it: 3DS had no aspect branch there, so it fell
+            // through to DefaultPortrait's 2:3 tile and every cover ended up
+            // width-limited inside a tile 40% taller than the art. With the
+            // tile now solved at the real 276:250 ratio, a 3DS tile is much
+            // wider than a DS one at equal height, so the grid fits a sixth
+            // column across the same canvas instead of stranding ~600px of
+            // horizontal margin.
             CoverProfile profile;
             profile.type = CoverProfileType::Nintendo3DS;
             profile.name = "Nintendo3DS";
-            applyDsMetrics(profile);
+            profile.columns = big ? 4 : 6;
+            profile.visibleRows = big ? 2 : 3;
+            profile.fitMode = FitMode::Contain;
             return profile;
         }
 
@@ -134,6 +143,58 @@ namespace romm::ui {
             profile.visibleRows = 1;
         }
         return profile;
+    }
+
+    void GetFallbackCoverAspect(CoverProfileType type, int& aspect_w, int& aspect_h) {
+        // Mirrors the ratios GameGrid::AdjustProfileForHeight solves its grid
+        // tiles at, so a cover's placeholder frame and its grid tile agree on
+        // the platform's shape.
+        switch (type) {
+            case CoverProfileType::PS2Portrait:    aspect_w = 161; aspect_h = 230; break;
+            case CoverProfileType::PSPPortrait:    aspect_w = 165; aspect_h = 252; break;
+            case CoverProfileType::PS1Square:      aspect_w = 1;   aspect_h = 1;   break;
+            case CoverProfileType::NintendoDS:
+            case CoverProfileType::Nintendo3DS:
+            case CoverProfileType::GameBoy:
+            case CoverProfileType::GameBoyColor:
+            case CoverProfileType::GameBoyAdvance: aspect_w = 276; aspect_h = 250; break;
+            case CoverProfileType::DefaultPortrait:
+            default:                               aspect_w = 120; aspect_h = 180; break;
+        }
+    }
+
+    CoverFit FitCoverInSlot(int slot_x, int slot_y, int slot_w, int slot_h,
+                            int tex_w, int tex_h, int pad) {
+        CoverFit fit;
+
+        // The mat is carved out of the slot rather than added around it, so a
+        // frame can never spill past the area the layout reserved for it.
+        const int avail_w = std::max(1, slot_w - 2 * pad);
+        const int avail_h = std::max(1, slot_h - 2 * pad);
+
+        // Degenerate input (no texture and a caller that passed nothing usable)
+        // falls back to filling the slot rather than dividing by zero.
+        if (tex_w <= 0 || tex_h <= 0) {
+            tex_w = avail_w;
+            tex_h = avail_h;
+        }
+
+        // Proportional contain. Both axes use the same scale, which is what
+        // rules out stretching; taking the min rules out cropping.
+        const double scale = std::min((double)avail_w / (double)tex_w,
+                                      (double)avail_h / (double)tex_h);
+        fit.img_w = std::max(1, (int)(tex_w * scale));
+        fit.img_h = std::max(1, (int)(tex_h * scale));
+
+        fit.frame_w = fit.img_w + 2 * pad;
+        fit.frame_h = fit.img_h + 2 * pad;
+        // Centred on both axes, so the art stays put as the frame grows and
+        // shrinks around it.
+        fit.frame_x = slot_x + (slot_w - fit.frame_w) / 2;
+        fit.frame_y = slot_y + (slot_h - fit.frame_h) / 2;
+        fit.img_x = fit.frame_x + pad;
+        fit.img_y = fit.frame_y + pad;
+        return fit;
     }
 
 } // namespace romm::ui

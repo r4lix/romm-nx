@@ -94,6 +94,22 @@ namespace romm::ui {
     static constexpr s32 DETAIL_PANEL_GAP   = 30;
     static constexpr s32 DETAIL_HEADER_H    = 44;
 
+    // Nintendo 3DS retail box art: wider than it is tall (the case is 137x121mm),
+    // unlike every portrait profile here. This is the same ratio CoverCache
+    // already decodes Nintendo3DS covers at (380x344 small, 340x308 big), so a
+    // tile solved at this aspect is filled edge to edge with no letterboxing.
+    static constexpr int N3DS_ASPECT_W = 276;
+    static constexpr int N3DS_ASPECT_H = 250;
+
+    // Vertical space the detail panel reserves for the cover, whatever shape
+    // that cover turns out to be. Constant across platforms so the text below
+    // sits at the same height everywhere; the drawn frame is centred inside it.
+    // Sized so the tallest case (a portrait cover, which is height-bound here)
+    // gets more room than the 420 the old painted box gave it.
+    static constexpr s32 DETAIL_COVER_SLOT_H = 468;
+    // Mat between the art and the edge of its frame.
+    static constexpr s32 DETAIL_COVER_PAD    = 12;
+
     void GameGrid::AdjustProfileForHeight(CoverProfile& profile) {
         if (profile.isDetailList) {
             // Rows are a fixed text height here, so how many fit is simply a
@@ -112,6 +128,7 @@ namespace romm::ui {
 
         s32 available_h;
         bool is_handheld = (profile.type == CoverProfileType::NintendoDS ||
+                            profile.type == CoverProfileType::Nintendo3DS ||
                             profile.type == CoverProfileType::GameBoy ||
                             profile.type == CoverProfileType::GameBoyColor ||
                             profile.type == CoverProfileType::GameBoyAdvance ||
@@ -156,6 +173,15 @@ namespace romm::ui {
         }
         else if (profile.type == CoverProfileType::PS1Square) {
             solve(32, 24, 32, 24, 1, 1); // Square
+        }
+        else if (profile.type == CoverProfileType::Nintendo3DS) {
+            // Tighter offsets/gaps than the DS family: a landscape tile at six
+            // columns already consumes nearly the full width, so the 30px gutter
+            // DS uses would be paid for out of tile size rather than out of the
+            // margin. At 16/16/10/14 both Default (6x3) and Big (4x2) land
+            // width-bound with ~19px of side margin left over, which is what
+            // makes the tiles as large as this canvas allows.
+            solve(16, 16, 10, 14, N3DS_ASPECT_W, N3DS_ASPECT_H);
         }
         else if (profile.type == CoverProfileType::NintendoDS ||
                  profile.type == CoverProfileType::GameBoy ||
@@ -720,35 +746,65 @@ namespace romm::ui {
         // Only the selected cover is ever requested here. That is the whole
         // performance argument for this view mode: a grid page pulls ~30 covers
         // plus prefetch rows, this pulls one.
-        const s32 cover_box_w = panel_w - 80;
-        const s32 cover_box_h = 420;
-        const s32 cover_box_x = panel_x + 40;
-        const s32 cover_box_y = y_coord + 30;
+        // Cover slot: fixed for every platform and every game. The title and
+        // metadata below are positioned against it, so nothing under the cover
+        // shifts when an image finishes loading or the selection moves. What
+        // gets painted is the frame *inside* it, which hugs the art.
+        //
+        // This used to be the painted box itself — a 420-tall band spanning the
+        // panel's full text width. Any cover whose shape didn't match filled one
+        // axis and left the other black: ~470px of it beside a portrait cover,
+        // ~330px beside a square one. The slot is now purely a layout anchor and
+        // is never drawn.
+        const s32 slot_w = panel_w - 80;
+        const s32 slot_h = DETAIL_COVER_SLOT_H;
+        const s32 slot_x = panel_x + 40;
+        const s32 slot_y = y_coord + 30;
 
         pu::sdl2::Texture cover = ResolveCoverTexture(
             game, platform_slug, current_profile.type,
             romm::model::ConfigManager::Instance().GetCoversQuality());
 
+        // ResolveCoverTexture is keyed on `game`, which is the current
+        // selection, and the fit is recomputed from it every frame rather than
+        // stored — so a fast scroll can never leave the previous game's
+        // dimensions on screen. Before a texture exists, the placeholder art's
+        // own size is used if there is any, and only failing that does the
+        // profile's nominal aspect stand in.
+        pu::sdl2::Texture placeholder = cover ? nullptr : GetPlaceholderCover(platform_slug);
+        s32 tex_w = 0, tex_h = 0;
+        if (cover) {
+            tex_w = pu::ui::render::GetTextureWidth(cover);
+            tex_h = pu::ui::render::GetTextureHeight(cover);
+        } else if (placeholder) {
+            tex_w = pu::ui::render::GetTextureWidth(placeholder);
+            tex_h = pu::ui::render::GetTextureHeight(placeholder);
+        } else {
+            int aw = 0, ah = 0;
+            GetFallbackCoverAspect(current_profile.type, aw, ah);
+            tex_w = aw; tex_h = ah;
+        }
+
+        const CoverFit fit = FitCoverInSlot(slot_x, slot_y, slot_w, slot_h,
+                                            tex_w, tex_h, DETAIL_COVER_PAD);
+
         // Cover focus ring — the cover is a target in its own right now (A
         // opens it fullscreen), so it needs to show when it holds the cursor.
+        // Tracks the frame, so it can't ring an area larger than the art.
         if (nav->GetLibraryFocus() == romm::navigation::LibraryFocus::Panel && nav->IsPanelOnCover()) {
             drawer->RenderRoundedRectangleFill(pu::ui::Color(230, 199, 167, 255),
-                                               cover_box_x - 4, cover_box_y - 4,
-                                               cover_box_w + 8, cover_box_h + 8, 12);
+                                               fit.frame_x - 4, fit.frame_y - 4,
+                                               fit.frame_w + 8, fit.frame_h + 8, 12);
         }
-        drawer->RenderRoundedRectangleFill(pu::ui::Color(16, 18, 22, 255), cover_box_x, cover_box_y, cover_box_w, cover_box_h, 10);
+        drawer->RenderRoundedRectangleFill(pu::ui::Color(16, 18, 22, 255),
+                                           fit.frame_x, fit.frame_y, fit.frame_w, fit.frame_h, 10);
         if (cover) {
-            const s32 tw = pu::ui::render::GetTextureWidth(cover);
-            const s32 th = pu::ui::render::GetTextureHeight(cover);
-            const float scale = std::min((float)cover_box_w / tw, (float)cover_box_h / th);
-            const s32 dw = (s32)(tw * scale);
-            const s32 dh = (s32)(th * scale);
             pu::ui::render::TextureRenderOptions opts;
-            opts.width = dw;
-            opts.height = dh;
-            drawer->RenderTexture(cover, cover_box_x + (cover_box_w - dw) / 2, cover_box_y + (cover_box_h - dh) / 2, opts);
+            opts.width = fit.img_w;
+            opts.height = fit.img_h;
+            drawer->RenderTexture(cover, fit.img_x, fit.img_y, opts);
         } else {
-            DrawPlaceholderCover(drawer, GetPlaceholderCover(platform_slug), cover_box_x, cover_box_y, cover_box_w, cover_box_h);
+            DrawPlaceholderCover(drawer, placeholder, fit.img_x, fit.img_y, fit.img_w, fit.img_h);
         }
 
         // ---- Cover lookahead -------------------------------------------------
@@ -793,15 +849,18 @@ namespace romm::ui {
             RebuildPanelTextures(game, sel, filtered_games.size(), panel_w - 80);
             if (panel_title_tex) {
                 const s32 tw = pu::ui::render::GetTextureWidth(panel_title_tex);
+                // Anchored to the slot, not the frame: a frame that shrinks to
+                // hug a wide cover must not drag the title up with it.
                 drawer->RenderTexture(panel_title_tex, panel_x + (panel_w - tw) / 2,
-                                      cover_box_y + cover_box_h + 24);
+                                      slot_y + slot_h + 24);
             }
             return;
         }
 
         RebuildPanelTextures(game, sel, filtered_games.size(), panel_w - 80);
 
-        s32 text_y = cover_box_y + cover_box_h + 20;
+        // Slot-anchored for the same reason as the unfocused title above.
+        s32 text_y = slot_y + slot_h + 20;
         if (panel_title_tex) {
             drawer->RenderTexture(panel_title_tex, panel_x + 40, text_y);
             text_y += pu::ui::render::GetTextureHeight(panel_title_tex) + 10;
@@ -1118,6 +1177,7 @@ namespace romm::ui {
         if (true) {
             s32 info_y;
             bool is_handheld = (current_profile.type == CoverProfileType::NintendoDS ||
+                                current_profile.type == CoverProfileType::Nintendo3DS ||
                                 current_profile.type == CoverProfileType::GameBoy ||
                                 current_profile.type == CoverProfileType::GameBoyColor ||
                                 current_profile.type == CoverProfileType::GameBoyAdvance ||

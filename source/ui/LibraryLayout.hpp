@@ -26,6 +26,10 @@ namespace romm::ui {
 
         pu::ui::elm::TextBlock::Ref title_text;
         pu::ui::elm::TextBlock::Ref hint_text;
+        // Which hint string is currently on screen. Compared by pointer (both
+        // values are string literals) purely to keep OnSelectionUpdated from
+        // re-rasterising the same text on every selection change.
+        const char* last_hint_key = nullptr;
 
     public:
         LibraryLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);

@@ -26,6 +26,7 @@
 
   "hint.main_menu": "A Sélectionner   |   + Quitter",
   "hint.library": "A Sélectionner   |   B Retour   |   X Marquer   |   ZR Télécharger la sélection   |   Y Menu   |   + Quitter",
+  "hint.library.empty": "A Réessayer   |   B Retour   |   + Quitter",
   "hint.installed": "↑↓ Naviguer     L/R Plateforme     A Options     B Retour",
   "hint.grid_panel": "A  Ouvrir la jaquette / Action      Haut/Bas  Naviguer      B  Retour",
   "hint.detail.cover": "A Agrandir   |   Droite Panneau   |   B Retour",

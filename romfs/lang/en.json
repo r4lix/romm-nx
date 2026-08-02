@@ -26,6 +26,7 @@
 
   "hint.main_menu": "A Select   |   + Exit",
   "hint.library": "A Select   |   B Back   |   X Mark   |   ZR Download marked   |   Y Menu   |   + Exit",
+  "hint.library.empty": "A Retry   |   B Back   |   + Exit",
   "hint.installed": "↑↓ Navigate     L/R Platform     A Options     B Back",
   "hint.grid_panel": "A  Open cover / Action      Up/Down  Move      B  Back",
   "hint.detail.cover": "A Enlarge   |   Right Focus Panel   |   B Back",

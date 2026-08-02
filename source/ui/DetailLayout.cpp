@@ -14,6 +14,11 @@
 
 namespace romm::ui {
 
+    // Mat between the cover art and the edge of its frame on the detail card.
+    // Matches the detail panel's DETAIL_COVER_PAD so a cover presents the same
+    // way in both places.
+    static constexpr s32 DETAIL_CARD_COVER_PAD = 12;
+
     DownloadActionState ComputeDownloadActionState(int rom_id,
                                                    const std::string& platform_slug,
                                                    const romm::model::GameDetail* detail) {
@@ -156,7 +161,14 @@ namespace romm::ui {
         // Try to pre-populate cover_tex with a cached grid texture immediately to avoid blanking
         std::string norm_slug = romm::model::NormalizePlatformSlug(ctx.platform_slug);
         
-        // Fixed cover art viewport container (stable per platform aspect ratio)
+        // Fixed cover art SLOT (stable per platform aspect ratio).
+        //
+        // Two jobs, deliberately kept on this one stable value: it anchors the
+        // action button below, and it is the decode size handed to CoverCache
+        // (see the comment at the GetOrRequest call). Neither may follow the
+        // image — a decode size derived from the decoded texture would feed
+        // back on itself and churn a new cache entry per cover. What follows
+        // the image is the drawn frame, computed at render time in OnRender.
         s32 cover_x = x + 40;
         s32 cover_y = y + 40;
         s32 cover_w = 430;
@@ -624,43 +636,63 @@ namespace romm::ui {
             last_known_cache_state = current_cache_state;
         }
 
-        // Draw the viewport container (STABLE geometry)
+        // Draw the cover frame.
+        //
+        // The border and backing used to be painted at the full slot, so any
+        // cover that didn't share the slot's shape sat in a black surround —
+        // worst with a miximage, which is broadly 16:9 and left ~318px of black
+        // above and below it inside the 430x560 portrait slot. Both now track
+        // the fitted frame, which hugs the art.
         bool cover_focused = (nav->GetDetailFocus() == romm::navigation::DetailFocus::Cover);
         pu::ui::Color highlight_color(230, 199, 167, 255);
         pu::ui::Color viewport_border = cover_focused ? highlight_color : pu::ui::Color(45, 50, 62, 100);
         pu::ui::Color viewport_bg(16, 18, 22, 255); // Web Dark Slate (#101216)
         s32 thickness = cover_focused ? 4 : 2;
 
-        drawer->RenderRoundedRectangleFill(viewport_border, actual_cover_x - thickness, actual_cover_y - thickness, actual_cover_w + thickness * 2, actual_cover_h + thickness * 2, 12);
-        drawer->RenderRoundedRectangleFill(viewport_bg, actual_cover_x, actual_cover_y, actual_cover_w, actual_cover_h, 10);
+        // Recomputed every frame from whatever texture is currently resolved for
+        // this card, never stored: SetContext() re-seeds cover_tex per rom_id,
+        // so reading it fresh is what keeps a fast A-press-and-back from drawing
+        // the previous game's dimensions.
+        auto ph_tex = cover_tex ? nullptr : GetPlaceholderCover(expected_identity.cache_key.platform_slug);
+        s32 fit_tex_w = 0, fit_tex_h = 0;
+        if (cover_tex) {
+            fit_tex_w = pu::ui::render::GetTextureWidth(cover_tex);
+            fit_tex_h = pu::ui::render::GetTextureHeight(cover_tex);
+        } else if (ph_tex) {
+            fit_tex_w = pu::ui::render::GetTextureWidth(ph_tex);
+            fit_tex_h = pu::ui::render::GetTextureHeight(ph_tex);
+        } else {
+            int aw = 0, ah = 0;
+            GetFallbackCoverAspect(currentCoverProfile.type, aw, ah);
+            fit_tex_w = aw; fit_tex_h = ah;
+        }
+
+        const CoverFit fit = FitCoverInSlot(actual_cover_x, actual_cover_y,
+                                            actual_cover_w, actual_cover_h,
+                                            fit_tex_w, fit_tex_h, DETAIL_CARD_COVER_PAD);
+
+        drawer->RenderRoundedRectangleFill(viewport_border, fit.frame_x - thickness, fit.frame_y - thickness, fit.frame_w + thickness * 2, fit.frame_h + thickness * 2, 12);
+        drawer->RenderRoundedRectangleFill(viewport_bg, fit.frame_x, fit.frame_y, fit.frame_w, fit.frame_h, 10);
 
         // Draw texture inside viewport with contain-style rendering
         if (cover_tex) {
-            s32 tw = pu::ui::render::GetTextureWidth(cover_tex);
-            s32 th = pu::ui::render::GetTextureHeight(cover_tex);
-            float scale = std::min((float)actual_cover_w / tw, (float)actual_cover_h / th);
-            s32 draw_w = (s32)(tw * scale);
-            s32 draw_h = (s32)(th * scale);
-            s32 draw_x = actual_cover_x + (actual_cover_w - draw_w) / 2;
-            s32 draw_y = actual_cover_y + (actual_cover_h - draw_h) / 2;
             pu::ui::render::TextureRenderOptions opts;
-            opts.width  = draw_w;
-            opts.height = draw_h;
-            drawer->RenderTexture(cover_tex, draw_x, draw_y, opts);
+            opts.width  = fit.img_w;
+            opts.height = fit.img_h;
+            drawer->RenderTexture(cover_tex, fit.img_x, fit.img_y, opts);
         } else {
             // No cover available (loading, missing, or failed): prefer the
             // bundled per-platform "NO COVER" art, fall back to the old text.
-            auto ph_tex = GetPlaceholderCover(expected_identity.cache_key.platform_slug);
             if (ph_tex) {
-                DrawPlaceholderCover(drawer, ph_tex, actual_cover_x, actual_cover_y, actual_cover_w, actual_cover_h);
+                DrawPlaceholderCover(drawer, ph_tex, fit.img_x, fit.img_y, fit.img_w, fit.img_h);
             } else if (display_state == DetailDisplayState::Placeholder) {
                 s32 ph_w = pu::ui::render::GetTextureWidth(cover_placeholder_tex);
                 s32 ph_h = pu::ui::render::GetTextureHeight(cover_placeholder_tex);
-                drawer->RenderTexture(cover_placeholder_tex, actual_cover_x + (actual_cover_w - ph_w) / 2, actual_cover_y + (actual_cover_h - ph_h) / 2);
+                drawer->RenderTexture(cover_placeholder_tex, fit.frame_x + (fit.frame_w - ph_w) / 2, fit.frame_y + (fit.frame_h - ph_h) / 2);
             } else {
                 s32 ph_w = pu::ui::render::GetTextureWidth(loading_tex);
                 s32 ph_h = pu::ui::render::GetTextureHeight(loading_tex);
-                drawer->RenderTexture(loading_tex, actual_cover_x + (actual_cover_w - ph_w) / 2, actual_cover_y + (actual_cover_h - ph_h) / 2);
+                drawer->RenderTexture(loading_tex, fit.frame_x + (fit.frame_w - ph_w) / 2, fit.frame_y + (fit.frame_h - ph_h) / 2);
             }
         }
 
