@@ -75,6 +75,14 @@ namespace romm::nso {
         std::string code; // the S-#### slot it landed in, on success
     };
 
+    // What the pipeline worker was started to do. Was a bool `restore`, which
+    // stopped being expressive the moment there were three jobs.
+    enum class NsoJobKind {
+        Install,
+        Restore,
+        UninstallAll
+    };
+
     // Whether trying the same ROM again could plausibly give a different
     // answer. Only the fetch-and-write failures qualify: a ROM rejected for its
     // mapping, a malformed database or a failed validation is deterministic, so
@@ -104,6 +112,15 @@ namespace romm::nso {
 
         void StartInstall(const NsoInstallRequest& request);
         void StartRestore();
+        // Removes every game romm-nx injected, each with its own backup, on the
+        // pipeline worker. The progress page is the only report — this can be
+        // a hundred megabytes of backup copying, so it must not run on the UI
+        // thread.
+        void StartUninstallAll();
+
+        // How many games romm-nx currently has injected, from its own index.
+        // Reads a small file, so it is fine to call while drawing a settings row.
+        size_t InjectedGameCount() const;
 
         // Runs the pipeline on the CALLING thread and returns when it is done.
         // The download worker uses this: its queue is already serialized, so
@@ -141,6 +158,14 @@ namespace romm::nso {
 
         void RunInstall(NsoInstallRequest request);
         void RunRestore();
+        void RunUninstallAll();
+
+        // One game's removal: database entry, per-title strings, asset folder
+        // and index line, backed up first. Assumes the caller already holds
+        // `busy` and has a log session open, so the bulk path can hold both for
+        // a whole run without deadlocking against itself.
+        bool RemoveInjectedEntry(const std::string& hash, const std::string& code,
+                                 const std::string& title, std::string& out_error);
 
         // The pipeline runs on a pthread with an explicitly sized stack rather
         // than a std::thread. libnx's default thread stack is small, and this
@@ -149,11 +174,12 @@ namespace romm::nso {
         // with -fno-exceptions a std::thread that fails to start calls
         // std::terminate, whereas pthread_create just returns an error we can
         // report on screen.
-        bool SpawnWorker(bool restore, const NsoInstallRequest& request);
+        bool SpawnWorker(NsoJobKind kind, const NsoInstallRequest& request);
         static void* ThreadEntry(void* arg);
 
         void ResetSteps(const std::vector<std::string>& names);
         void BeginStep(size_t index);
+        void UpdateStep(size_t index, const std::string& detail);
         void FinishStep(size_t index, const std::string& detail);
         void SkipStep(size_t index, const std::string& detail);
         void FailStep(size_t index, NsoErrorKind kind, const std::string& detail);

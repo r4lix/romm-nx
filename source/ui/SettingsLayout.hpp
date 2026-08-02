@@ -73,7 +73,9 @@ namespace romm::ui {
         DownloadSoundPack,
         // Restores the SNES Switch Online LayeredFS from romm-nx's own backup —
         // unrelated to RestoreBackup above, which rolls the NRO back.
-        RestoreNsoBackup
+        RestoreNsoBackup,
+        // Removes every game romm-nx injected, in one pass.
+        RemoveAllNsoGames
     };
 
     enum class PathStatus {

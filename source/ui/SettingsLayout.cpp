@@ -652,6 +652,13 @@ namespace romm::ui {
                                backup.empty() ? romm::i18n::tr("nso.snes.restore.none")
                                               : truncatePath(backup, 48),
                                true});
+
+            const size_t injected = installer.InjectedGameCount();
+            options.push_back({romm::i18n::tr("settings.nso.remove_all"),
+                               injected == 0 ? romm::i18n::tr("settings.nso.remove_all_none")
+                                             : romm::i18n::format("settings.nso.remove_all_value",
+                                                                  {{"count", std::to_string(injected)}}),
+                               true});
             options.push_back({romm::i18n::tr("settings.nso.manual"),
                                romm::i18n::tr("settings.nso.manual_value"), true});
             options.push_back({romm::i18n::tr("settings.nso.log"), truncatePath(installer.LogPath(), 62)});
@@ -1589,10 +1596,11 @@ namespace romm::ui {
         }
             break;
         case SettingsCategory::SwitchOnline: {
-            // Rows 0-3 are the read-only checklist and row 6 is the log path;
-            // only Restore and the manual install screen do anything.
+            // Rows 0-3 are the read-only checklist and row 7 is the log path;
+            // only Restore, Remove all and the manual install screen act.
             constexpr size_t kRowRestore = 4;
-            constexpr size_t kRowManual = 5;
+            constexpr size_t kRowRemoveAll = 5;
+            constexpr size_t kRowManual = 6;
 
             if (opt_idx == kRowRestore) {
                 auto& installer = romm::nso::NsoSnesInstaller::Instance();
@@ -1607,6 +1615,20 @@ namespace romm::ui {
                             // the step list is the only place that reports what
                             // it actually did.
                             if (nso_snes_modal) nso_snes_modal->ShowRestore();
+                        }
+                    );
+                }
+            } else if (opt_idx == kRowRemoveAll) {
+                auto& installer = romm::nso::NsoSnesInstaller::Instance();
+                const size_t injected = installer.InjectedGameCount();
+                if (injected > 0 && !installer.IsBusy()) {
+                    confirm_modal->Show(
+                        romm::i18n::tr("settings.confirm.remove_all_nso.title"),
+                        romm::i18n::format("settings.confirm.remove_all_nso.message",
+                                           {{"count", std::to_string(injected)}}),
+                        ConfirmAction::RemoveAllNsoGames,
+                        [this]() {
+                            if (nso_snes_modal) nso_snes_modal->ShowUninstallAll();
                         }
                     );
                 }
@@ -1781,8 +1803,8 @@ namespace romm::ui {
             // with whatever the server reports, so it's derived, not a literal.
             case SettingsCategory::Platforms: return kPlatformActionRows + PlatformRows().size();
             // 4 checklist rows (app, Full Unlock, database, string tables) +
-            // Restore backup + Manual install screen + the log path.
-            case SettingsCategory::SwitchOnline: return 7;
+            // Restore backup + Remove all + Manual install screen + log path.
+            case SettingsCategory::SwitchOnline: return 8;
             case SettingsCategory::Advanced: return 7; // cache rows only
             case SettingsCategory::Updates: {
                 size_t count = 3; // Channel, Check on startup, Check for updates

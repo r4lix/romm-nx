@@ -30,7 +30,7 @@ namespace romm::nso {
 
     struct PipelineJob {
         NsoSnesInstaller* self;
-        bool restore;
+        NsoJobKind kind;
         NsoInstallRequest request;
     };
 
@@ -448,6 +448,15 @@ namespace romm::nso {
         NsoLog::Instance().Step((int)index + 1, name);
     }
 
+    // Replaces a running step's detail without ending it — the bulk removal's
+    // "12 / 28 - <title>" counter, which has to move while the step is still
+    // in flight.
+    void NsoSnesInstaller::UpdateStep(size_t index, const std::string& detail) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (index >= steps.size()) return;
+        steps[index].detail = detail;
+    }
+
     void NsoSnesInstaller::FinishStep(size_t index, const std::string& detail) {
         std::lock_guard<std::mutex> lock(mutex);
         if (index >= steps.size()) return;
@@ -485,18 +494,18 @@ namespace romm::nso {
 
     void* NsoSnesInstaller::ThreadEntry(void* arg) {
         PipelineJob* job = static_cast<PipelineJob*>(arg);
-        if (job->restore) {
-            job->self->RunRestore();
-        } else {
-            job->self->RunInstall(job->request);
+        switch (job->kind) {
+            case NsoJobKind::Install:      job->self->RunInstall(job->request); break;
+            case NsoJobKind::Restore:      job->self->RunRestore(); break;
+            case NsoJobKind::UninstallAll: job->self->RunUninstallAll(); break;
         }
         job->self->busy.store(false);
         delete job;
         return nullptr;
     }
 
-    bool NsoSnesInstaller::SpawnWorker(bool restore, const NsoInstallRequest& request) {
-        PipelineJob* job = new PipelineJob{this, restore, request};
+    bool NsoSnesInstaller::SpawnWorker(NsoJobKind kind, const NsoInstallRequest& request) {
+        PipelineJob* job = new PipelineJob{this, kind, request};
 
         pthread_attr_t attr;
         pthread_attr_init(&attr);
@@ -575,13 +584,29 @@ namespace romm::nso {
         if (matched_by_title) {
             log.Line("matched by title: this index entry was written before rom_id was recorded");
         }
+
+        std::string error;
+        const bool ok = RemoveInjectedEntry(hash, code, title, error);
+        log.EndSession(ok, ok ? title + " removed" : error);
+        busy.store(false);
+        outcome.success = ok;
+        outcome.error = ok ? "" : error;
+        outcome.code = code;
+        return outcome;
+    }
+
+    // The removal itself, shared by the single-game uninstall above and the
+    // bulk "remove all" below. Assumes the caller holds `busy` and has a log
+    // session open — it must not touch either, or the bulk path (which holds
+    // busy for the whole run) would deadlock against itself.
+    bool NsoSnesInstaller::RemoveInjectedEntry(const std::string& hash, const std::string& code,
+                                               const std::string& title, std::string& out_error) {
+        auto& log = NsoLog::Instance();
+        auto index = LoadInjectedIndex();
+
         auto finish = [&](bool ok, const std::string& why) {
-            log.EndSession(ok, why);
-            busy.store(false);
-            outcome.success = ok;
-            outcome.error = ok ? "" : why;
-            outcome.code = code;
-            return outcome;
+            if (!ok) out_error = why;
+            return ok;
         };
 
         NsoSnesInstall install = DetectNsoSnes();
@@ -668,7 +693,7 @@ namespace romm::nso {
         index.erase(hash);
         SaveInjectedIndex(index);
         RefreshDetection();
-        return finish(true, title + " removed");
+        return true;
     }
 
     void NsoSnesInstaller::StartInstall(const NsoInstallRequest& request) {
@@ -677,10 +702,112 @@ namespace romm::nso {
         // Cleared here rather than on the worker so the screen can never draw a
         // previous run's step list in the frames before the thread starts.
         ResetSteps({});
-        if (!SpawnWorker(false, request)) {
+        if (!SpawnWorker(NsoJobKind::Install, request)) {
             ResetSteps({"Start pipeline"});
             FailStep(0, NsoErrorKind::FileWrite, "could not start the worker thread");
             busy.store(false);
+        }
+    }
+
+    size_t NsoSnesInstaller::InjectedGameCount() const {
+        size_t count = 0;
+        for (const auto& entry : LoadInjectedIndex()) {
+            if (!entry.second.code.empty()) count++;
+        }
+        return count;
+    }
+
+    void NsoSnesInstaller::StartUninstallAll() {
+        bool expected = false;
+        if (!busy.compare_exchange_strong(expected, true)) return;
+        ResetSteps({});
+        if (!SpawnWorker(NsoJobKind::UninstallAll, NsoInstallRequest{})) {
+            ResetSteps({"Start pipeline"});
+            FailStep(0, NsoErrorKind::FileWrite, "could not start the worker thread");
+            busy.store(false);
+        }
+    }
+
+    // Removes every game romm-nx injected, one at a time, each with its own
+    // backup — the same per-game path the single uninstall takes, so a bulk
+    // clean-up is exactly N ordinary removals and never a special case that
+    // rewrites the database wholesale.
+    //
+    // Fixed step list rather than one step per game: with 28 injected titles a
+    // per-game list runs off the bottom of the progress panel, so the running
+    // count lives in step 1's detail instead.
+    void NsoSnesInstaller::RunUninstallAll() {
+        auto& log = NsoLog::Instance();
+        log.BeginSession("Remove every romm-nx-injected game from SNES Online");
+
+        ResetSteps({"Read injected index", "Remove entries", "Verify database"});
+
+        struct Target { std::string hash, code, title; };
+        std::vector<Target> targets;
+        BeginStep(0);
+        for (const auto& entry : LoadInjectedIndex()) {
+            if (entry.second.code.empty()) continue;
+            targets.push_back({entry.first, entry.second.code, entry.second.title});
+        }
+        FinishStep(0, std::to_string(targets.size()) + " injected games");
+        log.KV("targets", std::to_string(targets.size()));
+
+        if (targets.empty()) {
+            SkipStep(1, "nothing to remove");
+            SkipStep(2, "nothing to remove");
+            SetSummary("No romm-nx-injected games to remove.");
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                state = NsoPipelineState::Success;
+            }
+            log.EndSession(true, "nothing to remove");
+            return;
+        }
+
+        size_t removed = 0;
+        std::string last_error;
+        BeginStep(1);
+        for (size_t i = 0; i < targets.size(); ++i) {
+            UpdateStep(1, std::to_string(i + 1) + " / " + std::to_string(targets.size())
+                          + " - " + targets[i].title);
+            std::string error;
+            if (RemoveInjectedEntry(targets[i].hash, targets[i].code, targets[i].title, error)) {
+                removed++;
+                log.Line("removed " + targets[i].code + " (" + targets[i].title + ")");
+            } else {
+                last_error = error;
+                // Each removal is independently backed up and written
+                // atomically, so one failure does not poison the rest — keep
+                // going and report the tally, rather than stopping half done.
+                log.Line("FAILED " + targets[i].code + " (" + targets[i].title + "): " + error);
+            }
+        }
+
+        const size_t failed = targets.size() - removed;
+        const std::string tally = std::to_string(removed) + " removed, " + std::to_string(failed) + " failed";
+        if (failed > 0) {
+            FailStep(1, NsoErrorKind::FileWrite, tally + " (last: " + last_error + ")");
+        } else {
+            FinishStep(1, tally);
+        }
+
+        BeginStep(2);
+        RefreshDetection();
+        const auto detection = GetDetection();
+        FinishStep(2, std::to_string(detection.entry_count) + " entries, "
+                      + std::to_string(detection.injected_asset_dirs) + " asset folders left");
+
+        if (failed > 0) {
+            SetSummary("Removed " + std::to_string(removed) + " of " + std::to_string(targets.size())
+                       + " injected games; " + std::to_string(failed) + " could not be removed.");
+            log.EndSession(false, tally);
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                state = NsoPipelineState::Success;
+            }
+            SetSummary("Removed all " + std::to_string(removed) + " romm-nx-injected games from SNES Online.");
+            log.EndSession(true, tally);
         }
     }
 
@@ -688,7 +815,7 @@ namespace romm::nso {
         bool expected = false;
         if (!busy.compare_exchange_strong(expected, true)) return;
         ResetSteps({});
-        if (!SpawnWorker(true, NsoInstallRequest{})) {
+        if (!SpawnWorker(NsoJobKind::Restore, NsoInstallRequest{})) {
             ResetSteps({"Start pipeline"});
             FailStep(0, NsoErrorKind::FileWrite, "could not start the worker thread");
             busy.store(false);

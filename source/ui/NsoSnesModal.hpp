@@ -43,6 +43,9 @@ namespace romm::ui {
         // Settings > Switch Online > "Restore last SNES Online backup" uses
         // this so the restore reports its steps instead of running headless.
         void ShowRestore();
+        // Same idea for the bulk removal: it runs on the pipeline worker and
+        // the progress page is where it reports.
+        void ShowUninstallAll();
         void Hide();
         bool IsActive() const { return active; }
 

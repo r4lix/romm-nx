@@ -113,6 +113,20 @@ namespace romm::ui {
         installer.StartRestore();
     }
 
+    void NsoSnesModal::ShowUninstallAll() {
+        auto& installer = romm::nso::NsoSnesInstaller::Instance();
+        if (installer.IsBusy()) return;
+        if (installer.InjectedGameCount() == 0) return;
+
+        active = true;
+        page = Page::Progress;
+        overview_row = 0;
+        RefreshDetection();
+        LoadSnesLibrary();
+        std::cout << "[NSO-SNES] Bulk removal requested from Settings > Nintendo Classic" << std::endl;
+        installer.StartUninstallAll();
+    }
+
     void NsoSnesModal::Hide() {
         active = false;
         pending_fetch.reset();
