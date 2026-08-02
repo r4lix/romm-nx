@@ -1304,7 +1304,6 @@ namespace romm::model {
         // Base offset so the shared progress counter reads cumulatively across discs.
         active_base_bytes.store(base_bytes);
 
-        mkdir("sdmc:/roms", 0777);
         std::string platform_dir = ConfigManager::Instance().GetRomPath(task.platform_slug);
         RomPathManager::CreateFolderIfMissing(platform_dir);
         // Ensure the file's parent exists — this creates the per-game subfolder for

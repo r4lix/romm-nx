@@ -7,27 +7,6 @@
 
 namespace romm::model {
 
-    std::string RomPathManager::GetDefaultPath(const std::string& platform_slug) {
-        if (platform_slug == "psx" || platform_slug == "playstation" || platform_slug == "ps1") {
-            return "sdmc:/roms/ps1/";
-        } else if (platform_slug == "ps2" || platform_slug == "playstation2") {
-            return "sdmc:/roms/ps2/";
-        } else if (platform_slug == "psp") {
-            return "sdmc:/roms/psp/";
-        } else if (platform_slug == "nds" || platform_slug == "nintendo_ds" || platform_slug == "nintendo-ds" || platform_slug == "Nintendo DS") {
-            return "sdmc:/roms/nds/";
-        } else if (platform_slug == "gb" || platform_slug == "game-boy" || platform_slug == "gameboy" || platform_slug == "nintendo-game-boy") {
-            return "sdmc:/roms/gb/";
-        } else if (platform_slug == "gbc" || platform_slug == "game-boy-color" || platform_slug == "gameboy-color" || platform_slug == "nintendo-game-boy-color") {
-            return "sdmc:/roms/gbc/";
-        } else if (platform_slug == "gba" || platform_slug == "game-boy-advance" || platform_slug == "gameboy-advance" || platform_slug == "nintendo-game-boy-advance") {
-            return "sdmc:/roms/gba/";
-        } else if (platform_slug == "3ds" || platform_slug == "nintendo-3ds" || platform_slug == "n3ds" || platform_slug == "nintendo_3ds") {
-            return "sdmc:/roms/3ds/";
-        }
-        return "sdmc:/roms/" + platform_slug + "/";
-    }
-
     bool RomPathManager::ValidatePath(const std::string& path) {
         if (path.find("sdmc:/") != 0) return false;
         if (path.empty() || path.back() != '/') return false;

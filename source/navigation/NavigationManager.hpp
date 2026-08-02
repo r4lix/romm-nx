@@ -119,11 +119,6 @@ namespace romm::navigation {
         size_t selected_settings_option_idx = 0;
         romm::ui::SettingsFocusArea settings_focus = romm::ui::SettingsFocusArea::CategoryList;
 
-        // ROM Paths redesigned state
-        size_t selected_rom_path_platform_idx = 0;
-        size_t selected_rom_path_row_idx = 0;
-        bool rom_path_rows_focused = false;
-
         // Library "Y-Menu" state (Search / Sort / View Mode)
         bool library_menu_active = false;
         size_t library_menu_selected_idx = 0;  // 0=Search, 1=Sort, 2=View Mode
@@ -201,13 +196,6 @@ namespace romm::navigation {
         // themselves rather than on stale indices, so a hidden platform can't
         // leave the cursor pointing at the wrong entry (or past the end).
         void ApplyPlatformVisibilityChange();
-
-        size_t GetSelectedRomPathPlatformIdx() const { return selected_rom_path_platform_idx; }
-        void SetSelectedRomPathPlatformIdx(size_t idx) { selected_rom_path_platform_idx = idx; }
-        size_t GetSelectedRomPathRowIdx() const { return selected_rom_path_row_idx; }
-        void SetSelectedRomPathRowIdx(size_t idx) { selected_rom_path_row_idx = idx; }
-        bool IsRomPathRowsFocused() const { return rom_path_rows_focused; }
-        void SetRomPathRowsFocused(bool focused) { rom_path_rows_focused = focused; }
 
         std::shared_ptr<romm::ui::MainMenuLayout> GetMainMenuLayout() { return main_menu_layout; }
         std::shared_ptr<romm::ui::LibraryLayout> GetLibraryLayout() { return library_layout; }

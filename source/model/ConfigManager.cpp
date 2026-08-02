@@ -82,15 +82,6 @@ namespace romm::model {
     }
 
     ConfigManager::ConfigManager() {
-        // Initialize default ROM paths
-        rom_paths["psx"] = "sdmc:/roms/ps1/";
-        rom_paths["psp"] = "sdmc:/roms/psp/";
-        rom_paths["nds"] = "sdmc:/roms/nds/";
-        rom_paths["gb"] = "sdmc:/roms/gb/";
-        rom_paths["gbc"] = "sdmc:/roms/gbc/";
-        rom_paths["gba"] = "sdmc:/roms/gba/";
-        rom_paths["3ds"] = "sdmc:/roms/3ds/";
-
         // Seed the shipped defaults so a first launch (or a config file that
         // predates this setting) already hides the right platforms without
         // waiting for Load() to say so.
@@ -194,32 +185,15 @@ namespace romm::model {
         platform_grid_view_mode[norm] = m;
     }
 
-    void ConfigManager::SetPsxDownloadDir(const std::string& dir) {
-        psx_download_dir = dir;
-        // Normalize psx_download_dir to have trailing slash
-        if (!psx_download_dir.empty() && psx_download_dir.back() != '/') {
-            psx_download_dir += "/";
+    void ConfigManager::SetRomsBaseDir(const std::string& dir) {
+        roms_base_dir = dir;
+        if (!roms_base_dir.empty() && roms_base_dir.back() != '/') {
+            roms_base_dir += "/";
         }
-        rom_paths["psx"] = psx_download_dir;
     }
 
     std::string ConfigManager::GetRomPath(const std::string& platform) const {
-        auto it = rom_paths.find(platform);
-        if (it != rom_paths.end()) {
-            return it->second;
-        }
-        return "sdmc:/roms/" + platform + "/";
-    }
-
-    void ConfigManager::SetRomPath(const std::string& platform, const std::string& path) {
-        std::string p = path;
-        if (!p.empty() && p.back() != '/') {
-            p += "/";
-        }
-        rom_paths[platform] = p;
-        if (platform == "psx" || platform == "playstation" || platform == "ps1") {
-            psx_download_dir = p;
-        }
+        return roms_base_dir + "roms/" + NormalizePlatformSlug(platform) + "/";
     }
 
     bool ConfigManager::Load() {
@@ -433,41 +407,13 @@ namespace romm::model {
             }
         }
 
-        // Load PS1 download dir
-        std::string psx_path = extractPlatformPath(content, "rom_paths", "psx");
-        if (psx_path.empty()) {
-            psx_path = extractPlatformPath(content, "download_dirs", "psx");
-        }
-
-        if (!psx_path.empty()) {
-            psx_download_dir = psx_path;
-        }
-
-        // Normalize psx_download_dir to have trailing slash
-        if (!psx_download_dir.empty() && psx_download_dir.back() != '/') {
-            psx_download_dir += "/";
-        }
-        // Force valid root if tampered
-        if (!romm::model::RomPathManager::ValidatePath(psx_download_dir)) {
-            psx_download_dir = "sdmc:/roms/ps1/";
-        }
-        rom_paths["psx"] = psx_download_dir;
-
-        // Extract any other platforms if they exist
-        std::vector<std::string> known_platforms = {"ps2", "psp", "nds", "gb", "gbc", "gba", "3ds"};
-        for (const auto& plat : known_platforms) {
-            std::string plat_path = extractPlatformPath(content, "rom_paths", plat);
-            if (plat_path.empty()) {
-                plat_path = extractPlatformPath(content, "download_dirs", plat);
-            }
-            if (!plat_path.empty()) {
-                if (plat_path.back() != '/') plat_path += "/";
-                if (!romm::model::RomPathManager::ValidatePath(plat_path)) {
-                    plat_path = (plat == "psp" ? "sdmc:/roms/psp/" : "sdmc:/roms/" + plat + "/");
-                }
-                rom_paths[plat] = plat_path;
-            } else {
-                rom_paths[plat] = (plat == "psp" ? "sdmc:/roms/psp/" : "sdmc:/roms/" + plat + "/");
+        // A single configurable base directory covers every platform; per-system
+        // overrides were removed in favour of <base>/roms/<system>/.
+        std::string base_dir;
+        if (jsonExtractString(content, "roms_base_dir", base_dir) && !base_dir.empty()) {
+            SetRomsBaseDir(base_dir);
+            if (!romm::model::RomPathManager::ValidatePath(roms_base_dir)) {
+                roms_base_dir = "sdmc:/romm-nx/";
             }
         }
 
@@ -533,14 +479,7 @@ namespace romm::model {
         content += "    \"server_url\": \"" + romm_host + "\",\n";
         content += "    \"api_key\": \"" + api_key + "\"\n";
         content += "  },\n";
-        content += "  \"rom_paths\": {\n";
-        bool first = true;
-        for (const auto& pair : rom_paths) {
-            if (!first) content += ",\n";
-            first = false;
-            content += "    \"" + pair.first + "\": \"" + pair.second + "\"";
-        }
-        content += "\n  },\n";
+        content += "  \"roms_base_dir\": \"" + roms_base_dir + "\",\n";
         content += "  \"cache\": {\n";
         content += "    \"auto_clear_enabled\": " + std::string(auto_clear_enabled ? "true" : "false") + ",\n";
         content += "    \"max_size_mb\": " + std::to_string(max_size_mb) + ",\n";

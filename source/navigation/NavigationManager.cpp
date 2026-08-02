@@ -1147,93 +1147,12 @@ namespace romm::navigation {
                 else if (keys_down & HidNpadButton_A) {
                     settings_focus = SettingsFocusArea::OptionList;
                     selected_settings_option_idx = 0;
-                    if (selected_settings_category_idx == 3) {
-                        rom_path_rows_focused = false;
-                        selected_rom_path_row_idx = 0;
-                    }
                     state_changed = true;
                     std::cout << "[SETTINGS] Entered OptionList for Category " << selected_settings_category_idx << std::endl;
                 }
             }
             else {
                 // OptionList Focus
-                if (selected_settings_category_idx == 3) {
-                    // Custom ROM Paths navigation
-                    if (rom_path_rows_focused) {
-                        // Path-row focus
-                        if (keys_down & HidNpadButton_B) {
-                            rom_path_rows_focused = false;
-                            state_changed = true;
-                        }
-                        else if ((keys_effective & HidNpadButton_Up) || (keys_effective & HidNpadButton_StickLUp)) {
-                            if (selected_rom_path_row_idx > 0) {
-                                selected_rom_path_row_idx--;
-                                state_changed = true;
-                            }
-                        }
-                        else if ((keys_effective & HidNpadButton_Down) || (keys_effective & HidNpadButton_StickLDown)) {
-                            if (selected_rom_path_row_idx + 1 < romm::ui::SettingsLayout::GetSelectableRomPathRowCount()) {
-                                selected_rom_path_row_idx++;
-                                state_changed = true;
-                            }
-                        }
-                        else if (keys_down & HidNpadButton_A) {
-                            if (settings_layout) {
-                                settings_layout->EditSelectedRomPath();
-                                state_changed = true;
-                            }
-                        }
-                        else if (keys_down & HidNpadButton_X) {
-                            if (settings_layout) {
-                                settings_layout->ValidateOrCreateSelectedPath();
-                                state_changed = true;
-                            }
-                        }
-                        else if (keys_down & HidNpadButton_Y) {
-                            if (settings_layout) {
-                                settings_layout->ResetSelectedRomPath();
-                                state_changed = true;
-                            }
-                        }
-                    }
-                    else {
-                        // Platform-tab focus
-                        if (keys_down & HidNpadButton_B) {
-                            settings_focus = SettingsFocusArea::CategoryList;
-                            state_changed = true;
-                        }
-                        else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
-                            size_t max_idx = romm::ui::SettingsLayout::GetSupportedPlatformsCount() - 1;
-                            if (selected_rom_path_platform_idx > 0) {
-                                selected_rom_path_platform_idx--;
-                            } else {
-                                selected_rom_path_platform_idx = max_idx;
-                            }
-                            state_changed = true;
-                            if (settings_layout) {
-                                settings_layout->OnSelectionUpdated(); // Refreshes status on platform tab switch
-                            }
-                        }
-                        else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
-                            size_t max_idx = romm::ui::SettingsLayout::GetSupportedPlatformsCount() - 1;
-                            if (selected_rom_path_platform_idx < max_idx) {
-                                selected_rom_path_platform_idx++;
-                            } else {
-                                selected_rom_path_platform_idx = 0;
-                            }
-                            state_changed = true;
-                            if (settings_layout) {
-                                settings_layout->OnSelectionUpdated(); // Refreshes status on platform tab switch
-                            }
-                        }
-                        else if (keys_down & HidNpadButton_A) {
-                            rom_path_rows_focused = true;
-                            selected_rom_path_row_idx = 0;
-                            state_changed = true;
-                        }
-                    }
-                }
-                else {
                     // General option navigation
                     if (keys_down & HidNpadButton_B) {
                         settings_focus = SettingsFocusArea::CategoryList;
@@ -1300,7 +1219,6 @@ namespace romm::navigation {
                             state_changed = true;
                         }
                     }
-                }
             }
         }
         else if (current_screen == Screen::Installed) {
