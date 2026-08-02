@@ -30,6 +30,10 @@ namespace romm::model {
         DownloadingGame,
         DownloadingCover,
         SyncingCover,
+        // Building and installing this game's Switch Online files. Runs inline
+        // on the download worker, so a marked batch injects in queue order and
+        // can never outrun the single-flight installer.
+        Injecting,
         Completed,
         Failed,
         Cancelled
@@ -66,6 +70,16 @@ namespace romm::model {
         std::string title;
         std::string platform_slug;
 
+        // Also install into the matching Switch Online app once the ROM lands.
+        // Decided at enqueue time from the per-platform setting (and the Ask
+        // prompt), never re-read later, so changing the setting mid-queue can't
+        // retroactively change what a queued job does.
+        bool inject_nso = false;
+        // Requeued injection retry: the ROM is already on the SD card, so only
+        // the injection is redone.
+        bool inject_only = false;
+        int inject_attempts = 0;
+
         long long total_bytes = 0;
         std::atomic<long long> downloaded_bytes{0};
         std::atomic<size_t> download_speed_bps{0}; // Bytes per second
@@ -86,6 +100,9 @@ namespace romm::model {
             cover_path_rel = other.cover_path_rel;
             title = other.title;
             platform_slug = other.platform_slug;
+            inject_nso = other.inject_nso;
+            inject_only = other.inject_only;
+            inject_attempts = other.inject_attempts;
             total_bytes = other.total_bytes;
             downloaded_bytes.store(other.downloaded_bytes.load());
             download_speed_bps.store(other.download_speed_bps.load());
@@ -105,6 +122,9 @@ namespace romm::model {
             cover_path_rel = other.cover_path_rel;
             title = other.title;
             platform_slug = other.platform_slug;
+            inject_nso = other.inject_nso;
+            inject_only = other.inject_only;
+            inject_attempts = other.inject_attempts;
             total_bytes = other.total_bytes;
             downloaded_bytes.store(other.downloaded_bytes.load());
             download_speed_bps.store(other.download_speed_bps.load());
@@ -114,12 +134,26 @@ namespace romm::model {
         }
     };
 
+    // What the caller has already decided about Switch Online injection for
+    // this one enqueue. An explicit parameter rather than shared state:
+    // inject_nso is fixed at enqueue time and never re-read, so a resolved Ask
+    // has to arrive with the call, and a caller that never asked (bulk
+    // download) must not be able to accidentally inherit someone else's answer.
+    enum class InjectChoice {
+        // Read the per-platform setting. Always injects; Off and an unresolved
+        // Ask do not.
+        UseSetting,
+        Yes,
+        No
+    };
+
     class DownloadManager {
     public:
         static DownloadManager& Instance();
 
         // Queue control
-        void EnqueueDownload(const GameDetail& detail, const std::string& platform_slug, const std::string& title);
+        void EnqueueDownload(const GameDetail& detail, const std::string& platform_slug, const std::string& title,
+                             InjectChoice inject = InjectChoice::UseSetting);
         void RemoveFromQueue(int rom_id);
         void ClearCompleted();
         void RetryFailed(int rom_id);

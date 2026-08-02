@@ -3,6 +3,8 @@
 #include "ConfigManager.hpp"
 #include "RomPathManager.hpp"
 #include "ScreenWakeManager.hpp"
+#include "../nso/NsoSnesInstaller.hpp"
+#include "PlatformCatalog.hpp"
 #include "../navigation/HttpClient.hpp"
 #include <iostream>
 #include <curl/curl.h>
@@ -707,7 +709,7 @@ namespace romm::model {
             std::lock_guard<std::mutex> lock(task_mutex);
             for (auto it = download_queue.begin(); it != download_queue.end(); ) {
                 if (it->filename == safe_name) {
-                    if (it->state == DownloadState::DownloadingGame || it->state == DownloadState::DownloadingCover || it->state == DownloadState::SyncingCover || it->state == DownloadState::Preparing) {
+                    if (it->state == DownloadState::DownloadingGame || it->state == DownloadState::DownloadingCover || it->state == DownloadState::SyncingCover || it->state == DownloadState::Injecting || it->state == DownloadState::Preparing) {
                         cancel_requested = true;
                         ++it;
                     } else {
@@ -720,6 +722,38 @@ namespace romm::model {
         }
         
         std::string resolved_slug = NormalizePlatformSlug(platform_slug);
+
+        // Remove the Switch Online copy too, so the two never drift apart.
+        // Without this, uninstalling left a database entry pointing at files
+        // that were about to be deleted. Keyed by rom_id from the installed
+        // index — re-hashing the ROM would not match, since the hash recorded
+        // at injection time is of the normalized (header-stripped) image.
+        {
+            int rom_id = 0;
+            std::string indexed_title;
+            {
+                std::lock_guard<std::mutex> lock(index_mutex);
+                for (const auto& entry : installed_index) {
+                    if (entry.second.original_filename != filename &&
+                        SanitizeFilename(entry.second.original_filename) != safe_name) continue;
+                    if (NormalizePlatformSlug(entry.second.platform_slug) != resolved_slug) continue;
+                    rom_id = entry.second.rom_id;
+                    indexed_title = entry.second.title;
+                    break;
+                }
+            }
+            if (rom_id > 0) {
+                // Title goes along as the fallback for index entries written
+                // before the rom_id field existed.
+                const auto outcome = romm::nso::NsoSnesInstaller::Instance().UninstallSync(rom_id, indexed_title);
+                if (!outcome.success) {
+                    std::cerr << "[NSO] Could not remove " << filename
+                              << " from Switch Online: " << outcome.error << std::endl;
+                } else if (!outcome.code.empty()) {
+                    std::cout << "[NSO] Removed " << outcome.code << " from Switch Online" << std::endl;
+                }
+            }
+        }
 
         std::string final_path = ResolveGameInstallPath(resolved_slug, safe_name);
         std::string part_path = final_path + ".part";
@@ -814,7 +848,8 @@ namespace romm::model {
         return fallback;
     }
 
-    void DownloadManager::EnqueueDownload(const GameDetail& detail, const std::string& platform_slug, const std::string& title) {
+    void DownloadManager::EnqueueDownload(const GameDetail& detail, const std::string& platform_slug, const std::string& title,
+                                          InjectChoice inject) {
         std::lock_guard<std::mutex> lock(task_mutex);
         
         std::string resolved_slug = NormalizePlatformSlug(platform_slug);
@@ -927,6 +962,65 @@ namespace romm::model {
         // progress bar still has a denominator.
         task.total_bytes = (total > 0) ? total : detail.file_size_bytes;
 
+        // Injection is decided here, once — not re-read when the task runs, so
+        // changing the setting mid-queue cannot retroactively change what an
+        // already-queued job does. Ask is resolved by the caller before
+        // enqueueing and arrives as InjectChoice::Yes/No; UseSetting means
+        // nobody asked, so an unresolved Ask is treated as "not this time"
+        // rather than silently injecting.
+        {
+            const std::string canonical = romm::model::ResolvePlatformIdentity(platform_slug, "");
+            const bool supported = romm::nso::PlatformSupportsInjection(canonical);
+            const auto mode = config.GetNsoInjectionMode(canonical);
+            bool wants_injection = false;
+            switch (inject) {
+                case InjectChoice::Yes:
+                    wants_injection = supported;
+                    break;
+                case InjectChoice::No:
+                    break;
+                case InjectChoice::UseSetting:
+                    wants_injection = supported && mode == NsoInjectionMode::Always;
+                    if (supported && mode == NsoInjectionMode::Ask) {
+                        // Bulk download and anything else that enqueues without
+                        // a user present. Saying so is better than silently
+                        // picking either answer on the user's behalf.
+                        std::cout << "[NSO] " << title << ": platform is set to ask, but this enqueue "
+                                     "had nobody to ask; downloading without injection" << std::endl;
+                    }
+                    break;
+            }
+            task.inject_nso = false;
+            if (wants_injection) {
+                // Re-detect rather than trusting whatever the settings screen
+                // last cached: the target could have been removed, or never
+                // set up at all. Injecting into a LayeredFS that isn't there
+                // would silently do nothing, which is worse than not trying.
+                auto& installer = romm::nso::NsoSnesInstaller::Instance();
+                installer.RefreshDetection();
+                const auto detection = installer.GetDetection();
+                if (!detection.found) {
+                    std::cerr << "[NSO] Skipping injection for " << title
+                              << ": no Switch Online target for " << canonical << std::endl;
+                } else {
+                    // A missing database is not a reason to refuse — the
+                    // pipeline creates one. What actually matters for SNES is
+                    // the Full Unlock, and even that is only a warning, since
+                    // it can live inside a custom NSP where romm-nx cannot see
+                    // it.
+                    task.inject_nso = true;
+                    if (!detection.database_exists) {
+                        std::cout << "[NSO] No database yet; one will be created at "
+                                  << detection.database_path << std::endl;
+                    }
+                    if (!detection.has_exefs_mod) {
+                        std::cerr << "[NSO] Warning: Full Unlock (exefs/subsdk9) not detected; "
+                                     "injected ROMs will not load without it" << std::endl;
+                    }
+                }
+            }
+        }
+
         std::string raw_cover_url = detail.path_cover_large;
         if (raw_cover_url.empty()) raw_cover_url = detail.path_cover_small;
         if (!raw_cover_url.empty()) {
@@ -985,7 +1079,7 @@ namespace romm::model {
         std::lock_guard<std::mutex> lock(task_mutex);
         for (auto it = download_queue.begin(); it != download_queue.end(); ) {
             if (it->rom_id == rom_id) {
-                if (it->state == DownloadState::DownloadingGame || it->state == DownloadState::DownloadingCover || it->state == DownloadState::SyncingCover || it->state == DownloadState::Preparing) {
+                if (it->state == DownloadState::DownloadingGame || it->state == DownloadState::DownloadingCover || it->state == DownloadState::SyncingCover || it->state == DownloadState::Injecting || it->state == DownloadState::Preparing) {
                     cancel_requested = true;
                     ++it;
                 } else {
@@ -1033,7 +1127,7 @@ namespace romm::model {
     DownloadTask DownloadManager::GetActiveDownloadSnapshot() {
         std::lock_guard<std::mutex> lock(task_mutex);
         for (const auto& t : download_queue) {
-            if (t.state == DownloadState::DownloadingGame || t.state == DownloadState::DownloadingCover || t.state == DownloadState::SyncingCover || t.state == DownloadState::Preparing) {
+            if (t.state == DownloadState::DownloadingGame || t.state == DownloadState::DownloadingCover || t.state == DownloadState::SyncingCover || t.state == DownloadState::Injecting || t.state == DownloadState::Preparing) {
                 return t;
             }
         }
@@ -1090,7 +1184,7 @@ namespace romm::model {
 
         std::lock_guard<std::mutex> lock(task_mutex);
         for (auto& t : download_queue) {
-            if (t.state == DownloadState::DownloadingGame || t.state == DownloadState::DownloadingCover || t.state == DownloadState::SyncingCover || t.state == DownloadState::Preparing) {
+            if (t.state == DownloadState::DownloadingGame || t.state == DownloadState::DownloadingCover || t.state == DownloadState::SyncingCover || t.state == DownloadState::Injecting || t.state == DownloadState::Preparing) {
                 t.downloaded_bytes.store(bytes);
                 if (dt > 250) {
                     t.download_speed_bps.store(current_speed);
@@ -1636,7 +1730,11 @@ namespace romm::model {
             bool task_failed = false;
             active_base_bytes.store(0);
 
-            for (size_t fi = 0; fi < current_task.files.size(); ++fi) {
+            // An injection-only retry already has its files on the SD card;
+            // only the Switch Online step is redone.
+            const bool skip_download = current_task.inject_only;
+
+            for (size_t fi = 0; !skip_download && fi < current_task.files.size(); ++fi) {
                 const DownloadFile df = current_task.files[fi];
 
                 // Mirror the current disc into the scalar fields the cover/index/UI
@@ -1896,6 +1994,76 @@ namespace romm::model {
                 SetTaskState(rom_id, DownloadState::Cancelled);
                 ScreenWakeManager::Instance().RequestUpdate();
                 continue;
+            }
+
+            // --- Switch Online injection ---------------------------------
+            //
+            // Runs inline, on this worker, deliberately: the download queue is
+            // already serialized, so injections serialize with it for free.
+            // A separate queue would have to be reconciled with the installer
+            // being single-flight, and a marked batch could outrun it.
+            //
+            // The ROM is on the SD card by this point and stays there whatever
+            // happens next, so a failed injection never fails the download —
+            // the game is still there for RetroArch or anything else.
+            bool inject_now = false;
+            std::string inject_title;
+            std::string inject_rom_path;
+            {
+                std::lock_guard<std::mutex> lock(task_mutex);
+                for (auto& t : download_queue) {
+                    if (t.rom_id != rom_id) continue;
+                    inject_now = t.inject_nso;
+                    inject_title = t.title;
+                    inject_rom_path = t.final_path;
+                    break;
+                }
+            }
+
+            if (inject_now && !cancel_requested) {
+                SetTaskState(rom_id, DownloadState::Injecting);
+                ScreenWakeManager::Instance().RequestUpdate();
+
+                romm::nso::NsoInstallRequest req;
+                req.rom_id = rom_id;
+                req.title = inject_title;
+                req.local_rom_path = inject_rom_path;
+                const auto outcome = romm::nso::NsoSnesInstaller::Instance().InstallSync(req);
+
+                if (outcome.success) {
+                    std::cout << "[NSO] Injected " << inject_title << " as " << outcome.code << std::endl;
+                } else {
+                    std::cerr << "[NSO] Injection failed for " << inject_title << ": " << outcome.error << std::endl;
+                    bool requeued = false;
+                    {
+                        std::lock_guard<std::mutex> lock(task_mutex);
+                        for (auto it = download_queue.begin(); it != download_queue.end(); ++it) {
+                            if (it->rom_id != rom_id) continue;
+                            it->inject_attempts++;
+                            it->error_message = outcome.error;
+                            // Only the fetch-and-write failures are worth
+                            // another go; a rejected mapping or a malformed
+                            // database gives the same answer every time.
+                            if (romm::nso::IsRetryableFailure(outcome.error_kind) && it->inject_attempts < 3) {
+                                // Goes to the BACK of the queue so one flaky
+                                // game never blocks the rest of a batch.
+                                DownloadTask retry = *it;
+                                retry.inject_only = true;
+                                retry.state = DownloadState::Queued;
+                                download_queue.erase(it);
+                                download_queue.push_back(retry);
+                                requeued = true;
+                            }
+                            break;
+                        }
+                    }
+                    if (requeued) {
+                        std::cout << "[NSO] Requeued " << inject_title << " for a retry" << std::endl;
+                        InvalidateInstallCache();
+                        ScreenWakeManager::Instance().RequestUpdate();
+                        continue;
+                    }
+                }
             }
 
             SetTaskState(rom_id, DownloadState::Completed);

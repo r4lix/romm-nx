@@ -1,4 +1,5 @@
 #include "QueueLayout.hpp"
+#include "../nso/NsoSnesInstaller.hpp"
 #include "PlaceholderCover.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "../model/DownloadManager.hpp"
@@ -21,7 +22,8 @@ namespace romm::ui {
         return s == romm::model::DownloadState::Preparing ||
                s == romm::model::DownloadState::DownloadingGame ||
                s == romm::model::DownloadState::DownloadingCover ||
-               s == romm::model::DownloadState::SyncingCover;
+               s == romm::model::DownloadState::SyncingCover ||
+               s == romm::model::DownloadState::Injecting;
     }
 
     static int StateSortRank(romm::model::DownloadState s) {
@@ -78,6 +80,20 @@ namespace romm::ui {
             case romm::model::DownloadState::DownloadingCover:
             case romm::model::DownloadState::SyncingCover:
                 return romm::i18n::tr("queue.status.cover_sync");
+            case romm::model::DownloadState::Injecting: {
+                // Live step from the injection pipeline, so the queue shows
+                // which of the 15 stages is running rather than a spinner.
+                const auto steps = romm::nso::NsoSnesInstaller::Instance().GetSteps();
+                for (size_t i = 0; i < steps.size(); ++i) {
+                    if (steps[i].status != romm::nso::NsoStepStatus::Running) continue;
+                    return romm::i18n::format("queue.status.injecting_step", {
+                        {"step", steps[i].name},
+                        {"index", std::to_string(i + 1)},
+                        {"total", std::to_string(steps.size())}
+                    });
+                }
+                return romm::i18n::tr("queue.status.injecting");
+            }
             case romm::model::DownloadState::Queued:
                 return romm::i18n::tr("queue.status.queued");
             case romm::model::DownloadState::Completed:

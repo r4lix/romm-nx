@@ -14,6 +14,8 @@
 #include "../ui/AlphabetBar.hpp"
 #include "../ui/MainApplication.hpp"
 #include "../model/ConfigManager.hpp"
+#include "../model/PlatformCatalog.hpp"
+#include "../nso/NsoSnesInstaller.hpp"
 #include "../i18n/I18n.hpp"
 #include <sstream>
 #include <chrono>
@@ -216,6 +218,105 @@ namespace romm::navigation {
         }
     }
 
+    // Ask mode, resolved at the only moment it can be: after the user asks for
+    // the download and before the task exists.
+    bool NavigationManager::MaybePromptNsoInjection(int rom_id, const std::string& platform_slug,
+                                                    const std::string& title) {
+        const std::string canonical = romm::model::ResolvePlatformIdentity(platform_slug, "");
+        if (!romm::nso::PlatformSupportsInjection(canonical)) return false;
+
+        auto& config = romm::model::ConfigManager::Instance();
+        if (config.GetNsoInjectionMode(canonical) != romm::model::NsoInjectionMode::Ask) return false;
+
+        // Re-detect rather than trusting a cached answer: asking "install this
+        // into Switch Online?" when there is nothing to install into is a
+        // question with no useful answer, so in that case the download just
+        // proceeds as normal.
+        auto& installer = romm::nso::NsoSnesInstaller::Instance();
+        installer.RefreshDetection();
+        const auto detection = installer.GetDetection();
+        if (!detection.found) {
+            std::cout << "[NSO] " << title << ": platform is set to ask, but no Switch Online target for "
+                      << canonical << "; downloading without injection" << std::endl;
+            return false;
+        }
+
+        nso_inject_modal = NsoInjectModalPayload();
+        nso_inject_modal.rom_id = rom_id;
+        nso_inject_modal.platform_slug = platform_slug;
+        nso_inject_modal.canonical_id = canonical;
+        nso_inject_modal.platform_name = romm::model::GetPlatformDisplayName(canonical, "");
+        nso_inject_modal.title = title;
+        nso_inject_modal.has_exefs_mod = detection.has_exefs_mod;
+        nso_inject_modal.selected_row = (size_t)NsoInjectChoiceRow::InjectOnce;
+        nso_inject_modal.source_screen = current_screen;
+        nso_inject_modal.active = true;
+        std::cout << "[NSO] Asking about injection for rom_id=" << rom_id
+                  << " platform=" << canonical << std::endl;
+        return true;
+    }
+
+    void NavigationManager::HandleNsoInjectModalInput(u64 keys_down) {
+        if (!nso_inject_modal.active) return;
+
+        constexpr size_t kRowCount = (size_t)NsoInjectChoiceRow::Count;
+
+        if (keys_down & HidNpadButton_B) {
+            // Cancel means cancel: nothing is downloaded and nothing is
+            // written. Skipping only the injection is the "Download only" row.
+            nso_inject_modal.active = false;
+            std::cout << "[NSO] Injection prompt cancelled for rom_id=" << nso_inject_modal.rom_id << std::endl;
+            return;
+        }
+        if (keys_down & (HidNpadButton_Up | HidNpadButton_StickLUp)) {
+            if (nso_inject_modal.selected_row > 0) nso_inject_modal.selected_row--;
+            return;
+        }
+        if (keys_down & (HidNpadButton_Down | HidNpadButton_StickLDown)) {
+            if (nso_inject_modal.selected_row + 1 < kRowCount) nso_inject_modal.selected_row++;
+            return;
+        }
+        if (!(keys_down & HidNpadButton_A)) return;
+
+        const auto row = (NsoInjectChoiceRow)nso_inject_modal.selected_row;
+        const bool inject = (row == NsoInjectChoiceRow::InjectOnce || row == NsoInjectChoiceRow::AlwaysInject);
+
+        // "Always" / "Never" are the don't-ask-again affordance: they answer
+        // this download AND rewrite the per-platform setting, so the same
+        // question isn't asked for the next game on that platform.
+        if (row == NsoInjectChoiceRow::AlwaysInject || row == NsoInjectChoiceRow::NeverInject) {
+            const auto mode = (row == NsoInjectChoiceRow::AlwaysInject) ? romm::model::NsoInjectionMode::Always
+                                                                       : romm::model::NsoInjectionMode::Off;
+            auto& config = romm::model::ConfigManager::Instance();
+            config.SetNsoInjectionMode(nso_inject_modal.canonical_id, mode);
+            config.Save();
+            std::cout << "[NSO] platform=" << nso_inject_modal.canonical_id << " injection="
+                      << romm::model::ConfigManager::NsoInjectionModeToString(mode)
+                      << " (set from the download prompt)" << std::endl;
+        }
+
+        const int rom_id = nso_inject_modal.rom_id;
+        const std::string slug = nso_inject_modal.platform_slug;
+        const std::string title = nso_inject_modal.title;
+        nso_inject_modal.active = false;
+
+        // The detail is re-read rather than captured: the modal outlives the
+        // frame that raised it, and the cache is what every other download path
+        // reads too. It is missing only if the model was rebuilt underneath us,
+        // in which case there is nothing to enqueue.
+        const auto* detail = model ? model->GetCachedDetail(rom_id) : nullptr;
+        if (!detail) {
+            std::cerr << "[NSO] Injection prompt answered but detail for rom " << rom_id
+                      << " is no longer cached; nothing enqueued" << std::endl;
+            return;
+        }
+
+        romm::model::DownloadManager::Instance().EnqueueDownload(
+            *detail, slug, title,
+            inject ? romm::model::InjectChoice::Yes : romm::model::InjectChoice::No);
+        UpdateLayoutSelection();
+    }
+
     void NavigationManager::HandleLibraryMenuInput(u64 keys_down) {
         if (!library_menu_active) return;
 
@@ -397,6 +498,11 @@ namespace romm::navigation {
         // Block all background input if modal is active
         if (uninstall_modal.active) {
             HandleUninstallModalInput(keys_down);
+            return;
+        }
+
+        if (nso_inject_modal.active) {
+            HandleNsoInjectModalInput(keys_down);
             return;
         }
 
@@ -961,7 +1067,11 @@ namespace romm::navigation {
                                 dl_mgr.RetryFailed(rom_id);
                             } else if (action == romm::ui::DownloadActionState::Download ||
                                        action == romm::ui::DownloadActionState::AddToQueue) {
-                                dl_mgr.EnqueueDownload(*detail, slug, game.title);
+                                // Ask mode answers the injection question here;
+                                // the modal's own handler does the enqueue.
+                                if (!MaybePromptNsoInjection(rom_id, slug, game.title)) {
+                                    dl_mgr.EnqueueDownload(*detail, slug, game.title);
+                                }
                             }
                             state_changed = true;
                         }
@@ -1095,7 +1205,11 @@ namespace romm::navigation {
                                 } else if (action == romm::ui::DownloadActionState::Failed) {
                                     dl_mgr.RetryFailed(rom_id);
                                 } else if (action == romm::ui::DownloadActionState::Download || action == romm::ui::DownloadActionState::AddToQueue) {
-                                    dl_mgr.EnqueueDownload(*detail, detail_layout->ctx.platform_slug, detail_layout->ctx.title);
+                                    // Same Ask resolution as the library grid.
+                                    if (!MaybePromptNsoInjection(rom_id, detail_layout->ctx.platform_slug,
+                                                                 detail_layout->ctx.title)) {
+                                        dl_mgr.EnqueueDownload(*detail, detail_layout->ctx.platform_slug, detail_layout->ctx.title);
+                                    }
                                 }
                             }
                         } else {

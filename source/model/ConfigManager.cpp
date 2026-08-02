@@ -244,6 +244,37 @@ namespace romm::model {
         return "sdmc:/roms/" + platform + "/";
     }
 
+    std::string ConfigManager::NsoInjectionModeToString(NsoInjectionMode mode) {
+        switch (mode) {
+            case NsoInjectionMode::Ask: return "ask";
+            case NsoInjectionMode::Always: return "always";
+            case NsoInjectionMode::Off: break;
+        }
+        return "off";
+    }
+
+    NsoInjectionMode ConfigManager::NsoInjectionModeFromString(const std::string& value) {
+        if (value == "ask") return NsoInjectionMode::Ask;
+        if (value == "always") return NsoInjectionMode::Always;
+        return NsoInjectionMode::Off;
+    }
+
+    NsoInjectionMode ConfigManager::GetNsoInjectionMode(const std::string& platform) const {
+        auto it = nso_injection.find(platform);
+        return (it == nso_injection.end()) ? NsoInjectionMode::Off : it->second;
+    }
+
+    void ConfigManager::SetNsoInjectionMode(const std::string& platform, NsoInjectionMode mode) {
+        if (platform.empty()) return;
+        if (mode == NsoInjectionMode::Off) {
+            // Off is the default, so it is not persisted - keeps config.json
+            // free of a row for every platform the user never touched.
+            nso_injection.erase(platform);
+        } else {
+            nso_injection[platform] = mode;
+        }
+    }
+
     void ConfigManager::SetRomPath(const std::string& platform, const std::string& path) {
         std::string p = path;
         if (!p.empty() && p.back() != '/') {
@@ -513,6 +544,19 @@ namespace romm::model {
             }
         }
 
+        // Injection modes, keyed by canonical platform id. Absent is Off.
+        {
+            std::map<std::string, std::string> modes;
+            if (extractObject(content, "nso_injection", modes)) {
+                nso_injection.clear();
+                for (const auto& entry : modes) {
+                    if (entry.first.empty()) continue;
+                    const NsoInjectionMode mode = NsoInjectionModeFromString(entry.second);
+                    if (mode != NsoInjectionMode::Off) nso_injection[entry.first] = mode;
+                }
+            }
+        }
+
         is_valid = true;
         error_message = "";
 
@@ -575,6 +619,16 @@ namespace romm::model {
         content += "    \"server_url\": \"" + romm_host + "\",\n";
         content += "    \"api_key\": \"" + api_key + "\"\n";
         content += "  },\n";
+        content += "  \"nso_injection\": {\n";
+        {
+            bool first_nso = true;
+            for (const auto& pair : nso_injection) {
+                if (!first_nso) content += ",\n";
+                first_nso = false;
+                content += "    \"" + pair.first + "\": \"" + NsoInjectionModeToString(pair.second) + "\"";
+            }
+        }
+        content += "\n  },\n";
         content += "  \"rom_paths\": {\n";
         bool first = true;
         for (const auto& pair : rom_paths) {

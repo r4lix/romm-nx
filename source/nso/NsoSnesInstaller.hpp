@@ -61,13 +61,37 @@ namespace romm::nso {
         std::string title;          // display title from RomM
         std::string rom_filename;   // name the RomM content endpoint expects
         std::string cover_url;      // absolute, already resolved
+        // Set when the ROM is already on the SD card (the download flow has
+        // just fetched it). The pipeline then copies it into staging instead of
+        // downloading it again — which also means a retry never re-fetches a
+        // multi-megabyte file it already has.
+        std::string local_rom_path;
     };
+
+    struct NsoInstallOutcome {
+        bool success = false;
+        NsoErrorKind error_kind = NsoErrorKind::None;
+        std::string error;
+        std::string code; // the S-#### slot it landed in, on success
+    };
+
+    // Whether trying the same ROM again could plausibly give a different
+    // answer. Only the fetch-and-write failures qualify: a ROM rejected for its
+    // mapping, a malformed database or a failed validation is deterministic, so
+    // retrying it just re-downloads the ROM to reach the identical conclusion.
+    bool IsRetryableFailure(NsoErrorKind kind);
 
     // Root of everything romm-nx writes for this feature.
     constexpr const char* kNsoRoot = "sdmc:/switch/romm-nx/nso-snes";
     constexpr const char* kStagingDir = "sdmc:/switch/romm-nx/nso-snes/staging";
     constexpr const char* kBackupsDir = "sdmc:/switch/romm-nx/nso-snes/backups";
     constexpr const char* kInjectedIndex = "sdmc:/switch/romm-nx/nso-snes/injected.txt";
+
+    // Whether romm-nx knows how to build Switch Online files for a platform.
+    // SNES only today: every other NSO app needs its own ROM container, cover
+    // format and per-platform database fields established from real reference
+    // files before it can be offered.
+    bool PlatformSupportsInjection(const std::string& canonical_platform_id);
 
     class NsoSnesInstaller {
     public:
@@ -80,6 +104,24 @@ namespace romm::nso {
 
         void StartInstall(const NsoInstallRequest& request);
         void StartRestore();
+
+        // Runs the pipeline on the CALLING thread and returns when it is done.
+        // The download worker uses this: its queue is already serialized, so
+        // injections serialize with it for free — no second queue, and no way
+        // for a batch to outrun a single-flight installer. Blocks while a
+        // manual install from the settings screen is in flight.
+        NsoInstallOutcome InstallSync(const NsoInstallRequest& request);
+
+        // Removes a previously injected game: its database entry, its per-title
+        // strings and its asset folder. Called when the ROM is uninstalled, so
+        // the two stay in step instead of leaving an entry pointing at files
+        // that are gone. A game romm-nx never injected is a no-op, not an error.
+        //
+        // `title` is only a fallback, for index lines an earlier build wrote
+        // without a rom_id (those load back as 0 and can never match one).
+        // It is matched exactly, and only against those rom_id-less entries, so
+        // a correctly recorded game is never removed by a title coincidence.
+        NsoInstallOutcome UninstallSync(int rom_id, const std::string& title = "");
 
         bool IsBusy() const { return busy.load(); }
         NsoPipelineState GetState() const;
@@ -125,6 +167,8 @@ namespace romm::nso {
         std::string summary;
         std::vector<NsoStep> steps;
         NsoSnesInstall detection;
+        // The S-#### slot the last successful run used, for the caller's report.
+        std::string install_code;
     };
 
 }

@@ -97,6 +97,22 @@ namespace romm::ui {
         LoadSnesLibrary();
     }
 
+    void NsoSnesModal::ShowRestore() {
+        auto& installer = romm::nso::NsoSnesInstaller::Instance();
+        if (!installer.HasBackup() || installer.IsBusy()) return;
+
+        active = true;
+        page = Page::Progress;
+        overview_row = 1; // Restore, so B lands back on the row that started it
+        RefreshDetection();
+        // Backing out of the progress page lands on the overview, which reads
+        // the library for its first row — fetch it now rather than leaving that
+        // row saying the library is empty.
+        LoadSnesLibrary();
+        std::cout << "[NSO-SNES] Restore requested from Settings > Switch Online" << std::endl;
+        installer.StartRestore();
+    }
+
     void NsoSnesModal::Hide() {
         active = false;
         pending_fetch.reset();

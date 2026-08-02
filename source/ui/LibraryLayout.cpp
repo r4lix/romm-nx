@@ -7,6 +7,7 @@
 #include "LibraryMenuModal.hpp"
 #include "StatusBar.hpp"
 #include "UninstallConfirmModal.hpp"
+#include "NsoInjectChoiceModal.hpp"
 #include "../i18n/I18n.hpp"
 
 namespace romm::ui {
@@ -56,6 +57,10 @@ namespace romm::ui {
         // NavigationManager gates all input on uninstall_modal.active, so a
         // layout that can raise the modal but not draw it would soft-lock.
         this->Add(romm::ui::UninstallConfirmModal::New(nav));
+
+        // Switch Online "Ask each time" prompt, for the same reason: the panel's
+        // download action can raise it without leaving the Library screen.
+        this->Add(romm::ui::NsoInjectChoiceModal::New(nav));
 
         // Y-Menu overlay — added last so it renders on top of everything else
         library_menu_modal = LibraryMenuModal::New(nav);

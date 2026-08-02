@@ -281,6 +281,10 @@ namespace romm::nso {
         struct InjectedEntry {
             std::string code;
             std::string title;
+            // Lets uninstall find the entry without re-hashing the ROM — which
+            // would not match anyway for a dump that carried a copier header,
+            // since the recorded hash is of the normalized image.
+            int rom_id = 0;
         };
 
         std::map<std::string, InjectedEntry> LoadInjectedIndex() {
@@ -305,7 +309,13 @@ namespace romm::nso {
                     entry.code = line.substr(tab + 1);
                 } else {
                     entry.code = line.substr(tab + 1, tab2 - tab - 1);
-                    entry.title = line.substr(tab2 + 1);
+                    const size_t tab3 = line.find('	', tab2 + 1);
+                    if (tab3 == std::string::npos) {
+                        entry.title = line.substr(tab2 + 1);   // written by an earlier build
+                    } else {
+                        entry.title = line.substr(tab2 + 1, tab3 - tab2 - 1);
+                        entry.rom_id = (int)std::strtol(line.substr(tab3 + 1).c_str(), nullptr, 10);
+                    }
                 }
                 if (!hash.empty() && !entry.code.empty()) out[hash] = entry;
             }
@@ -315,7 +325,13 @@ namespace romm::nso {
         void SaveInjectedIndex(const std::map<std::string, InjectedEntry>& index) {
             std::string text;
             for (const auto& entry : index) {
-                text += entry.first + "\t" + entry.second.code + "\t" + entry.second.title + "\n";
+                // Four fields. rom_id was added to InjectedEntry and to the
+                // reader but not here, so every line was written with three and
+                // read back with rom_id 0 — which made UninstallSync's rom_id
+                // lookup miss every entry and silently report "never injected",
+                // leaving uninstalled games sitting in the Switch Online app.
+                text += entry.first + "\t" + entry.second.code + "\t" + entry.second.title
+                      + "\t" + std::to_string(entry.second.rom_id) + "\n";
             }
             std::string error;
             EnsureDir(kNsoRoot);
@@ -323,6 +339,24 @@ namespace romm::nso {
         }
 
     } // namespace
+
+    bool IsRetryableFailure(NsoErrorKind kind) {
+        switch (kind) {
+            case NsoErrorKind::SourceDownload: // network blip
+            case NsoErrorKind::CoverDecode:    // cover fetch failed
+            case NsoErrorKind::FileWrite:      // SD hiccup
+                return true;
+            default:
+                // Everything else is deterministic: an unsupported mapping, a
+                // malformed database, a failed validation or a full card gives
+                // the same answer next time, and InsufficientSpace gets worse.
+                return false;
+        }
+    }
+
+    bool PlatformSupportsInjection(const std::string& canonical_platform_id) {
+        return canonical_platform_id == "snes";
+    }
 
     NsoSnesInstaller& NsoSnesInstaller::Instance() {
         static NsoSnesInstaller inst;
@@ -400,6 +434,7 @@ namespace romm::nso {
         error_kind = NsoErrorKind::None;
         error_message.clear();
         summary.clear();
+        install_code.clear();
     }
 
     void NsoSnesInstaller::BeginStep(size_t index) {
@@ -476,6 +511,164 @@ namespace romm::nso {
         }
         pthread_detach(thread);
         return true;
+    }
+
+    NsoInstallOutcome NsoSnesInstaller::InstallSync(const NsoInstallRequest& request) {
+        // Wait out a manual install rather than dropping this one on the floor.
+        bool expected = false;
+        while (!busy.compare_exchange_strong(expected, true)) {
+            expected = false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        ResetSteps({});
+        RunInstall(request);
+        busy.store(false);
+
+        NsoInstallOutcome outcome;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            outcome.success = (state == NsoPipelineState::Success);
+            outcome.error_kind = error_kind;
+            outcome.error = error_message;
+            outcome.code = install_code;
+        }
+        return outcome;
+    }
+
+
+    NsoInstallOutcome NsoSnesInstaller::UninstallSync(int rom_id, const std::string& fallback_title) {
+        NsoInstallOutcome outcome;
+        auto& log = NsoLog::Instance();
+
+        auto index = LoadInjectedIndex();
+        std::string hash, code, title;
+        for (const auto& entry : index) {
+            if (entry.second.rom_id != rom_id || entry.second.code.empty()) continue;
+            hash = entry.first; code = entry.second.code; title = entry.second.title;
+            break;
+        }
+        // Nothing matched by rom_id: the entry may predate the index carrying
+        // one (those read back as 0). Match those, and only those, by title, so
+        // a game injected by an earlier build is still removable.
+        bool matched_by_title = false;
+        if (code.empty() && !fallback_title.empty()) {
+            for (const auto& entry : index) {
+                if (entry.second.rom_id != 0 || entry.second.code.empty()) continue;
+                if (entry.second.title != fallback_title) continue;
+                hash = entry.first; code = entry.second.code; title = entry.second.title;
+                matched_by_title = true;
+                break;
+            }
+        }
+        if (code.empty()) {
+            outcome.success = true; // never injected by romm-nx
+            return outcome;
+        }
+
+        bool expected = false;
+        while (!busy.compare_exchange_strong(expected, true)) {
+            expected = false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+
+        log.BeginSession("Remove \"" + title + "\" (" + code + ") from SNES Online");
+        if (matched_by_title) {
+            log.Line("matched by title: this index entry was written before rom_id was recorded");
+        }
+        auto finish = [&](bool ok, const std::string& why) {
+            log.EndSession(ok, why);
+            busy.store(false);
+            outcome.success = ok;
+            outcome.error = ok ? "" : why;
+            outcome.code = code;
+            return outcome;
+        };
+
+        NsoSnesInstall install = DetectNsoSnes();
+        if (!install.found) return finish(false, "no SNES Online LayeredFS found");
+
+        TitlesDb db;
+        if (!LoadTitlesDb(install.database_path, db)) return finish(false, db.error);
+
+        std::string new_db;
+        bool found_entry = false;
+        std::string error;
+        if (!RemoveTitleEntry(db, code, new_db, found_entry, error)) return finish(false, error);
+
+        // Strings first (in memory), so nothing is written until every edit is
+        // known to be valid.
+        std::vector<std::pair<std::string, std::string>> new_strings;
+        for (const std::string& file : install.strings_files) {
+            std::string original;
+            if (!ReadFileText(file, original)) continue;
+            std::string patched;
+            bool changed = false;
+            if (!UnpatchStringsFile(original, code, patched, changed, error)) return finish(false, error);
+            if (changed) new_strings.emplace_back(file, patched);
+        }
+
+        const std::string title_dir = install.titles_dir + "/" + code;
+        const std::string backup_dir = std::string(kBackupsDir) + "/" + NowStamp(true);
+        EnsureDir(backup_dir);
+        if (!IsDirectory(backup_dir)) return finish(false, "cannot create " + backup_dir);
+
+        // Back up everything about to be removed, using the same manifest the
+        // restore action already understands.
+        std::vector<BackupRecord> records;
+        std::string copy_error;
+        auto back_up = [&](const std::string& target, const std::string& name) {
+            if (!PathExists(target)) return true;
+            if (!CopyFile(target, backup_dir + "/" + name, copy_error)) return false;
+            records.push_back({'R', name, target});
+            return true;
+        };
+        if (!back_up(install.database_path, "lclassics.titlesdb")) return finish(false, copy_error);
+        for (size_t i = 0; i < new_strings.size(); ++i) {
+            if (!back_up(new_strings[i].first, "strings_" + std::to_string(i) + ".lng")) return finish(false, copy_error);
+        }
+        const char* kAssetSuffix[4] = {".sfrom", ".sfromsig", ".png", "-details.png"};
+        for (int i = 0; i < 4; ++i) {
+            if (!back_up(title_dir + "/" + code + kAssetSuffix[i], "asset_" + std::to_string(i))) {
+                return finish(false, copy_error);
+            }
+        }
+
+        {
+            std::string manifest;
+            manifest += "version=1\n";
+            manifest += "timestamp=" + NowStamp(false) + "\n";
+            manifest += "title_id=" + install.title_id + "\n";
+            manifest += "code=" + code + "\n";
+            manifest += "title=" + title + "\n";
+            manifest += "sha256=" + hash + "\n";
+            manifest += "database=" + install.database_path + "\n";
+            for (const auto& r : records) {
+                manifest += std::string(1, r.kind) + "\t" + r.backup_name + "\t" + r.target + "\n";
+            }
+            std::string manifest_error;
+            if (!WriteFileAtomic(backup_dir + "/manifest.txt", manifest, manifest_error)) {
+                return finish(false, manifest_error);
+            }
+        }
+        log.KV("backup.dir", backup_dir);
+
+        for (const auto& entry : new_strings) {
+            std::string write_error;
+            if (!WriteFileAtomic(entry.first, entry.second, write_error)) return finish(false, write_error);
+            log.Line("unpatched " + entry.first);
+        }
+        if (found_entry) {
+            std::string write_error;
+            if (!WriteFileAtomic(install.database_path, new_db, write_error)) return finish(false, write_error);
+            log.Line("removed " + code + " from " + install.database_path);
+        }
+        RemoveDirectoryTree(title_dir);
+        log.Line("removed " + title_dir);
+
+        index.erase(hash);
+        SaveInjectedIndex(index);
+        RefreshDetection();
+        return finish(true, title + " removed");
     }
 
     void NsoSnesInstaller::StartInstall(const NsoInstallRequest& request) {
@@ -683,12 +876,23 @@ namespace romm::nso {
         // --- 3. ROM download ----------------------------------------------
         BeginStep(3);
         const std::string staged_rom = std::string(kStagingDir) + "/source.rom";
-        if (request.rom_filename.empty() || request.file_id == 0) {
+        if (!request.local_rom_path.empty() && FileSize(request.local_rom_path) > 0) {
+            // The download flow already fetched this ROM. Copy it into staging
+            // rather than pulling it down a second time — which is also what
+            // makes a retry cheap.
+            log.KV("rom.source", "already on SD: " + request.local_rom_path);
+            std::string copy_error;
+            if (!CopyFile(request.local_rom_path, staged_rom, copy_error)) {
+                FailStep(3, ClassifyWriteFailure(), copy_error);
+                log.EndSession(false, "staging the local ROM failed");
+                return;
+            }
+            FinishStep(3, HumanBytes(FileSize(staged_rom)) + " (already downloaded)");
+        } else if (request.rom_filename.empty() || request.file_id == 0) {
             FailStep(3, NsoErrorKind::SourceDownload, "RomM did not report a downloadable file for this ROM");
             log.EndSession(false, "no file to download");
             return;
-        }
-        {
+        } else {
             const std::string url = config.GetRommHost() + "/api/roms/" + std::to_string(request.file_id) +
                                     "/files/content/" + UrlEncode(request.rom_filename);
             log.KV("download.rom_url", SafeUrlForLog(url));
@@ -710,10 +914,9 @@ namespace romm::nso {
                 log.EndSession(false, "ROM download failed");
                 return;
             }
+            FinishStep(3, HumanBytes(FileSize(staged_rom)));
         }
-        const long long rom_bytes = FileSize(staged_rom);
-        log.KV("download.rom_bytes", std::to_string(rom_bytes));
-        FinishStep(3, HumanBytes(rom_bytes));
+        log.KV("rom.staged_bytes", std::to_string(FileSize(staged_rom)));
 
         // --- 4. Cover download --------------------------------------------
         BeginStep(4);
@@ -820,6 +1023,18 @@ namespace romm::nso {
 
         // --- 8. Database entry ---------------------------------------------
         BeginStep(8);
+        if (!install.database_exists) {
+            // App and mod are there, LayeredFS isn't yet. Create the database
+            // rather than refusing — this is exactly the "empty database, user
+            // installs what they want" setup.
+            std::string create_error;
+            if (!CreateEmptyDatabase(install, create_error)) {
+                FailStep(8, ClassifyWriteFailure(), create_error);
+                log.EndSession(false, "could not create the database");
+                return;
+            }
+            log.KV("db.created", install.database_path);
+        }
         log.Line("parsing " + install.database_path);
         TitlesDb db;
         if (!LoadTitlesDb(install.database_path, db)) {
@@ -1161,7 +1376,7 @@ namespace romm::nso {
         // Record the hash -> code mapping so a reinstall reuses this slot.
         {
             auto index = LoadInjectedIndex();
-            index[conversion.rom.sha256] = InjectedEntry{code, meta.title};
+            index[conversion.rom.sha256] = InjectedEntry{code, meta.title, request.rom_id};
             SaveInjectedIndex(index);
         }
 

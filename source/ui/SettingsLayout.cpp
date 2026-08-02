@@ -12,6 +12,7 @@
 #include "MainApplication.hpp"
 #include "GlobalProgressBar.hpp"
 #include "NsoSnesModal.hpp"
+#include "../nso/NsoSnesInstaller.hpp"
 #include "../model/AudioManager.hpp"
 #include "../model/PlatformCatalog.hpp"
 #include "../model/DataModel.hpp"
@@ -208,6 +209,7 @@ namespace romm::ui {
             "settings.category.theme",
             "settings.category.connection",
             "settings.category.platforms",
+            "settings.category.switch_online",
             "settings.category.advanced",
             "settings.category.updates",
             "settings.category.debug"
@@ -266,7 +268,10 @@ namespace romm::ui {
         // Rows of the per-platform screen, in order: Visible, ROM folder, then
         // BIOS / Save data / Emulator, which are placeholders until the features
         // behind them exist. Selectable rows are a contiguous prefix.
-        const std::vector<bool> kRomPathRowDisabled = {false, false, true, true, true};
+        // Rows of the per-platform screen: Visible, ROM folder, Switch Online,
+        // then BIOS / Save data / Emulator, which are placeholders until the
+        // features behind them exist. Selectable rows are a contiguous prefix.
+        const std::vector<bool> kRomPathRowDisabled = {false, false, false, true, true, true};
     }
 
     SettingsCategory CategoryAt(size_t index) {
@@ -585,6 +590,73 @@ namespace romm::ui {
             // Custom drawing: the platform list and the selected platform's
             // rows both need their own scroll windows.
             break;
+        case SettingsCategory::SwitchOnline: {
+            // The setup checklist. Every row answers one question about whether
+            // an injection can work at all, in the order it matters: is the app
+            // there, is the signature check gone, is there a database, will the
+            // descriptions render. Nothing here writes anything.
+            const auto detection = romm::nso::NsoSnesInstaller::Instance().GetDetection();
+            const pu::ui::Color ok(126, 200, 145, 255);
+            const pu::ui::Color bad(232, 118, 118, 255);
+            const pu::ui::Color warn(240, 190, 90, 255);
+            const pu::ui::Color info(190, 180, 225, 255);
+
+            auto checklist = [&options](const char* label_key, const std::string& value, pu::ui::Color color) {
+                OptionRenderEntry row;
+                row.label = romm::i18n::tr(label_key);
+                row.value = value;
+                row.tint_value = true;
+                row.value_tint = color;
+                options.push_back(row);
+            };
+
+            // Title id: a 16-hex-digit identifier, never translated.
+            checklist("settings.nso.app",
+                      detection.found ? detection.title_id : romm::i18n::tr("settings.nso.not_found"),
+                      detection.found ? ok : bad);
+
+            // A missing Full Unlock is a warning, not a blocker: it can live
+            // inside a custom NSP where romm-nx cannot see it.
+            checklist("settings.nso.full_unlock",
+                      romm::i18n::tr(detection.has_exefs_mod ? "nso.snes.detect.mod_present"
+                                                             : "nso.snes.detect.mod_absent"),
+                      detection.has_exefs_mod ? ok : warn);
+
+            // "Will be created" is only true when there is an app to create it
+            // in; with no app at all the honest answer is the same "not found"
+            // as the row above.
+            checklist("settings.nso.database",
+                      !detection.found  ? romm::i18n::tr("settings.nso.not_found")
+                      : detection.database_exists ? truncatePath(detection.database_path, 62)
+                                                  : romm::i18n::tr("settings.nso.database_pending"),
+                      !detection.found ? bad : (detection.database_exists ? ok : info));
+
+            // Language codes as the LayeredFS stores them ("en", "fr").
+            std::string langs;
+            for (size_t i = 0; i < detection.strings_languages.size(); ++i) {
+                if (i) langs += ", ";
+                langs += detection.strings_languages[i];
+            }
+            // romm-nx never creates a strings.lng: LayeredFS replaces files
+            // wholesale, so a partial one would blank every other string in the
+            // app. Without one, injected games simply show no description.
+            checklist("settings.nso.strings",
+                      !detection.found ? romm::i18n::tr("settings.nso.not_found")
+                      : langs.empty()  ? romm::i18n::tr("settings.nso.strings_none")
+                                       : langs,
+                      !detection.found ? bad : (langs.empty() ? warn : ok));
+
+            auto& installer = romm::nso::NsoSnesInstaller::Instance();
+            const std::string backup = installer.LatestBackupPath();
+            options.push_back({romm::i18n::tr("settings.nso.restore"),
+                               backup.empty() ? romm::i18n::tr("nso.snes.restore.none")
+                                              : truncatePath(backup, 48),
+                               true});
+            options.push_back({romm::i18n::tr("settings.nso.manual"),
+                               romm::i18n::tr("settings.nso.manual_value"), true});
+            options.push_back({romm::i18n::tr("settings.nso.log"), truncatePath(installer.LogPath(), 62)});
+            break;
+        }
         case SettingsCategory::Advanced: {
             std::string cover_sz = romm::i18n::tr("settings.advanced.calculating");
             std::string total_sz = cover_sz;
@@ -610,8 +682,9 @@ namespace romm::ui {
                                romm::i18n::format("settings.advanced.size_value", {{"size", std::to_string(config.GetMaxSizeMb())}})});
             options.push_back({romm::i18n::tr("settings.advanced.max_age"),
                                romm::i18n::format("settings.advanced.age_value", {{"days", std::to_string(config.GetMaxAgeDays())}})});
-            options.push_back({romm::i18n::tr("settings.advanced.nso_snes"),
-                               romm::i18n::tr("settings.advanced.nso_snes_open"), true});
+            // The SNES Online injection screen used to be the last row here.
+            // It lives in its own Switch Online tab now, together with the
+            // setup checklist that explains whether it can work at all.
             break;
         }
         case SettingsCategory::Updates: {
@@ -662,7 +735,7 @@ namespace romm::ui {
             // Populating active download title
             std::string active_title = romm::i18n::tr("common.none");
             auto active_task = romm::model::DownloadManager::Instance().GetActiveDownloadSnapshot();
-            if (active_task.rom_id > 0 && (active_task.state == romm::model::DownloadState::DownloadingGame || active_task.state == romm::model::DownloadState::DownloadingCover || active_task.state == romm::model::DownloadState::SyncingCover || active_task.state == romm::model::DownloadState::Preparing)) {
+            if (active_task.rom_id > 0 && (active_task.state == romm::model::DownloadState::DownloadingGame || active_task.state == romm::model::DownloadState::DownloadingCover || active_task.state == romm::model::DownloadState::SyncingCover || active_task.state == romm::model::DownloadState::Injecting || active_task.state == romm::model::DownloadState::Preparing)) {
                 active_title = active_task.title;
                 if (active_title.size() > 22) {
                     active_title = active_title.substr(0, 19) + "...";
@@ -763,6 +836,9 @@ namespace romm::ui {
                     // now language-dependent (Connection tab, "Test Connection").
                     if (CategoryAt(active_cat) == SettingsCategory::Connection && j == 2) {
                         val_color = connection_status_color;
+                    }
+                    if (options[j].tint_value) {
+                        val_color = options[j].value_tint;
                     }
 
                     auto val_tex = pu::ui::render::RenderText("Ubuntu@24", options[j].value, val_color);
@@ -1056,12 +1132,45 @@ namespace romm::ui {
             const pu::ui::Color muted(140, 140, 150, 255);
             const pu::ui::Color dim(100, 100, 110, 255);
 
+            // Switch Online is only offered where romm-nx actually knows how to
+            // build that platform's files; elsewhere the row is present but
+            // inert, so the list reads the same for every platform.
+            const bool nso_supported = romm::nso::PlatformSupportsInjection(plat.canonical_id);
+            const auto nso_mode = config.GetNsoInjectionMode(plat.canonical_id);
+            std::string nso_value;
+            pu::ui::Color nso_color = muted;
+            if (!nso_supported) {
+                nso_value = romm::i18n::tr("settings.platform.nso.unsupported");
+                nso_color = dim;
+            } else {
+                // A mode that cannot run is worth saying out loud on the row
+                // itself; the setting is legitimate (the user may set the
+                // console up later), it just has nothing to write into yet.
+                const bool nso_ready = romm::nso::NsoSnesInstaller::Instance().GetDetection().found;
+                switch (nso_mode) {
+                    case romm::model::NsoInjectionMode::Always:
+                        nso_value = nso_ready ? romm::i18n::tr("settings.platform.nso.always")
+                                              : romm::i18n::tr("settings.platform.nso.not_ready");
+                        nso_color = nso_ready ? green : muted;
+                        break;
+                    case romm::model::NsoInjectionMode::Ask:
+                        nso_value = nso_ready ? romm::i18n::tr("settings.platform.nso.ask")
+                                              : romm::i18n::tr("settings.platform.nso.not_ready");
+                        nso_color = nso_ready ? accent : muted;
+                        break;
+                    case romm::model::NsoInjectionMode::Off:
+                        nso_value = romm::i18n::tr("settings.platform.nso.off");
+                        break;
+                }
+            }
+
             std::vector<DetailRow> rows = {
                 {romm::i18n::tr("settings.platform.visible"),
                  romm::i18n::tr(shown ? "settings.platforms.shown" : "settings.platforms.hidden"),
                  false, shown ? green : muted},
                 {romm::i18n::tr("settings.platform.rom_path"),
                  truncatePath(config.GetRomPath(plat.canonical_id)), false, accent},
+                {romm::i18n::tr("settings.platform.nso"), nso_value, !nso_supported, nso_color},
                 {romm::i18n::tr("settings.platform.bios"), coming_later, true, dim},
                 {romm::i18n::tr("settings.platform.save_data"), coming_later, true, dim},
                 {romm::i18n::tr("settings.platform.emulator"), coming_later, true, dim}
@@ -1152,12 +1261,26 @@ namespace romm::ui {
     void SettingsLayout::OnSelectionUpdated() {
         auto nav = nav_mgr.lock();
         if (!nav) return;
-        if (card && nav->GetSelectedSettingsCategoryIdx() == 3) {
-            card->RefreshPathStatuses();
-        }
-        if (nav->GetSelectedSettingsCategoryIdx() == 4) {
+
+        // These two used to compare the category index against bare 3 and 4,
+        // which had already drifted: 4 was Advanced, not Platforms, so the
+        // platform rows were only ever rebuilt as a side effect of passing
+        // through the cache tab. Going through the enum is what stops that
+        // happening again the next time a tab is inserted.
+        const SettingsCategory category = CategoryAt(nav->GetSelectedSettingsCategoryIdx());
+        if (category == SettingsCategory::Platforms) {
+            if (card) card->RefreshPathStatuses();
             RefreshPlatformRows();
         }
+
+        // Opening the Switch Online tab re-scans for the app: the user may have
+        // just installed the LayeredFS, or removed it. Only on the way in — the
+        // scan is cheap but not free, and every row on that tab reads the same
+        // cached result.
+        if (category == SettingsCategory::SwitchOnline && last_seen_category != SettingsCategory::SwitchOnline) {
+            romm::nso::NsoSnesInstaller::Instance().RefreshDetection();
+        }
+        last_seen_category = category;
     }
 
     void SettingsLayout::RefreshConfig() {
@@ -1177,7 +1300,7 @@ namespace romm::ui {
 
         // The list just changed size under a cursor that may have been near its
         // end — clamp before anything indexes with it.
-        if (nav && nav->GetSelectedSettingsCategoryIdx() == 4) {
+        if (nav && CategoryAt(nav->GetSelectedSettingsCategoryIdx()) == SettingsCategory::Platforms) {
             const size_t count = kPlatformActionRows + PlatformRows().size();
             if (count > 0 && nav->GetSelectedSettingsOptionIdx() >= count) {
                 nav->SetSelectedSettingsOptionIdx(count - 1);
@@ -1462,7 +1585,32 @@ namespace romm::ui {
                         config.Save();
                     }
                 }
-            } else if (opt_idx == 7) {
+            }
+        }
+            break;
+        case SettingsCategory::SwitchOnline: {
+            // Rows 0-3 are the read-only checklist and row 6 is the log path;
+            // only Restore and the manual install screen do anything.
+            constexpr size_t kRowRestore = 4;
+            constexpr size_t kRowManual = 5;
+
+            if (opt_idx == kRowRestore) {
+                auto& installer = romm::nso::NsoSnesInstaller::Instance();
+                if (installer.HasBackup() && !installer.IsBusy()) {
+                    confirm_modal->Show(
+                        romm::i18n::tr("settings.confirm.restore_nso.title"),
+                        romm::i18n::tr("settings.confirm.restore_nso.message"),
+                        ConfirmAction::RestoreNsoBackup,
+                        [this]() {
+                            // Opened straight onto the progress page rather than
+                            // run headless: restoring rewrites the LayeredFS, and
+                            // the step list is the only place that reports what
+                            // it actually did.
+                            if (nso_snes_modal) nso_snes_modal->ShowRestore();
+                        }
+                    );
+                }
+            } else if (opt_idx == kRowManual) {
                 if (nso_snes_modal) nso_snes_modal->Show();
             }
         }
@@ -1632,7 +1780,10 @@ namespace romm::ui {
             // Show All + Reset Defaults + one row per canonical platform. Grows
             // with whatever the server reports, so it's derived, not a literal.
             case SettingsCategory::Platforms: return kPlatformActionRows + PlatformRows().size();
-            case SettingsCategory::Advanced: return 8; // 7 cache rows + the experimental SNES Online row
+            // 4 checklist rows (app, Full Unlock, database, string tables) +
+            // Restore backup + Manual install screen + the log path.
+            case SettingsCategory::SwitchOnline: return 7;
+            case SettingsCategory::Advanced: return 7; // cache rows only
             case SettingsCategory::Updates: {
                 size_t count = 3; // Channel, Check on startup, Check for updates
                 auto state = romm::model::UpdateManager::Instance().GetState();
@@ -1705,6 +1856,24 @@ namespace romm::ui {
             case 1: // ROM folder
                 EditSelectedRomPath();
                 break;
+            case 2: { // Switch Online
+                if (!romm::nso::PlatformSupportsInjection(plat->canonical_id)) break;
+                // Off -> Ask -> Always -> Off. Ask is resolved at download time
+                // by NavigationManager's prompt, which is also where the
+                // "always/never from now on" answers write this setting back.
+                romm::model::NsoInjectionMode next = romm::model::NsoInjectionMode::Off;
+                switch (config.GetNsoInjectionMode(plat->canonical_id)) {
+                    case romm::model::NsoInjectionMode::Off:    next = romm::model::NsoInjectionMode::Ask; break;
+                    case romm::model::NsoInjectionMode::Ask:    next = romm::model::NsoInjectionMode::Always; break;
+                    case romm::model::NsoInjectionMode::Always: next = romm::model::NsoInjectionMode::Off; break;
+                }
+                config.SetNsoInjectionMode(plat->canonical_id, next);
+                config.Save();
+                romm::nso::NsoSnesInstaller::Instance().RefreshDetection();
+                std::cout << "[NSO] platform=" << plat->canonical_id
+                          << " injection=" << romm::model::ConfigManager::NsoInjectionModeToString(next) << std::endl;
+                break;
+            }
             default:
                 break; // placeholder rows
         }

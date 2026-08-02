@@ -6,6 +6,7 @@
 #include "CoverProfile.hpp"
 #include "CoverCache.hpp"
 #include "UninstallConfirmModal.hpp"
+#include "NsoInjectChoiceModal.hpp"
 #include "../model/RommApi.hpp"
 #include "../model/ConfigManager.hpp"
 #include "../i18n/I18n.hpp"
@@ -1080,6 +1081,11 @@ namespace romm::ui {
         hint_text->SetFont("Ubuntu@30");
         hint_text->SetColor(pu::ui::Color(190, 180, 225, 255));
         this->Add(hint_text);
+
+        // Added last so it draws over everything else on this screen: the
+        // download action can raise the Switch Online "Ask each time" prompt,
+        // and NavigationManager gates all input on it while it is up.
+        this->Add(romm::ui::NsoInjectChoiceModal::New(nav));
     }
 
     void DetailLayout::RefreshTranslations() {

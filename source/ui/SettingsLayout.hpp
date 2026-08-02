@@ -35,6 +35,17 @@ namespace romm::ui {
         Theme,
         Connection,
         Platforms,
+        // Nintendo Switch Online: the setup checklist for the injection
+        // feature, plus restoring a backup and the manual install screen.
+        // Sits next to Platforms because that is where injection is turned on
+        // per platform.
+        //
+        // The enum name is the feature; the tab is labelled "Nintendo Classic"
+        // in both languages (measured 283px in Orbitron@30 against 340px of
+        // capsule — the literal "Nintendo Switch Online" is 390px and overflows,
+        // and a translated "Classiques Nintendo" is 344px, so the French keeps
+        // the English label as a proper noun).
+        SwitchOnline,
         Advanced,
         Updates,
         Debug,
@@ -59,7 +70,10 @@ namespace romm::ui {
         RebuildIndex,
         InstallUpdate,
         RestoreBackup,
-        DownloadSoundPack
+        DownloadSoundPack,
+        // Restores the SNES Switch Online LayeredFS from romm-nx's own backup —
+        // unrelated to RestoreBackup above, which rolls the NRO back.
+        RestoreNsoBackup
     };
 
     enum class PathStatus {
@@ -75,6 +89,10 @@ namespace romm::ui {
         std::string value;
         bool is_action = false;
         int volume_percent = -1; // >= 0 draws a HorizonOS-style slider bar instead of `value` text
+        // Overrides the default value colour. Used by the Switch Online
+        // checklist, where present-vs-missing is the whole point of the row.
+        bool tint_value = false;
+        pu::ui::Color value_tint = pu::ui::Color(0, 0, 0, 255);
     };
 
     // One row of the platform list: a canonical id plus the name to show.
@@ -197,6 +215,11 @@ namespace romm::ui {
         std::shared_ptr<NsoSnesModal> nso_snes_modal;
         pu::ui::elm::TextBlock::Ref settings_title_text;
         pu::ui::elm::TextBlock::Ref hint_text;
+
+        // Which tab OnSelectionUpdated last saw. The Switch Online tab re-runs
+        // detection when it is opened — a directory scan plus a JSON parse,
+        // cheap once but not something to repeat on every cursor move.
+        SettingsCategory last_seen_category = SettingsCategory::Count;
 
     public:
         SettingsLayout(std::shared_ptr<romm::navigation::NavigationManager> nav);

@@ -26,6 +26,20 @@ namespace romm::model {
         Banners // Column of platform logo art, selection pinned to a fixed slot
     };
 
+    // Whether downloading a game for a platform also installs it into the
+    // matching Nintendo Switch Online app.
+    //
+    // Off is the default and must stay that way: injection writes into
+    // /atmosphere, and someone who only wants ROMs for RetroArch should never
+    // have that happen because they installed an update. The ROM itself always
+    // lands in the platform's ROM folder either way — injection is an extra
+    // destination, never a replacement.
+    enum class NsoInjectionMode {
+        Off,
+        Ask,
+        Always
+    };
+
     class ConfigManager {
     public:
         static ConfigManager& Instance();
@@ -179,6 +193,13 @@ namespace romm::model {
         std::string GetRomPath(const std::string& platform) const;
         void SetRomPath(const std::string& platform, const std::string& path);
 
+        // --- Switch Online injection (Settings > Platforms) ----------------
+        // Keyed by canonical platform id. Absent means Off.
+        NsoInjectionMode GetNsoInjectionMode(const std::string& platform) const;
+        void SetNsoInjectionMode(const std::string& platform, NsoInjectionMode mode);
+        static std::string NsoInjectionModeToString(NsoInjectionMode mode);
+        static NsoInjectionMode NsoInjectionModeFromString(const std::string& value);
+
         // --- Platform visibility (Settings > Platforms) -------------------
         // Purely a UI filter over the platform browser: nothing here touches
         // ROM files, installed_index.json, download paths, covers or cache.
@@ -248,6 +269,9 @@ namespace romm::model {
 
         std::map<std::string, std::string> rom_paths;
         std::map<std::string, GridViewMode> platform_grid_view_mode;
+        // Only platforms the user has actually changed are stored; anything
+        // absent is Off.
+        std::map<std::string, NsoInjectionMode> nso_injection;
 
         // Canonical ids the user has hidden from the platform browser, and
         // every canonical id romm-nx has ever seen. The second list is what

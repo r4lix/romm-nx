@@ -34,6 +34,11 @@ namespace romm::nso {
         std::vector<std::string> strings_files;
         std::vector<std::string> strings_languages;
         bool has_exefs_mod = false; // exefs/subsdk9 present
+        // The database file exists. False means the paths above are a target
+        // romm-nx can create rather than one it found — a modded app with no
+        // LayeredFS yet is a perfectly good place to inject into, it just needs
+        // an empty database written first.
+        bool database_exists = false;
         size_t entry_count = 0;
         size_t injected_asset_dirs = 0;
         std::string error;
@@ -43,6 +48,15 @@ namespace romm::nso {
     // romfs carries an lclassics.titlesdb full of "S-*" codes. Prefers the
     // known SNES title id when several candidates exist.
     NsoSnesInstall DetectNsoSnes();
+
+    // Writes an empty database, creating the directories on the way. Used when
+    // the user has the app and the mod but no LayeredFS yet.
+    //
+    // Deliberately writes ONLY the database: LayeredFS replaces files wholesale,
+    // so a partial strings.lng would blank every other string in the app and
+    // leave raw SYS_MENU_* keys across the whole UI. Without one, the app keeps
+    // its own — the only cost is that injected games show no description text.
+    bool CreateEmptyDatabase(const NsoSnesInstall& target, std::string& error);
 
     struct TitlesDb {
         bool loaded = false;
@@ -91,6 +105,20 @@ namespace romm::nso {
     bool UpsertTitleEntry(const TitlesDb& db, const std::string& code,
                           const std::string& entry_json,
                           std::string& out_text, std::string& error);
+
+    // Removes one entry. Returns false if the code is absent (nothing to do is
+    // reported by `found`, not as an error).
+    bool RemoveTitleEntry(const TitlesDb& db, const std::string& code,
+                          std::string& out_text, bool& found, std::string& error);
+
+    // Removes the per-title keys PatchStringsFile added. Leaves every other key
+    // byte-for-byte untouched.
+    bool UnpatchStringsFile(const std::string& text, const std::string& code,
+                            std::string& out_text, bool& changed, std::string& error);
+
+    // The per-title key set, shared by the patch and unpatch paths so they can
+    // never disagree about which keys belong to a title.
+    std::vector<std::string> TitleStringKeys(const std::string& code);
 
     // Re-parses a serialized database and checks that every code in `before`
     // is still present, that `expected_new` exists, and that its asset paths

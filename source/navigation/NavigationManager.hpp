@@ -61,6 +61,36 @@ namespace romm::navigation {
         Screen source_screen;
     };
 
+    // Settings > Platforms > Switch Online = "Ask each time": the question, at
+    // the moment the user presses Download.
+    //
+    // It has to be answered BEFORE DownloadManager::EnqueueDownload, because
+    // that is where inject_nso is fixed for the life of the task. So the two
+    // download call sites raise this instead of enqueueing, and the answer
+    // enqueues with an explicit InjectChoice.
+    struct NsoInjectModalPayload {
+        bool active = false;
+        int rom_id = 0;
+        std::string platform_slug;  // slug the download itself uses
+        std::string canonical_id;   // canonical platform id the setting is keyed by
+        std::string platform_name;  // display name, for the two "don't ask again" rows
+        std::string title;
+        // Full Unlock missing: a warning on the modal, never a refusal — it can
+        // live inside a custom NSP where romm-nx cannot see it.
+        bool has_exefs_mod = true;
+        size_t selected_row = 0;
+        Screen source_screen = Screen::Library;
+    };
+
+    // Rows of that modal, in display order.
+    enum class NsoInjectChoiceRow {
+        InjectOnce,
+        DownloadOnly,
+        AlwaysInject,
+        NeverInject,
+        Count
+    };
+
     class NavigationManager : public std::enable_shared_from_this<NavigationManager> {
     private:
         pu::ui::Application* app;
@@ -226,6 +256,16 @@ namespace romm::navigation {
         const UninstallModalPayload& GetUninstallModalState() const { return uninstall_modal; }
         void HandleUninstallModalInput(u64 keys_down);
 
+        // Switch Online "Ask each time" prompt. Raised from the download call
+        // sites; answering it is what performs the enqueue.
+        const NsoInjectModalPayload& GetNsoInjectModalState() const { return nso_inject_modal; }
+        void HandleNsoInjectModalInput(u64 keys_down);
+        // Raises the prompt when this platform is set to Ask, romm-nx knows how
+        // to build its Switch Online files, and a target actually exists.
+        // Returns true when the prompt is up, meaning the caller must NOT
+        // enqueue — answering the modal does that.
+        bool MaybePromptNsoInjection(int rom_id, const std::string& platform_slug, const std::string& title);
+
         // Library Y-Menu controls
         bool IsLibraryMenuActive() const { return library_menu_active; }
         size_t GetLibraryMenuSelectedIdx() const { return library_menu_selected_idx; }
@@ -243,6 +283,7 @@ namespace romm::navigation {
 
     private:
         UninstallModalPayload uninstall_modal;
+        NsoInjectModalPayload nso_inject_modal;
         bool update_modal_active = false;
         bool update_popup_shown_this_session = false;
     };

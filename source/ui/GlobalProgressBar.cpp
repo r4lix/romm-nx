@@ -87,7 +87,8 @@ namespace romm::ui {
         cached_active = (active_snap.state == romm::model::DownloadState::Preparing ||
                          active_snap.state == romm::model::DownloadState::DownloadingGame ||
                          active_snap.state == romm::model::DownloadState::DownloadingCover ||
-                         active_snap.state == romm::model::DownloadState::SyncingCover);
+                         active_snap.state == romm::model::DownloadState::SyncingCover ||
+                         active_snap.state == romm::model::DownloadState::Injecting);
 
         cached_pending = 0;
         for (const auto& t : queue_snap) {

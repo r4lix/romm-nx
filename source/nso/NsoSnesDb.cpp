@@ -221,6 +221,7 @@ namespace romm::nso {
                 candidate.romfs_root = romfs_root;
                 candidate.titles_dir = titles_dir;
                 candidate.database_path = db_path;
+                candidate.database_exists = true;
                 candidate.entry_count = db.codes.size();
                 candidate.has_exefs_mod = PathExists(content_root + "/exefs/subsdk9");
                 if (PathExists(romfs_root + "/DBINFO")) candidate.dbinfo_path = romfs_root + "/DBINFO";
@@ -249,7 +250,22 @@ namespace romm::nso {
         }
 
         if (!best.found) {
-            best.error = "no SNES Switch Online LayeredFS found under /atmosphere/contents";
+            // Nothing with a database. That is not the same as "nowhere to
+            // inject": a console with the app and the Full Unlock but no
+            // LayeredFS yet is a valid target, it just needs an empty database
+            // written into it first. Offer the known SNES title id so the user
+            // is not made to hand-create directories.
+            best = NsoSnesInstall();
+            best.title_id = kKnownSnesTitleId;
+            best.content_root = std::string(kAtmosphereRoots[0]) + "/" + best.title_id;
+            best.romfs_root = best.content_root + "/romfs";
+            best.titles_dir = best.romfs_root + "/titles";
+            best.database_path = best.titles_dir + "/lclassics.titlesdb";
+            best.has_exefs_mod = PathExists(best.content_root + "/exefs/subsdk9");
+            best.database_exists = false;
+            best.found = true; // a target, pending a database
+            best.error = "no database yet - one can be created at " + best.database_path;
+            log.Line("  no database found; offering " + best.title_id + " as a target to create");
         }
         return best;
     }
@@ -707,6 +723,149 @@ namespace romm::nso {
             }
         }
 
+        return true;
+    }
+
+
+    std::vector<std::string> TitleStringKeys(const std::string& code) {
+        static const char* kSuffixes[] = {
+            "META_TITLE_COMMENT_",
+            "META_TITLE_KEY_GUIDE_a_", "META_TITLE_KEY_GUIDE_b_",
+            "META_TITLE_KEY_GUIDE_dpad_", "META_TITLE_KEY_GUIDE_dpad_down_",
+            "META_TITLE_KEY_GUIDE_dpad_left_", "META_TITLE_KEY_GUIDE_dpad_right_",
+            "META_TITLE_KEY_GUIDE_dpad_up_", "META_TITLE_KEY_GUIDE_l_",
+            "META_TITLE_KEY_GUIDE_mouse_l_", "META_TITLE_KEY_GUIDE_mouse_r_",
+            "META_TITLE_KEY_GUIDE_notation_", "META_TITLE_KEY_GUIDE_r_",
+            "META_TITLE_KEY_GUIDE_select_", "META_TITLE_KEY_GUIDE_start_",
+            "META_TITLE_KEY_GUIDE_supplementary_", "META_TITLE_KEY_GUIDE_x_",
+            "META_TITLE_KEY_GUIDE_y_"
+        };
+        const std::string key_code = CodeToStringKey(code);
+        std::vector<std::string> keys;
+        keys.reserve(sizeof(kSuffixes) / sizeof(kSuffixes[0]));
+        for (const char* suffix : kSuffixes) keys.push_back(std::string(suffix) + key_code);
+        return keys;
+    }
+
+    // Erases members from an object, back to front, taking one adjacent comma
+    // with each so the object stays well formed.
+    static bool EraseMembers(const std::string& text, size_t object_start,
+                             const std::vector<std::string>& keys,
+                             std::string& out_text, size_t& removed, std::string& error) {
+        removed = 0;
+        out_text = text;
+        std::vector<json::Member> members;
+        if (!json::ScanObject(text, object_start, members)) {
+            error = "object could not be enumerated";
+            return false;
+        }
+
+        std::vector<size_t> hits;
+        for (size_t i = 0; i < members.size(); ++i) {
+            for (const auto& key : keys) {
+                if (members[i].key == key) { hits.push_back(i); break; }
+            }
+        }
+        if (hits.empty()) return true;
+
+        // Back to front so each recorded span is still valid when its turn comes.
+        for (size_t n = hits.size(); n-- > 0; ) {
+            const size_t i = hits[n];
+            const json::Member& m = members[i];
+            size_t from = m.key_start;
+            size_t to = m.value_end;
+            if (i > 0) {
+                from = members[i - 1].value_end;      // the comma before us
+            } else if (members.size() > 1) {
+                to = members[i + 1].key_start;        // the comma after us
+            }
+            out_text.erase(from, to - from);
+            ++removed;
+        }
+        return true;
+    }
+
+    bool RemoveTitleEntry(const TitlesDb& db, const std::string& code,
+                          std::string& out_text, bool& found, std::string& error) {
+        found = false;
+        out_text = db.text;
+        if (!db.loaded || !db.has_titles_object) return true;
+
+        size_t removed = 0;
+        if (!EraseMembers(db.text, db.titles_object_start, {code}, out_text, removed, error)) return false;
+        found = (removed > 0);
+        if (!found) return true;
+
+        std::string validation_error;
+        if (!json::Validate(out_text, validation_error)) {
+            error = "database failed re-validation after removal (" + validation_error + ")";
+            return false;
+        }
+        return true;
+    }
+
+    bool UnpatchStringsFile(const std::string& text, const std::string& code,
+                            std::string& out_text, bool& changed, std::string& error) {
+        changed = false;
+        out_text = text;
+
+        std::string validation_error;
+        if (!json::Validate(text, validation_error)) {
+            error = "strings file is not valid JSON (" + validation_error + ")";
+            return false;
+        }
+        json::Member strings;
+        if (!json::FindRootMember(text, "strings", strings) || text[strings.value_start] != '{') {
+            error = "strings file has no top-level \"strings\" object";
+            return false;
+        }
+
+        size_t removed = 0;
+        if (!EraseMembers(text, strings.value_start, TitleStringKeys(code), out_text, removed, error)) return false;
+        changed = (removed > 0);
+        if (!changed) return true;
+
+        if (!json::Validate(out_text, validation_error)) {
+            error = "strings file failed re-validation after removal (" + validation_error + ")";
+            return false;
+        }
+        return true;
+    }
+
+
+    bool CreateEmptyDatabase(const NsoSnesInstall& target, std::string& error) {
+        error.clear();
+        if (target.database_path.empty()) {
+            error = "no target path";
+            return false;
+        }
+        const std::string& path = target.database_path;
+        for (size_t i = 1; i < path.size(); ++i) {
+            if (path[i] != '/') continue;
+            const std::string sub = path.substr(0, i);
+            if (!sub.empty() && sub.back() == ':') continue;
+            mkdir(sub.c_str(), 0777);
+        }
+
+        const std::string body = "{\"titles\":{}}";
+        const std::string tmp = path + ".tmp";
+        std::remove(tmp.c_str());
+        FILE* f = std::fopen(tmp.c_str(), "wb");
+        if (!f) { error = "cannot create " + tmp; return false; }
+        const bool wrote = std::fwrite(body.data(), 1, body.size(), f) == body.size();
+        const bool closed = std::fclose(f) == 0;
+        if (!wrote || !closed) {
+            std::remove(tmp.c_str());
+            error = "write failed for " + tmp;
+            return false;
+        }
+        std::remove(path.c_str());
+        if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            std::remove(tmp.c_str());
+            error = "cannot move " + tmp + " into place";
+            return false;
+        }
+        NsoLog::Instance().Line("created empty database at " + path);
         return true;
     }
 

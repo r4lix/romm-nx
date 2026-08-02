@@ -39,6 +39,10 @@ namespace romm::ui {
         s32 GetHeight() override { return 1080; }
 
         void Show();
+        // Opens straight onto the progress page with a restore already running.
+        // Settings > Switch Online > "Restore last SNES Online backup" uses
+        // this so the restore reports its steps instead of running headless.
+        void ShowRestore();
         void Hide();
         bool IsActive() const { return active; }
 
