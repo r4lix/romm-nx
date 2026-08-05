@@ -1,6 +1,7 @@
 #include "DataModel.hpp"
 #include "ConfigManager.hpp"
 #include "PlatformCatalog.hpp"
+#include <algorithm>
 #include <iostream>
 
 namespace romm::model {
@@ -61,6 +62,26 @@ namespace romm::model {
             visible.roms_state = meta.roms_state;
             next.push_back(std::move(visible));
         }
+
+        // Settings > Platforms decides the order every list sees: the sidebar,
+        // the banner column and the Y-Menu all index into this vector, and
+        // ApplyPlatformVisibilityChange() re-anchors the selection by id
+        // precisely because a rebuild is allowed to reorder it.
+        //
+        // Sorted by the name the sidebar draws (RomM's), not the catalogue's,
+        // so an alphabetical list reads alphabetically on screen. Recomputing
+        // the identity per comparison is fine at this size — a library has
+        // tens of platforms, and this runs on a fetch or a settings change.
+        const PlatformSortMode sort_mode = config.GetPlatformSortMode();
+        const std::vector<std::string>& custom_order = config.GetPlatformOrder();
+        // stable_: two RomM entries can fold onto one canonical id (a library
+        // carrying both "ps4" and "ps4--1"), and those compare equal — server
+        // order is the only sensible tiebreak left.
+        std::stable_sort(next.begin(), next.end(), [&](const Platform& a, const Platform& b) {
+            return PlatformSortsBefore(sort_mode, custom_order,
+                                       ResolvePlatformIdentity(a.slug, a.name), a.name,
+                                       ResolvePlatformIdentity(b.slug, b.name), b.name);
+        });
 
         this->platforms = std::move(next);
         this->platforms_generation++;

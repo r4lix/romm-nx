@@ -55,7 +55,28 @@ namespace romm::nso {
         Rollback
     };
 
+    // Which Switch Online app a job targets. The pipeline itself is one piece of
+    // code — staging, backup, atomic write order and rollback are identical —
+    // and everything that genuinely differs (ROM container, cover geometry,
+    // code shape, entry fields, string keys, install root) is carried by the
+    // profile this selects. See docs/nso-nes-format.md for the NES side.
+    enum class NsoPlatform {
+        Snes,
+        Nes,
+        GameBoy, // one app for both Game Boy and Game Boy Color
+        Gba,
+        N64
+    };
+
+    // Maps a canonical romm-nx platform id ("snes", "nes") onto the enum.
+    // Returns false for anything not injectable.
+    bool NsoPlatformForId(const std::string& canonical_platform_id, NsoPlatform& out);
+
+    // Display name for logs and on-screen messages ("SNES Online").
+    const char* NsoPlatformName(NsoPlatform platform);
+
     struct NsoInstallRequest {
+        NsoPlatform platform = NsoPlatform::Snes;
         int rom_id = 0;
         int file_id = 0;
         std::string title;          // display title from RomM
@@ -89,16 +110,31 @@ namespace romm::nso {
     // retrying it just re-downloads the ROM to reach the identical conclusion.
     bool IsRetryableFailure(NsoErrorKind kind);
 
-    // Root of everything romm-nx writes for this feature.
+    // Root of everything romm-nx writes for the SNES feature. NES gets its own
+    // tree (`nso-nes`) from the platform profile, so the two platforms' staging,
+    // backups and injected-game indexes can never be confused for each other.
     constexpr const char* kNsoRoot = "sdmc:/switch/romm-nx/nso-snes";
     constexpr const char* kStagingDir = "sdmc:/switch/romm-nx/nso-snes/staging";
     constexpr const char* kBackupsDir = "sdmc:/switch/romm-nx/nso-snes/backups";
     constexpr const char* kInjectedIndex = "sdmc:/switch/romm-nx/nso-snes/injected.txt";
 
+    // Whether a platform's injection support is trusted yet.
+    //
+    // Nintendo 64 is not, and says so rather than being presented as finished:
+    // a title only runs if a working MetaPack exists for it, and romm-nx can
+    // only derive one when the game's idle loop is an unconditional self-branch
+    // in the boot segment. Ocarina of Time gets one; Doom 64 and Resident Evil 2
+    // do not, and black-screen. See docs/nso-n64-format.md.
+    //
+    // Deliberately one predicate rather than a flag spread across the UI, so
+    // clearing it when N64 is trusted is a one-line change.
+    bool IsNsoPlatformUnstable(NsoPlatform platform);
+
     // Whether romm-nx knows how to build Switch Online files for a platform.
-    // SNES only today: every other NSO app needs its own ROM container, cover
+    // SNES, NES, Game Boy / Game Boy Color, Game Boy Advance and Nintendo 64
+    // today; Mega Drive and Virtual Boy still need their ROM container, cover
     // format and per-platform database fields established from real reference
-    // files before it can be offered.
+    // files before they can be offered.
     bool PlatformSupportsInjection(const std::string& canonical_platform_id);
 
     class NsoSnesInstaller {
@@ -106,21 +142,23 @@ namespace romm::nso {
         static NsoSnesInstaller& Instance();
 
         // Re-runs detection on the calling thread (cheap: a directory scan plus
-        // one JSON parse) and caches the result.
-        void RefreshDetection();
-        NsoSnesInstall GetDetection() const;
+        // one JSON parse) and caches the result. Cached per platform, so the
+        // settings screen's SNES view is not overwritten by an NES download
+        // running in the background.
+        void RefreshDetection(NsoPlatform platform = NsoPlatform::Snes);
+        NsoSnesInstall GetDetection(NsoPlatform platform = NsoPlatform::Snes) const;
 
         void StartInstall(const NsoInstallRequest& request);
-        void StartRestore();
+        void StartRestore(NsoPlatform platform = NsoPlatform::Snes);
         // Removes every game romm-nx injected, each with its own backup, on the
         // pipeline worker. The progress page is the only report — this can be
         // a hundred megabytes of backup copying, so it must not run on the UI
         // thread.
-        void StartUninstallAll();
+        void StartUninstallAll(NsoPlatform platform = NsoPlatform::Snes);
 
         // How many games romm-nx currently has injected, from its own index.
         // Reads a small file, so it is fine to call while drawing a settings row.
-        size_t InjectedGameCount() const;
+        size_t InjectedGameCount(NsoPlatform platform = NsoPlatform::Snes) const;
 
         // Runs the pipeline on the CALLING thread and returns when it is done.
         // The download worker uses this: its queue is already serialized, so
@@ -138,7 +176,8 @@ namespace romm::nso {
         // without a rom_id (those load back as 0 and can never match one).
         // It is matched exactly, and only against those rom_id-less entries, so
         // a correctly recorded game is never removed by a title coincidence.
-        NsoInstallOutcome UninstallSync(int rom_id, const std::string& title = "");
+        NsoInstallOutcome UninstallSync(int rom_id, const std::string& title = "",
+                                        NsoPlatform platform = NsoPlatform::Snes);
 
         bool IsBusy() const { return busy.load(); }
         NsoPipelineState GetState() const;
@@ -147,9 +186,11 @@ namespace romm::nso {
         std::string GetSummary() const;
         std::vector<NsoStep> GetSteps() const;
 
-        // Newest backup directory, or "" when none exists.
-        std::string LatestBackupPath() const;
-        bool HasBackup() const { return !LatestBackupPath().empty(); }
+        // Newest backup directory for a platform, or "" when none exists.
+        std::string LatestBackupPath(NsoPlatform platform = NsoPlatform::Snes) const;
+        bool HasBackup(NsoPlatform platform = NsoPlatform::Snes) const {
+            return !LatestBackupPath(platform).empty();
+        }
 
         const char* LogPath() const;
 
@@ -157,14 +198,15 @@ namespace romm::nso {
         NsoSnesInstaller() = default;
 
         void RunInstall(NsoInstallRequest request);
-        void RunRestore();
-        void RunUninstallAll();
+        void RunRestore(NsoPlatform platform);
+        void RunUninstallAll(NsoPlatform platform);
 
         // One game's removal: database entry, per-title strings, asset folder
         // and index line, backed up first. Assumes the caller already holds
         // `busy` and has a log session open, so the bulk path can hold both for
         // a whole run without deadlocking against itself.
-        bool RemoveInjectedEntry(const std::string& hash, const std::string& code,
+        bool RemoveInjectedEntry(NsoPlatform platform,
+                                 const std::string& hash, const std::string& code,
                                  const std::string& title, std::string& out_error);
 
         // The pipeline runs on a pthread with an explicitly sized stack rather
@@ -176,6 +218,17 @@ namespace romm::nso {
         // report on screen.
         bool SpawnWorker(NsoJobKind kind, const NsoInstallRequest& request);
         static void* ThreadEntry(void* arg);
+
+        // Index into the per-platform arrays below.
+        static size_t PlatformSlot(NsoPlatform platform) {
+            switch (platform) {
+                case NsoPlatform::Nes:     return 1u;
+                case NsoPlatform::GameBoy: return 2u;
+                case NsoPlatform::Gba:     return 3u;
+                case NsoPlatform::N64:     return 4u;
+                default:                   return 0u;
+            }
+        }
 
         void ResetSteps(const std::vector<std::string>& names);
         void BeginStep(size_t index);
@@ -192,7 +245,7 @@ namespace romm::nso {
         std::string error_message;
         std::string summary;
         std::vector<NsoStep> steps;
-        NsoSnesInstall detection;
+        NsoSnesInstall detection[5]; // SNES, NES, GB, GBA, N64 — see PlatformSlot
         // The S-#### slot the last successful run used, for the caller's report.
         std::string install_code;
     };

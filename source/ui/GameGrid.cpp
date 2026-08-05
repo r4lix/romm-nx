@@ -101,6 +101,13 @@ namespace romm::ui {
     static constexpr int N3DS_ASPECT_W = 276;
     static constexpr int N3DS_ASPECT_H = 250;
 
+    // SNES retail box art: landscape, and wider still than the 3DS case.
+    // Measured off the covers RomM actually serves (art rendered 108x77 at 720p
+    // in the old portrait tile, i.e. 1.40:1) rather than off the cardboard, so
+    // the tile matches the images instead of the physical box.
+    static constexpr int SNES_ASPECT_W = 7;
+    static constexpr int SNES_ASPECT_H = 5;
+
     // Vertical space the detail panel reserves for the cover, whatever shape
     // that cover turns out to be. Constant across platforms so the text below
     // sits at the same height everywhere; the drawn frame is centred inside it.
@@ -182,6 +189,16 @@ namespace romm::ui {
             // width-bound with ~19px of side margin left over, which is what
             // makes the tiles as large as this canvas allows.
             solve(16, 16, 10, 14, N3DS_ASPECT_W, N3DS_ASPECT_H);
+        }
+        else if (profile.type == CoverProfileType::SuperNintendo ||
+                 profile.type == CoverProfileType::Nintendo64) {
+            // Same tight offsets/gaps as 3DS, for the same reason: a row of
+            // landscape tiles eats nearly the full width, so a wider gutter
+            // would come out of the covers rather than out of the margin —
+            // which is what Big (3x2) hits, landing width-bound at 491x351 with
+            // 17px of side margin. Default (4x3) is the other way round:
+            // height-bound at 343x245, so its slack shows up as side margin.
+            solve(16, 16, 10, 14, SNES_ASPECT_W, SNES_ASPECT_H);
         }
         else if (profile.type == CoverProfileType::NintendoDS ||
                  profile.type == CoverProfileType::GameBoy ||

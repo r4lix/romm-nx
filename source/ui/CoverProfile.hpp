@@ -20,7 +20,9 @@ namespace romm::ui {
         GameBoyColor,
         GameBoyAdvance,
         PS2Portrait,
-        Nintendo3DS
+        Nintendo3DS,
+        SuperNintendo,
+        Nintendo64
     };
 
     struct CoverProfile {

@@ -220,10 +220,25 @@ namespace romm::ui {
         // (GetPlatformCatalog) merged with whatever the connected server
         // returned, de-duplicated by NormalizePlatformId so "ps1", "psx" and
         // "PlayStation" can never appear as three rows.
-        // The two fixed action rows that sit above the platform list.
-        constexpr size_t kPlatformActionRows = 2; // 0 = Show All, 1 = Reset Defaults
+        // The fixed rows that sit above the platform list. Named because their
+        // indices are compared in the renderer, the action dispatcher and the
+        // Left/Right handler — inserting Sort Order at the top silently shifted
+        // Show All / Reset Defaults in all three at once.
+        constexpr size_t kPlatformRowSort = 0;
+        constexpr size_t kPlatformRowShowAll = 1;
+        constexpr size_t kPlatformRowResetDefaults = 2;
+        constexpr size_t kPlatformActionRows = 3;
 
         std::vector<PlatformVisibilityRow> g_platform_rows;
+
+        // Which Switch Online app the Nintendo Classic tab is showing.
+        //
+        // File-scope because the tab is drawn by SettingsCard and acted on by
+        // SettingsLayout — two objects, one piece of state, exactly like the
+        // platform row list above. Every row on that tab and both of its
+        // destructive actions follow it; the page used to be SNES-only, which
+        // meant "Remove all" silently left NES, Game Boy and GBA behind.
+        romm::nso::NsoPlatform g_nso_page_platform = romm::nso::NsoPlatform::Snes;
 
         void RebuildPlatformRows(const std::shared_ptr<romm::model::DataModel>& model) {
             std::vector<PlatformVisibilityRow> rows;
@@ -248,7 +263,35 @@ namespace romm::ui {
                 }
             }
 
+            // Same order the library will show, so Custom mode is arranged in
+            // the list it actually affects. Sorted by the name THIS list draws
+            // (the catalogue's), which is what makes it read alphabetically
+            // here even where RomM's own name differs.
+            const auto& config = romm::model::ConfigManager::Instance();
+            const auto sort_mode = config.GetPlatformSortMode();
+            const auto& custom_order = config.GetPlatformOrder();
+            std::stable_sort(rows.begin(), rows.end(),
+                             [&](const PlatformVisibilityRow& a, const PlatformVisibilityRow& b) {
+                                 return romm::model::PlatformSortsBefore(sort_mode, custom_order,
+                                                                        a.canonical_id, a.display_name,
+                                                                        b.canonical_id, b.display_name);
+                             });
+
             g_platform_rows = std::move(rows);
+        }
+
+        // Display word for a sort mode. The stored token stays English (it goes
+        // into config.json); only this maps it to the current language.
+        std::string TranslatePlatformSort(romm::model::PlatformSortMode mode) {
+            switch (mode) {
+                case romm::model::PlatformSortMode::Brand:
+                    return romm::i18n::tr("settings.platforms.sort.brand");
+                case romm::model::PlatformSortMode::Custom:
+                    return romm::i18n::tr("settings.platforms.sort.custom");
+                case romm::model::PlatformSortMode::Name:
+                    break;
+            }
+            return romm::i18n::tr("settings.platforms.sort.name");
         }
 
         const std::vector<PlatformVisibilityRow>& PlatformRows() {
@@ -595,7 +638,9 @@ namespace romm::ui {
             // an injection can work at all, in the order it matters: is the app
             // there, is the signature check gone, is there a database, will the
             // descriptions render. Nothing here writes anything.
-            const auto detection = romm::nso::NsoSnesInstaller::Instance().GetDetection();
+            const auto detection =
+                romm::nso::NsoSnesInstaller::Instance().GetDetection(g_nso_page_platform);
+            const bool is_snes_app = (g_nso_page_platform == romm::nso::NsoPlatform::Snes);
             const pu::ui::Color ok(126, 200, 145, 255);
             const pu::ui::Color bad(232, 118, 118, 255);
             const pu::ui::Color warn(240, 190, 90, 255);
@@ -610,17 +655,34 @@ namespace romm::ui {
                 options.push_back(row);
             };
 
+            // Which app these rows describe. First row because everything
+            // under it is that app's state; A cycles through the four.
+            {
+                OptionRenderEntry row;
+                row.label = romm::i18n::tr("settings.nso.platform");
+                row.value = romm::nso::NsoPlatformName(g_nso_page_platform);
+                row.tint_value = true;
+                row.value_tint = info;
+                row.is_action = true;
+                options.push_back(row);
+            }
+
             // Title id: a 16-hex-digit identifier, never translated.
             checklist("settings.nso.app",
                       detection.found ? detection.title_id : romm::i18n::tr("settings.nso.not_found"),
                       detection.found ? ok : bad);
 
             // A missing Full Unlock is a warning, not a blocker: it can live
-            // inside a custom NSP where romm-nx cannot see it.
+            // inside a custom NSP where romm-nx cannot see it. And it only
+            // applies to SNES — that is the one app with a signature check, so
+            // reporting it as missing anywhere else would send the user looking
+            // for a mod that does not exist.
             checklist("settings.nso.full_unlock",
-                      romm::i18n::tr(detection.has_exefs_mod ? "nso.snes.detect.mod_present"
-                                                             : "nso.snes.detect.mod_absent"),
-                      detection.has_exefs_mod ? ok : warn);
+                      !is_snes_app
+                          ? romm::i18n::tr("settings.nso.full_unlock_not_required")
+                          : romm::i18n::tr(detection.has_exefs_mod ? "nso.snes.detect.mod_present"
+                                                                   : "nso.snes.detect.mod_absent"),
+                      !is_snes_app ? info : (detection.has_exefs_mod ? ok : warn));
 
             // "Will be created" is only true when there is an app to create it
             // in; with no app at all the honest answer is the same "not found"
@@ -647,13 +709,20 @@ namespace romm::ui {
                       !detection.found ? bad : (langs.empty() ? warn : ok));
 
             auto& installer = romm::nso::NsoSnesInstaller::Instance();
-            const std::string backup = installer.LatestBackupPath();
+
+            // How many games romm-nx has in THIS app, from its own index.
+            const size_t injected = installer.InjectedGameCount(g_nso_page_platform);
+            checklist("settings.nso.injected",
+                      injected == 0 ? romm::i18n::tr("settings.nso.remove_all_none")
+                                    : romm::i18n::format("settings.nso.remove_all_value",
+                                                         {{"count", std::to_string(injected)}}),
+                      injected == 0 ? info : ok);
+
+            const std::string backup = installer.LatestBackupPath(g_nso_page_platform);
             options.push_back({romm::i18n::tr("settings.nso.restore"),
                                backup.empty() ? romm::i18n::tr("nso.snes.restore.none")
                                               : truncatePath(backup, 48),
                                true});
-
-            const size_t injected = installer.InjectedGameCount();
             options.push_back({romm::i18n::tr("settings.nso.remove_all"),
                                injected == 0 ? romm::i18n::tr("settings.nso.remove_all_none")
                                              : romm::i18n::format("settings.nso.remove_all_value",
@@ -1047,11 +1116,16 @@ namespace romm::ui {
                 std::string value;
                 pu::ui::Color value_color(190, 180, 225, 255);
 
-                if (i == 0) {
+                if (i == kPlatformRowSort) {
+                    // A setting, not an action: its value is the current mode,
+                    // so it keeps the ordinary value colour.
+                    label = romm::i18n::tr("settings.platforms.sort");
+                    value = TranslatePlatformSort(config.GetPlatformSortMode());
+                } else if (i == kPlatformRowShowAll) {
                     label = romm::i18n::tr("settings.platforms.show_all");
                     value = romm::i18n::tr("common.trigger");
                     value_color = pu::ui::Color(230, 199, 167, 255); // Cream = action
-                } else if (i == 1) {
+                } else if (i == kPlatformRowResetDefaults) {
                     label = romm::i18n::tr("settings.platforms.reset_defaults");
                     value = romm::i18n::tr("common.trigger");
                     value_color = pu::ui::Color(230, 199, 167, 255);
@@ -1153,10 +1227,20 @@ namespace romm::ui {
                 // A mode that cannot run is worth saying out loud on the row
                 // itself; the setting is legitimate (the user may set the
                 // console up later), it just has nothing to write into yet.
-                const bool nso_ready = romm::nso::NsoSnesInstaller::Instance().GetDetection().found;
+                // Per platform: a console with the SNES app but no NES one
+                // must not show the NES row as ready.
+                romm::nso::NsoPlatform row_platform = romm::nso::NsoPlatform::Snes;
+                romm::nso::NsoPlatformForId(plat.canonical_id, row_platform);
+                const bool nso_ready =
+                    romm::nso::NsoSnesInstaller::Instance().GetDetection(row_platform).found;
                 switch (nso_mode) {
-                    case romm::model::NsoInjectionMode::Always:
+                    case romm::model::NsoInjectionMode::Both:
                         nso_value = nso_ready ? romm::i18n::tr("settings.platform.nso.always")
+                                              : romm::i18n::tr("settings.platform.nso.not_ready");
+                        nso_color = nso_ready ? green : muted;
+                        break;
+                    case romm::model::NsoInjectionMode::InjectOnly:
+                        nso_value = nso_ready ? romm::i18n::tr("settings.platform.nso.inject_only")
                                               : romm::i18n::tr("settings.platform.nso.not_ready");
                         nso_color = nso_ready ? green : muted;
                         break;
@@ -1165,9 +1249,15 @@ namespace romm::ui {
                                               : romm::i18n::tr("settings.platform.nso.not_ready");
                         nso_color = nso_ready ? accent : muted;
                         break;
-                    case romm::model::NsoInjectionMode::Off:
+                    case romm::model::NsoInjectionMode::RomOnly:
                         nso_value = romm::i18n::tr("settings.platform.nso.off");
                         break;
+                }
+                // Said on the row itself, not only once the user is already
+                // mid-download: whether to turn this on for N64 at all is the
+                // decision the flag is there to inform.
+                if (romm::nso::IsNsoPlatformUnstable(row_platform)) {
+                    nso_value += romm::i18n::tr("settings.platform.nso.unstable_suffix");
                 }
             }
 
@@ -1284,8 +1374,16 @@ namespace romm::ui {
         // just installed the LayeredFS, or removed it. Only on the way in — the
         // scan is cheap but not free, and every row on that tab reads the same
         // cached result.
-        if (category == SettingsCategory::SwitchOnline && last_seen_category != SettingsCategory::SwitchOnline) {
-            romm::nso::NsoSnesInstaller::Instance().RefreshDetection();
+        if ((category == SettingsCategory::SwitchOnline || category == SettingsCategory::Platforms) &&
+            last_seen_category != category) {
+            // Every injectable app, not just the one on screen: the Platforms
+            // tab draws a readiness state per platform, and the Nintendo
+            // Classic tab can be switched between them without leaving.
+            auto& installer = romm::nso::NsoSnesInstaller::Instance();
+            installer.RefreshDetection(romm::nso::NsoPlatform::Snes);
+            installer.RefreshDetection(romm::nso::NsoPlatform::Nes);
+            installer.RefreshDetection(romm::nso::NsoPlatform::GameBoy);
+            installer.RefreshDetection(romm::nso::NsoPlatform::Gba);
         }
         last_seen_category = category;
     }
@@ -1333,12 +1431,95 @@ namespace romm::ui {
         ApplyPlatformVisibility();
     }
 
-    void SettingsLayout::ToggleSelectedPlatform(bool visible) {
+    // Left/Right anywhere in the platform list. Only two rows answer: Sort
+    // Order cycles through the modes, a platform row sets its visibility.
+    void SettingsLayout::AdjustSelectedPlatformRow(int direction) {
         auto nav = nav_mgr.lock();
-        if (!nav) return;
+        if (!nav || direction == 0) return;
         const size_t opt_idx = nav->GetSelectedSettingsOptionIdx();
+        if (opt_idx == kPlatformRowSort) {
+            CyclePlatformSortMode(direction);
+            return;
+        }
         if (opt_idx < kPlatformActionRows) return; // Show All / Reset Defaults aren't toggles
-        SetPlatformVisibility(opt_idx - kPlatformActionRows, visible);
+        SetPlatformVisibility(opt_idx - kPlatformActionRows, direction > 0);
+    }
+
+    // Name -> Brand -> Custom, both ways.
+    void SettingsLayout::CyclePlatformSortMode(int direction) {
+        using romm::model::PlatformSortMode;
+        auto& config = romm::model::ConfigManager::Instance();
+
+        static const PlatformSortMode kOrder[] = {
+            PlatformSortMode::Name, PlatformSortMode::Brand, PlatformSortMode::Custom
+        };
+        constexpr int kCount = (int)(sizeof(kOrder) / sizeof(kOrder[0]));
+
+        int idx = 0;
+        for (int i = 0; i < kCount; ++i) {
+            if (kOrder[i] == config.GetPlatformSortMode()) { idx = i; break; }
+        }
+        const int step = (direction > 0) ? 1 : -1;
+        const PlatformSortMode next = kOrder[((idx + step) % kCount + kCount) % kCount];
+
+        // First trip into Custom starts from whatever order is on screen right
+        // now, so the list doesn't jump the moment it becomes rearrangeable.
+        // Only when empty: an order the user already arranged is theirs to keep.
+        if (next == PlatformSortMode::Custom && config.GetPlatformOrder().empty()) {
+            std::vector<std::string> order;
+            for (const auto& row : PlatformRows()) {
+                order.push_back(row.canonical_id);
+            }
+            config.SetPlatformOrder(std::move(order));
+        }
+
+        config.SetPlatformSortMode(next);
+        config.Save();
+        std::cout << "[PLATFORMS] Sort order=" << config.GetPlatformSortModeString() << std::endl;
+
+        RefreshPlatformRows();
+        // The library reads the same setting; this re-sorts it without a
+        // refetch, exactly as a visibility change does.
+        ApplyPlatformVisibility();
+    }
+
+    // L/R on a platform row in Custom mode: moves it one slot and follows it
+    // with the cursor. A no-op under Name/Brand, where the order is derived and
+    // there is nothing to store.
+    void SettingsLayout::MoveSelectedPlatform(int direction) {
+        auto nav = nav_mgr.lock();
+        if (!nav || direction == 0) return;
+
+        auto& config = romm::model::ConfigManager::Instance();
+        if (config.GetPlatformSortMode() != romm::model::PlatformSortMode::Custom) return;
+
+        const size_t opt_idx = nav->GetSelectedSettingsOptionIdx();
+        if (opt_idx < kPlatformActionRows) return;
+        const size_t from = opt_idx - kPlatformActionRows;
+
+        const auto& rows = PlatformRows();
+        if (from >= rows.size()) return;
+        if (direction < 0 && from == 0) return;
+        const size_t to = (direction < 0) ? (from - 1) : (from + 1);
+        if (to >= rows.size()) return;
+
+        // The displayed order IS the custom order once it's been materialized
+        // this way — which also folds in any platform detected since the order
+        // was last saved (those sort to the end, and are picked up here).
+        std::vector<std::string> order;
+        order.reserve(rows.size());
+        for (const auto& row : rows) {
+            order.push_back(row.canonical_id);
+        }
+        std::swap(order[from], order[to]);
+        std::cout << "[PLATFORMS] Moved " << order[to] << " to slot " << to << std::endl;
+
+        config.SetPlatformOrder(std::move(order));
+        config.Save();
+
+        RefreshPlatformRows();
+        nav->SetSelectedSettingsOptionIdx(kPlatformActionRows + to);
+        ApplyPlatformVisibility();
     }
 
     // Re-filters the platform browser immediately, so leaving Settings shows
@@ -1357,7 +1538,13 @@ namespace romm::ui {
         if (CategoryAt(nav->GetSelectedSettingsCategoryIdx()) == SettingsCategory::Platforms &&
             focus != SettingsFocusArea::CategoryList) {
             if (!nav->IsRomPathRowsFocused()) {
-                hint_text->SetText(romm::i18n::tr("hint.settings.platforms"));
+                // Reordering only exists in Custom mode, so only that hint
+                // mentions L/R — advertising a key that does nothing is worse
+                // than not advertising it.
+                const bool custom = romm::model::ConfigManager::Instance().GetPlatformSortMode()
+                                    == romm::model::PlatformSortMode::Custom;
+                hint_text->SetText(romm::i18n::tr(custom ? "hint.settings.platforms.custom"
+                                                         : "hint.settings.platforms"));
             } else if (nav->GetSelectedRomPathRowIdx() == 1) {
                 hint_text->SetText(romm::i18n::tr("hint.settings.platform.rom_path"));
             } else {
@@ -1519,12 +1706,14 @@ namespace romm::ui {
             break;
         case SettingsCategory::Platforms: {
             const auto& plat_rows = PlatformRows();
-            if (opt_idx == 0) { // Show All
+            if (opt_idx == kPlatformRowSort) {
+                CyclePlatformSortMode(1);
+            } else if (opt_idx == kPlatformRowShowAll) {
                 config.ShowAllPlatforms();
                 config.Save();
                 std::cout << "[PLATFORMS] Show All: every known platform is now visible" << std::endl;
                 ApplyPlatformVisibility();
-            } else if (opt_idx == 1) { // Reset Defaults
+            } else if (opt_idx == kPlatformRowResetDefaults) {
                 config.ResetPlatformVisibilityDefaults();
                 config.Save();
                 std::cout << "[PLATFORMS] Reset to default visibility" << std::endl;
@@ -1596,15 +1785,37 @@ namespace romm::ui {
         }
             break;
         case SettingsCategory::SwitchOnline: {
-            // Rows 0-3 are the read-only checklist and row 7 is the log path;
-            // only Restore, Remove all and the manual install screen act.
-            constexpr size_t kRowRestore = 4;
-            constexpr size_t kRowRemoveAll = 5;
-            constexpr size_t kRowManual = 6;
+            // Row 0 picks the app; rows 1-5 are the read-only checklist and
+            // row 9 is the log path; only Restore, Remove all and the manual
+            // install screen act, and all three follow row 0.
+            constexpr size_t kRowPlatform = 0;
+            constexpr size_t kRowRestore = 6;
+            constexpr size_t kRowRemoveAll = 7;
+            constexpr size_t kRowManual = 8;
 
-            if (opt_idx == kRowRestore) {
+            if (opt_idx == kRowPlatform) {
+                // No default: -Wswitch is what catches a platform being added to
+                // the enum and never wired in here. It already missed one —
+                // Nintendo 64 was left out of the cycle, which made the whole
+                // N64 page (restore, remove all, manual install) unreachable.
+                switch (g_nso_page_platform) {
+                    case romm::nso::NsoPlatform::Snes:
+                        g_nso_page_platform = romm::nso::NsoPlatform::Nes; break;
+                    case romm::nso::NsoPlatform::Nes:
+                        g_nso_page_platform = romm::nso::NsoPlatform::GameBoy; break;
+                    case romm::nso::NsoPlatform::GameBoy:
+                        g_nso_page_platform = romm::nso::NsoPlatform::Gba; break;
+                    case romm::nso::NsoPlatform::Gba:
+                        g_nso_page_platform = romm::nso::NsoPlatform::N64; break;
+                    case romm::nso::NsoPlatform::N64:
+                        g_nso_page_platform = romm::nso::NsoPlatform::Snes; break;
+                }
+                // Re-scan on the way in: the user may have set this app's
+                // LayeredFS up since the tab was opened.
+                romm::nso::NsoSnesInstaller::Instance().RefreshDetection(g_nso_page_platform);
+            } else if (opt_idx == kRowRestore) {
                 auto& installer = romm::nso::NsoSnesInstaller::Instance();
-                if (installer.HasBackup() && !installer.IsBusy()) {
+                if (installer.HasBackup(g_nso_page_platform) && !installer.IsBusy()) {
                     confirm_modal->Show(
                         romm::i18n::tr("settings.confirm.restore_nso.title"),
                         romm::i18n::tr("settings.confirm.restore_nso.message"),
@@ -1614,13 +1825,13 @@ namespace romm::ui {
                             // run headless: restoring rewrites the LayeredFS, and
                             // the step list is the only place that reports what
                             // it actually did.
-                            if (nso_snes_modal) nso_snes_modal->ShowRestore();
+                            if (nso_snes_modal) nso_snes_modal->ShowRestore(g_nso_page_platform);
                         }
                     );
                 }
             } else if (opt_idx == kRowRemoveAll) {
                 auto& installer = romm::nso::NsoSnesInstaller::Instance();
-                const size_t injected = installer.InjectedGameCount();
+                const size_t injected = installer.InjectedGameCount(g_nso_page_platform);
                 if (injected > 0 && !installer.IsBusy()) {
                     confirm_modal->Show(
                         romm::i18n::tr("settings.confirm.remove_all_nso.title"),
@@ -1628,12 +1839,12 @@ namespace romm::ui {
                                            {{"count", std::to_string(injected)}}),
                         ConfirmAction::RemoveAllNsoGames,
                         [this]() {
-                            if (nso_snes_modal) nso_snes_modal->ShowUninstallAll();
+                            if (nso_snes_modal) nso_snes_modal->ShowUninstallAll(g_nso_page_platform);
                         }
                     );
                 }
             } else if (opt_idx == kRowManual) {
-                if (nso_snes_modal) nso_snes_modal->Show();
+                if (nso_snes_modal) nso_snes_modal->Show(g_nso_page_platform);
             }
         }
             break;
@@ -1802,9 +2013,10 @@ namespace romm::ui {
             // Show All + Reset Defaults + one row per canonical platform. Grows
             // with whatever the server reports, so it's derived, not a literal.
             case SettingsCategory::Platforms: return kPlatformActionRows + PlatformRows().size();
-            // 4 checklist rows (app, Full Unlock, database, string tables) +
-            // Restore backup + Remove all + Manual install screen + log path.
-            case SettingsCategory::SwitchOnline: return 8;
+            // App picker + 5 checklist rows (title id, Full Unlock, database,
+            // string tables, injected count) + Restore backup + Remove all +
+            // Manual install screen + log path.
+            case SettingsCategory::SwitchOnline: return 10;
             case SettingsCategory::Advanced: return 7; // cache rows only
             case SettingsCategory::Updates: {
                 size_t count = 3; // Channel, Check on startup, Check for updates
@@ -1880,18 +2092,23 @@ namespace romm::ui {
                 break;
             case 2: { // Switch Online
                 if (!romm::nso::PlatformSupportsInjection(plat->canonical_id)) break;
-                // Off -> Ask -> Always -> Off. Ask is resolved at download time
-                // by NavigationManager's prompt, which is also where the
-                // "always/never from now on" answers write this setting back.
-                romm::model::NsoInjectionMode next = romm::model::NsoInjectionMode::Off;
+                // ROM only -> Ask -> Both -> Classic only -> ROM only. Ask is
+                // resolved at download time by NavigationManager's prompt,
+                // which is also where ticking "remember" writes this back.
+                // No default: -Wswitch is what catches a mode added later and
+                // never wired in here.
+                romm::model::NsoInjectionMode next = romm::model::NsoInjectionMode::RomOnly;
                 switch (config.GetNsoInjectionMode(plat->canonical_id)) {
-                    case romm::model::NsoInjectionMode::Off:    next = romm::model::NsoInjectionMode::Ask; break;
-                    case romm::model::NsoInjectionMode::Ask:    next = romm::model::NsoInjectionMode::Always; break;
-                    case romm::model::NsoInjectionMode::Always: next = romm::model::NsoInjectionMode::Off; break;
+                    case romm::model::NsoInjectionMode::RomOnly:    next = romm::model::NsoInjectionMode::Ask; break;
+                    case romm::model::NsoInjectionMode::Ask:        next = romm::model::NsoInjectionMode::Both; break;
+                    case romm::model::NsoInjectionMode::Both:       next = romm::model::NsoInjectionMode::InjectOnly; break;
+                    case romm::model::NsoInjectionMode::InjectOnly: next = romm::model::NsoInjectionMode::RomOnly; break;
                 }
                 config.SetNsoInjectionMode(plat->canonical_id, next);
                 config.Save();
-                romm::nso::NsoSnesInstaller::Instance().RefreshDetection();
+                romm::nso::NsoPlatform toggled_platform = romm::nso::NsoPlatform::Snes;
+                romm::nso::NsoPlatformForId(plat->canonical_id, toggled_platform);
+                romm::nso::NsoSnesInstaller::Instance().RefreshDetection(toggled_platform);
                 std::cout << "[NSO] platform=" << plat->canonical_id
                           << " injection=" << romm::model::ConfigManager::NsoInjectionModeToString(next) << std::endl;
                 break;

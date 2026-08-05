@@ -1,8 +1,17 @@
 #include "NsoSnesInstaller.hpp"
 
+#include "GbRom.hpp"
+#include "GbaRom.hpp"
+#include "N64Rom.hpp"
+#include "NesRom.hpp"
 #include "NsoImage.hpp"
 #include "NsoJson.hpp"
 #include "NsoLog.hpp"
+#include "NsoGbDb.hpp"
+#include "NsoGbaDb.hpp"
+#include "NsoN64Db.hpp"
+#include "NsoN64MetaPack.hpp"
+#include "NsoNesDb.hpp"
 #include "SfromWriter.hpp"
 #include "SnesRom.hpp"
 
@@ -72,6 +81,22 @@ namespace romm::nso {
             if (size < 0) { std::fclose(f); return false; }
             out.resize((size_t)size);
             const size_t read = size > 0 ? std::fread(&out[0], 1, out.size(), f) : 0;
+            std::fclose(f);
+            return read == out.size();
+        }
+
+        // Same, for a binary payload. The NES path needs the whole ROM in
+        // memory to parse its header and hash it; SNES gets this via
+        // SfromWriter instead.
+        bool ReadFileBytes(const std::string& path, std::vector<uint8_t>& out) {
+            FILE* f = std::fopen(path.c_str(), "rb");
+            if (!f) return false;
+            std::fseek(f, 0, SEEK_END);
+            const long size = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (size <= 0) { std::fclose(f); return false; }
+            out.resize((size_t)size);
+            const size_t read = std::fread(out.data(), 1, out.size(), f);
             std::fclose(f);
             return read == out.size();
         }
@@ -287,10 +312,10 @@ namespace romm::nso {
             int rom_id = 0;
         };
 
-        std::map<std::string, InjectedEntry> LoadInjectedIndex() {
+        std::map<std::string, InjectedEntry> LoadInjectedIndex(const std::string& index_path) {
             std::map<std::string, InjectedEntry> out;
             std::string text;
-            if (!ReadFileText(kInjectedIndex, text)) return out;
+            if (!ReadFileText(index_path, text)) return out;
             size_t pos = 0;
             while (pos < text.size()) {
                 size_t eol = text.find('\n', pos);
@@ -322,7 +347,8 @@ namespace romm::nso {
             return out;
         }
 
-        void SaveInjectedIndex(const std::map<std::string, InjectedEntry>& index) {
+        void SaveInjectedIndex(const std::string& root, const std::string& index_path,
+                               const std::map<std::string, InjectedEntry>& index) {
             std::string text;
             for (const auto& entry : index) {
                 // Four fields. rom_id was added to InjectedEntry and to the
@@ -334,8 +360,144 @@ namespace romm::nso {
                       + "\t" + std::to_string(entry.second.rom_id) + "\n";
             }
             std::string error;
-            EnsureDir(kNsoRoot);
-            WriteFileAtomic(kInjectedIndex, text, error);
+            EnsureDir(root);
+            WriteFileAtomic(index_path, text, error);
+        }
+
+        // ------------------------------------------------------------------
+        // Platform profile
+        // ------------------------------------------------------------------
+        //
+        // Everything that differs between the Switch Online apps, in one place.
+        // The pipeline below reads this instead of hardcoding SNES: the staging
+        // and backup order, the rollback and the validation are identical for
+        // both platforms, and duplicating 1600 lines to change six strings and
+        // four function calls would guarantee the two copies drifted.
+        struct NsoProfile {
+            NsoPlatform platform = NsoPlatform::Snes;
+            const char* name = "SNES Online";
+            const char* rom_kind = "SNES ROM";
+
+            std::string root;
+            std::string staging;
+            std::string backups;
+            std::string index;
+
+            // Asset file suffixes, in the order they are staged and installed.
+            // SNES has four (the zeroed .sfromsig included), NES three.
+            std::vector<std::string> asset_suffixes;
+
+            // Whether the ROM goes through a container step (.sfrom) or is
+            // installed byte for byte (.nes).
+            bool container_rom = true;
+        };
+
+        NsoProfile MakeProfile(NsoPlatform platform) {
+            NsoProfile p;
+            p.platform = platform;
+            if (platform == NsoPlatform::N64) {
+                p.name = "Nintendo 64 Online";
+                p.rom_kind = "Nintendo 64 ROM";
+                p.root = "sdmc:/switch/romm-nx/nso-n64";
+                p.container_rom = false;
+                // ".bnz" is the file that gets written — a zlib stream — while
+                // the database entry names ".bin". Both are listed so removal
+                // finds whichever is there, including a raw one left by another
+                // tool. ".dtz" is the MetaPack, without which the title installs
+                // perfectly and crashes the moment it is launched.
+                p.asset_suffixes = {".bnz", ".bin", ".dtz", ".png", "-details.png"};
+            } else if (platform == NsoPlatform::Gba) {
+                p.name = "Game Boy Advance Online";
+                p.rom_kind = "Game Boy Advance ROM";
+                p.root = "sdmc:/switch/romm-nx/nso-gba";
+                p.container_rom = false;
+                p.asset_suffixes = {".gba", ".png", "-details.png"};
+            } else if (platform == NsoPlatform::GameBoy) {
+                p.name = "Game Boy Online";
+                p.rom_kind = "Game Boy ROM";
+                p.root = "sdmc:/switch/romm-nx/nso-gb";
+                p.container_rom = false;
+                // Both extensions: which one a title uses depends on the ROM's
+                // own Color flag, not on the platform, so the removal path has
+                // to look for either.
+                p.asset_suffixes = {".gb", ".gbc", ".png", "-details.png"};
+            } else if (platform == NsoPlatform::Nes) {
+                p.name = "NES Online";
+                p.rom_kind = "NES ROM";
+                p.root = "sdmc:/switch/romm-nx/nso-nes";
+                p.container_rom = false;
+                // ".png" must not be tested before "00.png" would be: both are
+                // suffixes of the details file name, and the removal path
+                // matches on the full "<code><suffix>" so order is safe either
+                // way — but the install order is what the log shows, so keep
+                // ROM, cover, details.
+                p.asset_suffixes = {".nes", ".png", "00.png"};
+            } else {
+                p.root = "sdmc:/switch/romm-nx/nso-snes";
+                p.asset_suffixes = {".sfrom", ".sfromsig", ".png", "-details.png"};
+            }
+            p.staging = p.root + "/staging";
+            p.backups = p.root + "/backups";
+            p.index = p.root + "/injected.txt";
+            return p;
+        }
+
+        // The key-guide labels a platform's info screen shows, and the ONE place
+        // that mapping is allowed to live.
+        //
+        // Install writes these keys into every strings.lng and removal erases
+        // them, so the two disagreeing is not cosmetic: whatever removal does
+        // not know about stays on the console forever. They did disagree —
+        // removal assumed SNES for everything except NES, which left N64's
+        // eleven controller keys (cunit_*, stick_*, z_r_) behind on every
+        // uninstall, in every language. Route both sides through here.
+        const std::vector<NsoGuideKey>& GuideKeysFor(NsoPlatform platform) {
+            switch (platform) {
+                case NsoPlatform::N64:     return N64GuideKeys();
+                case NsoPlatform::Gba:     return GbaGuideKeys();
+                case NsoPlatform::GameBoy: return GbGuideKeys();
+                case NsoPlatform::Nes:     return NesGuideKeys();
+                default:                   return SnesGuideKeys();
+            }
+        }
+
+        // Every guide key any platform can write, deduplicated.
+        //
+        // Removal uses this rather than GuideKeysFor(). Install has to be exact
+        // — it is writing the keys — but removal only has to be exhaustive, and
+        // erasing a key that was never there costs nothing (EraseMembers simply
+        // does not find it). That makes "removal erases everything install could
+        // have written" true by construction rather than by two lists agreeing,
+        // and it also cleans up after older builds whose key set differed.
+        const std::vector<NsoGuideKey>& AllGuideKeys() {
+            static const std::vector<NsoGuideKey> keys = [] {
+                std::vector<NsoGuideKey> all;
+                const std::vector<NsoGuideKey>* sets[] = {
+                    &SnesGuideKeys(), &NesGuideKeys(), &GbGuideKeys(),
+                    &GbaGuideKeys(), &N64GuideKeys()
+                };
+                for (const auto* set : sets) {
+                    for (const auto& key : *set) {
+                        bool seen = false;
+                        for (const auto& have : all) {
+                            if (std::strcmp(have.suffix, key.suffix) == 0) { seen = true; break; }
+                        }
+                        if (!seen) all.push_back(key);
+                    }
+                }
+                return all;
+            }();
+            return keys;
+        }
+
+        NsoSnesInstall DetectFor(NsoPlatform platform) {
+            switch (platform) {
+                case NsoPlatform::Nes:     return DetectNsoNes();
+                case NsoPlatform::GameBoy: return DetectNsoGb();
+                case NsoPlatform::Gba:     return DetectNsoGba();
+                case NsoPlatform::N64:     return DetectNsoN64();
+                default:                   return DetectNsoSnes();
+            }
         }
 
     } // namespace
@@ -354,8 +516,50 @@ namespace romm::nso {
         }
     }
 
+    bool IsNsoPlatformUnstable(NsoPlatform platform) {
+        return platform == NsoPlatform::N64;
+    }
+
     bool PlatformSupportsInjection(const std::string& canonical_platform_id) {
-        return canonical_platform_id == "snes";
+        NsoPlatform ignored;
+        return NsoPlatformForId(canonical_platform_id, ignored);
+    }
+
+    bool NsoPlatformForId(const std::string& canonical_platform_id, NsoPlatform& out) {
+        if (canonical_platform_id == "snes") {
+            out = NsoPlatform::Snes;
+            return true;
+        }
+        if (canonical_platform_id == "nes") {
+            out = NsoPlatform::Nes;
+            return true;
+        }
+        // Both RomM platforms feed the one Game Boy app. Whether a title ends up
+        // as DMG or CGB is decided from the cartridge header at install time,
+        // not from which shelf the library filed it on.
+        if (canonical_platform_id == "gb" || canonical_platform_id == "gbc") {
+            out = NsoPlatform::GameBoy;
+            return true;
+        }
+        if (canonical_platform_id == "gba") {
+            out = NsoPlatform::Gba;
+            return true;
+        }
+        if (canonical_platform_id == "n64") {
+            out = NsoPlatform::N64;
+            return true;
+        }
+        return false;
+    }
+
+    const char* NsoPlatformName(NsoPlatform platform) {
+        switch (platform) {
+            case NsoPlatform::Nes:     return "NES Online";
+            case NsoPlatform::GameBoy: return "Game Boy Online";
+            case NsoPlatform::Gba:     return "Game Boy Advance Online";
+            case NsoPlatform::N64:     return "Nintendo 64 Online";
+            default:                   return "SNES Online";
+        }
     }
 
     NsoSnesInstaller& NsoSnesInstaller::Instance() {
@@ -367,15 +571,17 @@ namespace romm::nso {
         return NsoLog::Instance().Path();
     }
 
-    void NsoSnesInstaller::RefreshDetection() {
-        NsoSnesInstall found = DetectNsoSnes();
+    void NsoSnesInstaller::RefreshDetection(NsoPlatform platform) {
+        // Detection runs outside the lock: it walks /atmosphere and parses a
+        // database, which is far too long to hold a mutex the UI polls.
+        NsoSnesInstall found = DetectFor(platform);
         std::lock_guard<std::mutex> lock(mutex);
-        detection = found;
+        detection[PlatformSlot(platform)] = found;
     }
 
-    NsoSnesInstall NsoSnesInstaller::GetDetection() const {
+    NsoSnesInstall NsoSnesInstaller::GetDetection(NsoPlatform platform) const {
         std::lock_guard<std::mutex> lock(mutex);
-        return detection;
+        return detection[PlatformSlot(platform)];
     }
 
     NsoPipelineState NsoSnesInstaller::GetState() const {
@@ -403,22 +609,23 @@ namespace romm::nso {
         return steps;
     }
 
-    std::string NsoSnesInstaller::LatestBackupPath() const {
-        if (!IsDirectory(kBackupsDir)) return std::string();
-        DIR* dir = opendir(kBackupsDir);
+    std::string NsoSnesInstaller::LatestBackupPath(NsoPlatform platform) const {
+        const std::string backups = MakeProfile(platform).backups;
+        if (!IsDirectory(backups)) return std::string();
+        DIR* dir = opendir(backups.c_str());
         if (!dir) return std::string();
         std::string newest;
         while (dirent* entry = readdir(dir)) {
             const std::string name = entry->d_name;
             if (name == "." || name == "..") continue;
-            const std::string full = std::string(kBackupsDir) + "/" + name;
+            const std::string full = backups + "/" + name;
             if (!IsDirectory(full)) continue;
             if (!PathExists(full + "/manifest.txt")) continue;
             // Names are YYYYMMDD-HHMMSS, so lexical order is chronological.
             if (name > newest) newest = name;
         }
         closedir(dir);
-        return newest.empty() ? std::string() : (std::string(kBackupsDir) + "/" + newest);
+        return newest.empty() ? std::string() : (backups + "/" + newest);
     }
 
     void NsoSnesInstaller::ResetSteps(const std::vector<std::string>& names) {
@@ -496,8 +703,8 @@ namespace romm::nso {
         PipelineJob* job = static_cast<PipelineJob*>(arg);
         switch (job->kind) {
             case NsoJobKind::Install:      job->self->RunInstall(job->request); break;
-            case NsoJobKind::Restore:      job->self->RunRestore(); break;
-            case NsoJobKind::UninstallAll: job->self->RunUninstallAll(); break;
+            case NsoJobKind::Restore:      job->self->RunRestore(job->request.platform); break;
+            case NsoJobKind::UninstallAll: job->self->RunUninstallAll(job->request.platform); break;
         }
         job->self->busy.store(false);
         delete job;
@@ -545,11 +752,13 @@ namespace romm::nso {
     }
 
 
-    NsoInstallOutcome NsoSnesInstaller::UninstallSync(int rom_id, const std::string& fallback_title) {
+    NsoInstallOutcome NsoSnesInstaller::UninstallSync(int rom_id, const std::string& fallback_title,
+                                                      NsoPlatform platform) {
         NsoInstallOutcome outcome;
         auto& log = NsoLog::Instance();
+        const NsoProfile profile = MakeProfile(platform);
 
-        auto index = LoadInjectedIndex();
+        auto index = LoadInjectedIndex(profile.index);
         std::string hash, code, title;
         for (const auto& entry : index) {
             if (entry.second.rom_id != rom_id || entry.second.code.empty()) continue;
@@ -580,13 +789,13 @@ namespace romm::nso {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        log.BeginSession("Remove \"" + title + "\" (" + code + ") from SNES Online");
+        log.BeginSession("Remove \"" + title + "\" (" + code + ") from " + profile.name);
         if (matched_by_title) {
             log.Line("matched by title: this index entry was written before rom_id was recorded");
         }
 
         std::string error;
-        const bool ok = RemoveInjectedEntry(hash, code, title, error);
+        const bool ok = RemoveInjectedEntry(platform, hash, code, title, error);
         log.EndSession(ok, ok ? title + " removed" : error);
         busy.store(false);
         outcome.success = ok;
@@ -599,18 +808,20 @@ namespace romm::nso {
     // bulk "remove all" below. Assumes the caller holds `busy` and has a log
     // session open — it must not touch either, or the bulk path (which holds
     // busy for the whole run) would deadlock against itself.
-    bool NsoSnesInstaller::RemoveInjectedEntry(const std::string& hash, const std::string& code,
+    bool NsoSnesInstaller::RemoveInjectedEntry(NsoPlatform platform,
+                                               const std::string& hash, const std::string& code,
                                                const std::string& title, std::string& out_error) {
         auto& log = NsoLog::Instance();
-        auto index = LoadInjectedIndex();
+        const NsoProfile profile = MakeProfile(platform);
+        auto index = LoadInjectedIndex(profile.index);
 
         auto finish = [&](bool ok, const std::string& why) {
             if (!ok) out_error = why;
             return ok;
         };
 
-        NsoSnesInstall install = DetectNsoSnes();
-        if (!install.found) return finish(false, "no SNES Online LayeredFS found");
+        NsoSnesInstall install = DetectFor(platform);
+        if (!install.found) return finish(false, std::string("no ") + profile.name + " LayeredFS found");
 
         TitlesDb db;
         if (!LoadTitlesDb(install.database_path, db)) return finish(false, db.error);
@@ -628,12 +839,14 @@ namespace romm::nso {
             if (!ReadFileText(file, original)) continue;
             std::string patched;
             bool changed = false;
-            if (!UnpatchStringsFile(original, code, patched, changed, error)) return finish(false, error);
+            if (!UnpatchStringsFile(original, code, AllGuideKeys(), patched, changed, error)) {
+                return finish(false, error);
+            }
             if (changed) new_strings.emplace_back(file, patched);
         }
 
         const std::string title_dir = install.titles_dir + "/" + code;
-        const std::string backup_dir = std::string(kBackupsDir) + "/" + NowStamp(true);
+        const std::string backup_dir = profile.backups + "/" + NowStamp(true);
         EnsureDir(backup_dir);
         if (!IsDirectory(backup_dir)) return finish(false, "cannot create " + backup_dir);
 
@@ -651,9 +864,8 @@ namespace romm::nso {
         for (size_t i = 0; i < new_strings.size(); ++i) {
             if (!back_up(new_strings[i].first, "strings_" + std::to_string(i) + ".lng")) return finish(false, copy_error);
         }
-        const char* kAssetSuffix[4] = {".sfrom", ".sfromsig", ".png", "-details.png"};
-        for (int i = 0; i < 4; ++i) {
-            if (!back_up(title_dir + "/" + code + kAssetSuffix[i], "asset_" + std::to_string(i))) {
+        for (size_t i = 0; i < profile.asset_suffixes.size(); ++i) {
+            if (!back_up(title_dir + "/" + code + profile.asset_suffixes[i], "asset_" + std::to_string(i))) {
                 return finish(false, copy_error);
             }
         }
@@ -691,8 +903,8 @@ namespace romm::nso {
         log.Line("removed " + title_dir);
 
         index.erase(hash);
-        SaveInjectedIndex(index);
-        RefreshDetection();
+        SaveInjectedIndex(profile.root, profile.index, index);
+        RefreshDetection(platform);
         return true;
     }
 
@@ -709,19 +921,21 @@ namespace romm::nso {
         }
     }
 
-    size_t NsoSnesInstaller::InjectedGameCount() const {
+    size_t NsoSnesInstaller::InjectedGameCount(NsoPlatform platform) const {
         size_t count = 0;
-        for (const auto& entry : LoadInjectedIndex()) {
+        for (const auto& entry : LoadInjectedIndex(MakeProfile(platform).index)) {
             if (!entry.second.code.empty()) count++;
         }
         return count;
     }
 
-    void NsoSnesInstaller::StartUninstallAll() {
+    void NsoSnesInstaller::StartUninstallAll(NsoPlatform platform) {
         bool expected = false;
         if (!busy.compare_exchange_strong(expected, true)) return;
         ResetSteps({});
-        if (!SpawnWorker(NsoJobKind::UninstallAll, NsoInstallRequest{})) {
+        NsoInstallRequest job_request;
+        job_request.platform = platform;
+        if (!SpawnWorker(NsoJobKind::UninstallAll, job_request)) {
             ResetSteps({"Start pipeline"});
             FailStep(0, NsoErrorKind::FileWrite, "could not start the worker thread");
             busy.store(false);
@@ -736,16 +950,17 @@ namespace romm::nso {
     // Fixed step list rather than one step per game: with 28 injected titles a
     // per-game list runs off the bottom of the progress panel, so the running
     // count lives in step 1's detail instead.
-    void NsoSnesInstaller::RunUninstallAll() {
+    void NsoSnesInstaller::RunUninstallAll(NsoPlatform platform) {
         auto& log = NsoLog::Instance();
-        log.BeginSession("Remove every romm-nx-injected game from SNES Online");
+        const NsoProfile profile = MakeProfile(platform);
+        log.BeginSession(std::string("Remove every romm-nx-injected game from ") + profile.name);
 
         ResetSteps({"Read injected index", "Remove entries", "Verify database"});
 
         struct Target { std::string hash, code, title; };
         std::vector<Target> targets;
         BeginStep(0);
-        for (const auto& entry : LoadInjectedIndex()) {
+        for (const auto& entry : LoadInjectedIndex(profile.index)) {
             if (entry.second.code.empty()) continue;
             targets.push_back({entry.first, entry.second.code, entry.second.title});
         }
@@ -771,7 +986,7 @@ namespace romm::nso {
             UpdateStep(1, std::to_string(i + 1) + " / " + std::to_string(targets.size())
                           + " - " + targets[i].title);
             std::string error;
-            if (RemoveInjectedEntry(targets[i].hash, targets[i].code, targets[i].title, error)) {
+            if (RemoveInjectedEntry(platform, targets[i].hash, targets[i].code, targets[i].title, error)) {
                 removed++;
                 log.Line("removed " + targets[i].code + " (" + targets[i].title + ")");
             } else {
@@ -792,8 +1007,8 @@ namespace romm::nso {
         }
 
         BeginStep(2);
-        RefreshDetection();
-        const auto detection = GetDetection();
+        RefreshDetection(platform);
+        const auto detection = GetDetection(platform);
         FinishStep(2, std::to_string(detection.entry_count) + " entries, "
                       + std::to_string(detection.injected_asset_dirs) + " asset folders left");
 
@@ -806,16 +1021,18 @@ namespace romm::nso {
                 std::lock_guard<std::mutex> lock(mutex);
                 state = NsoPipelineState::Success;
             }
-            SetSummary("Removed all " + std::to_string(removed) + " romm-nx-injected games from SNES Online.");
+            SetSummary("Removed all " + std::to_string(removed) + " romm-nx-injected games from " + profile.name + ".");
             log.EndSession(true, tally);
         }
     }
 
-    void NsoSnesInstaller::StartRestore() {
+    void NsoSnesInstaller::StartRestore(NsoPlatform platform) {
         bool expected = false;
         if (!busy.compare_exchange_strong(expected, true)) return;
         ResetSteps({});
-        if (!SpawnWorker(NsoJobKind::Restore, NsoInstallRequest{})) {
+        NsoInstallRequest job_request;
+        job_request.platform = platform;
+        if (!SpawnWorker(NsoJobKind::Restore, job_request)) {
             ResetSteps({"Start pipeline"});
             FailStep(0, NsoErrorKind::FileWrite, "could not start the worker thread");
             busy.store(false);
@@ -825,15 +1042,28 @@ namespace romm::nso {
     void NsoSnesInstaller::RunInstall(NsoInstallRequest request) {
         auto& log = NsoLog::Instance();
         auto& config = romm::model::ConfigManager::Instance();
+        const NsoProfile profile = MakeProfile(request.platform);
+        const bool is_nes = (request.platform == NsoPlatform::Nes);
+        const bool is_gb = (request.platform == NsoPlatform::GameBoy);
+        const bool is_gba = (request.platform == NsoPlatform::Gba);
+        const bool is_n64 = (request.platform == NsoPlatform::N64);
+        // Set from the cartridge header once the ROM is analysed. It decides the
+        // code prefix, the ROM extension and the entry's "platform" field, so it
+        // cannot be known before step 5. The whole parse is kept, not just the
+        // mode: step 8 builds the code from the global checksum in it.
+        GbMode gb_mode = GbMode::Dmg;
+        GbRomInfo gb_info;
+        GbaRomInfo gba_info;
+        N64RomInfo n64_info;
 
         ResetSteps({
-            "Detect SNES Online installation",   // 0
+            std::string("Detect ") + profile.name + " installation",   // 0
             "Prepare staging area",              // 1
             "Fetch RomM metadata",               // 2
             "Download ROM",                      // 3
             "Download cover",                    // 4
-            "Analyse SNES ROM",                  // 5
-            "Generate .sfrom",                   // 6
+            std::string("Analyse ") + profile.rom_kind,                // 5
+            profile.container_rom ? "Generate .sfrom" : "Prepare ROM file", // 6
             "Convert cover images",              // 7
             "Build database entry",              // 8
             "Validate staged database",          // 9
@@ -844,26 +1074,31 @@ namespace romm::nso {
             "Verify installation"                // 14
         });
 
-        log.BeginSession("SNES Online injection test for \"" + request.title + "\" (rom_id " +
+        log.BeginSession(std::string(profile.name) + " injection for \"" + request.title + "\" (rom_id " +
                          std::to_string(request.rom_id) + ")");
 
         // --- 0. Detection -------------------------------------------------
         BeginStep(0);
-        NsoSnesInstall install = DetectNsoSnes();
+        NsoSnesInstall install = DetectFor(request.platform);
         {
             std::lock_guard<std::mutex> lock(mutex);
-            detection = install;
+            detection[PlatformSlot(request.platform)] = install;
         }
         if (!install.found) {
             FailStep(0, NsoErrorKind::NotDetected,
-                     install.error.empty() ? "no SNES Online LayeredFS found" : install.error);
+                     install.error.empty() ? (std::string("no ") + profile.name + " LayeredFS found")
+                                           : install.error);
             log.EndSession(false, "detection failed");
             return;
         }
         log.KV("nso.title_id", install.title_id);
         log.KV("nso.content_root", install.content_root);
         log.KV("nso.database", install.database_path);
-        log.KV("nso.exefs_mod", install.has_exefs_mod ? "present" : "absent");
+        // Only SNES has a signature check; logging "absent" for the others
+        // would read as a problem in a log written to diagnose problems.
+        if (request.platform == NsoPlatform::Snes) {
+            log.KV("nso.exefs_mod", install.has_exefs_mod ? "present" : "absent");
+        }
         log.KV("nso.entries_before", std::to_string(install.entry_count));
         for (size_t i = 0; i < install.strings_files.size(); ++i) {
             log.KV("nso.strings[" + install.strings_languages[i] + "]", install.strings_files[i]);
@@ -873,15 +1108,18 @@ namespace romm::nso {
         // --- 1. Staging ---------------------------------------------------
         BeginStep(1);
         log.Line("clearing staging directory");
-        RemoveDirectoryTree(kStagingDir);
+        RemoveDirectoryTree(profile.staging);
         log.Line("creating staging directory");
-        EnsureDir(kStagingDir);
-        if (!IsDirectory(kStagingDir)) {
-            FailStep(1, ClassifyWriteFailure(), std::string("cannot create ") + kStagingDir);
+        EnsureDir(profile.staging);
+        if (!IsDirectory(profile.staging)) {
+            FailStep(1, ClassifyWriteFailure(), "cannot create " + profile.staging);
             log.EndSession(false, "staging unavailable");
             return;
         }
-        log.KV("staging.dir", kStagingDir);
+        log.KV("staging.dir", profile.staging);
+        // Created whether or not it is used: an empty folder on the card is how
+        // a user discovers that dropping a community .dtz there is an option.
+        if (is_n64) EnsureDir(kN64MetaPackDir);
         FinishStep(1, "ready");
 
         // --- 2. Metadata --------------------------------------------------
@@ -1002,7 +1240,7 @@ namespace romm::nso {
 
         // --- 3. ROM download ----------------------------------------------
         BeginStep(3);
-        const std::string staged_rom = std::string(kStagingDir) + "/source.rom";
+        const std::string staged_rom = profile.staging + "/source.rom";
         if (!request.local_rom_path.empty() && FileSize(request.local_rom_path) > 0) {
             // The download flow already fetched this ROM. Copy it into staging
             // rather than pulling it down a second time — which is also what
@@ -1047,7 +1285,7 @@ namespace romm::nso {
 
         // --- 4. Cover download --------------------------------------------
         BeginStep(4);
-        const std::string staged_cover = std::string(kStagingDir) + "/source_cover.img";
+        const std::string staged_cover = profile.staging + "/source_cover.img";
         bool have_cover = false;
         if (request.cover_url.empty()) {
             SkipStep(4, "RomM has no cover for this ROM");
@@ -1069,14 +1307,319 @@ namespace romm::nso {
         }
         if (!have_cover) {
             FailStep(4, NsoErrorKind::CoverDecode,
-                     "no cover art available; SNES Online requires a cover image for every entry");
+                     std::string("no cover art available; ") + profile.name +
+                     " requires a cover image for every entry");
             log.EndSession(false, "no cover");
             return;
         }
 
-        // --- 5/6. ROM analysis and .sfrom generation -----------------------
+        // --- 5/6. ROM analysis and container -------------------------------
+        //
+        // The two platforms diverge here and nowhere else in the pipeline. SNES
+        // wraps the ROM in a .sfrom plus a zeroed .sfromsig; NES installs the
+        // .nes byte for byte, header included, and has no signature file at all.
+        // `rom_sha256` is what both paths feed to the code allocator and the
+        // injected-games index.
+        std::string rom_sha256;
+        std::string rom_internal_title; // SNES cartridge header title, if any
+        std::string staged_rom_file;   // what lands as <CODE>.sfrom / <CODE>.nes
+        std::string staged_sfromsig;   // SNES only; empty for NES
+        std::string staged_metapack;   // N64 only: the <CODE>.dtz the app boots from
+        bool metapack_from_user = false; // a community pack, rather than generated
+        bool n64_metapack_pal = false;   // what the generated pack ended up with,
+        size_t n64_metapack_idle = 0;    // for the success page
+
+        if (is_n64) {
+            // The only platform whose ROM is neither copied nor wrapped but
+            // rewritten: byte-order converted if needed, then zlib-compressed,
+            // streamed rather than buffered because these run to 64 MiB.
+            BeginStep(5);
+            log.Line("reading the Nintendo 64 ROM header");
+            n64_info = InspectN64RomFile(staged_rom);
+            if (!n64_info.valid) {
+                const NsoErrorKind kind = n64_info.unsupported ? NsoErrorKind::UnsupportedRom
+                                                               : NsoErrorKind::InvalidRom;
+                FailStep(5, kind,
+                         "Invalid Nintendo 64 ROM." + std::string(1, char(10)) + n64_info.error +
+                         std::string(1, char(10)) + "No Nintendo 64 Online files were modified.");
+                log.EndSession(false, "ROM rejected");
+                return;
+            }
+            log.KV("rom.format", N64FormatName(n64_info.source_format));
+            log.KV("rom.name", n64_info.internal_name);
+            log.KV("rom.cartridge_id", n64_info.cartridge_id);
+            log.KV("rom.country", std::string(1, n64_info.country_code) + " (" +
+                                   N64CountryName(n64_info.country_code) + ")");
+            log.KV("rom.crc1", N64Crc1Hex(n64_info.crc1));
+            for (const auto& warning : n64_info.warnings) log.Line("warning: " + warning);
+            // Not a fault in the dump, and not something the app minds — but the
+            // MetaPack an N64 title needs to boot is published per ROM, and
+            // almost every one that exists is for the US build.
+            if (!IsN64UsRegion(n64_info.country_code)) {
+                log.Line("warning: this is a " + std::string(N64CountryName(n64_info.country_code)) +
+                         " dump; MetaPacks are published mostly for US ROMs");
+            }
+            {
+                std::string detail = std::string(N64FormatName(n64_info.source_format)) + ", " +
+                                     HumanBytes((long long)n64_info.file_size);
+                if (!n64_info.internal_name.empty()) detail += ", " + n64_info.internal_name;
+                detail += ", " + std::string(N64CountryName(n64_info.country_code));
+                if (!IsN64UsRegion(n64_info.country_code)) detail += " - few MetaPacks exist";
+                FinishStep(5, detail);
+            }
+
+            BeginStep(6);
+            UpdateStep(6, "converting and compressing");
+            staged_rom_file = profile.staging + "/title.bnz";
+            std::string convert_error;
+            if (!ConvertN64RomToBnz(staged_rom, staged_rom_file, n64_info.source_format,
+                                    rom_sha256, convert_error)) {
+                FailStep(6, ClassifyWriteFailure(), convert_error);
+                log.EndSession(false, "rom conversion failed");
+                return;
+            }
+            rom_internal_title = n64_info.internal_name;
+            log.KV("rom.sha256", rom_sha256);
+
+            // --- the MetaPack ------------------------------------------------
+            // The one file that decides whether any of the above matters. A
+            // community pack is always preferred: it carries a real idle
+            // address, the cartridge's actual save type and any per-game ROM
+            // patches, none of which can be derived from the dump.
+            UpdateStep(6, "preparing the MetaPack");
+            staged_metapack = profile.staging + "/title.dtz";
+            std::string matched_by;
+            const std::string user_pack =
+                FindUserN64MetaPack(request.rom_filename, request.title, n64_info.crc1, matched_by);
+
+            if (!user_pack.empty()) {
+                std::string pack_bytes;
+                std::vector<std::string> members;
+                std::string pack_error;
+                if (!ReadFileText(user_pack, pack_bytes)) {
+                    pack_error = "could not read it";
+                } else if (!VerifyN64MetaPack(pack_bytes, members, pack_error)) {
+                    // Leave pack_error as VerifyN64MetaPack set it.
+                } else {
+                    std::string copy_error;
+                    if (CopyFile(user_pack, staged_metapack, copy_error)) {
+                        metapack_from_user = true;
+                        log.KV("metapack.source", user_pack + " (matched by " + matched_by + ")");
+                        log.KV("metapack.members", std::to_string(members.size()));
+                    } else {
+                        pack_error = copy_error;
+                    }
+                }
+                if (!metapack_from_user) {
+                    // Not fatal: a generated pack still goes in below, and the
+                    // install is no worse off than before MetaPacks existed.
+                    log.Line("warning: ignoring " + user_pack + " - " + pack_error);
+                }
+            } else {
+                log.Line("no community MetaPack in " + std::string(kN64MetaPackDir) +
+                         " for this game (looked for " + N64Crc1Hex(n64_info.crc1) + ".dtz)");
+            }
+
+            if (!metapack_from_user) {
+                N64MetaPackOptions options;
+                // 50 Hz builds need this or they get NTSC video timing. It is
+                // the one field that genuinely differs between a US and a
+                // European pack.
+                options.pal = IsN64PalRegion(n64_info.country_code);
+
+                // Only loops that cannot be left except by an interrupt, so an
+                // entry here is derived rather than guessed. Often empty, which
+                // is the correct answer when nothing qualifies.
+                for (const N64IdleLoop& loop :
+                         ScanN64BootIdle(staged_rom, n64_info.source_format, n64_info.entry_point)) {
+                    options.idle.push_back({loop.addr, loop.inst});
+                }
+
+                std::string pack_error;
+                if (!WriteN64MetaPack(staged_metapack, options, pack_error)) {
+                    FailStep(6, ClassifyWriteFailure(), pack_error);
+                    log.EndSession(false, "metapack generation failed");
+                    return;
+                }
+                n64_metapack_pal = options.pal;
+                n64_metapack_idle = options.idle.size();
+                std::string detail = "generated";
+                detail += options.pal ? ", PAL" : ", NTSC";
+                detail += ", " + std::to_string(options.idle.size()) + " idle entr" +
+                          (options.idle.size() == 1 ? "y" : "ies");
+                detail += ", " + options.backup_type + " save";
+                log.KV("metapack.source", detail);
+                for (const auto& entry : options.idle) {
+                    log.KV("metapack.idle", N64Crc1Hex(entry.jmp_addr) + " / " + N64Crc1Hex(entry.jmp_inst));
+                }
+            }
+            log.KV("metapack.bytes", HumanBytes(FileSize(staged_metapack)));
+
+            {
+                const long long packed = FileSize(staged_rom_file);
+                const long long source = (long long)n64_info.file_size;
+                const int percent = source > 0 ? (int)((packed * 100) / source) : 0;
+                log.KV("rom.bnz", HumanBytes(packed) + " (" + std::to_string(percent) + "% of the ROM)");
+                FinishStep(6, HumanBytes(packed) + ", zlib " + std::to_string(percent) + "%" +
+                              (n64_info.converted ? ", byte order converted" : "") +
+                              (metapack_from_user ? ", community MetaPack" : ", generated MetaPack"));
+            }
+        } else if (is_gba) {
+            BeginStep(5);
+            log.Line("reading and analysing the Game Boy Advance ROM image");
+            std::vector<uint8_t> rom_bytes;
+            if (!ReadFileBytes(staged_rom, rom_bytes)) {
+                FailStep(5, NsoErrorKind::InvalidRom, "could not read the downloaded ROM");
+                log.EndSession(false, "ROM unreadable");
+                return;
+            }
+            gba_info = AnalyzeGbaRom(rom_bytes);
+            if (!gba_info.valid) {
+                const NsoErrorKind kind = gba_info.unsupported ? NsoErrorKind::UnsupportedRom
+                                                               : NsoErrorKind::InvalidRom;
+                FailStep(5, kind,
+                         "Invalid Game Boy Advance ROM." + std::string(1, char(10)) + gba_info.error +
+                         std::string(1, char(10)) + "No Game Boy Advance Online files were modified.");
+                log.EndSession(false, "ROM rejected");
+                return;
+            }
+            rom_sha256 = gba_info.sha256;
+            rom_internal_title = gba_info.internal_title;
+            log.KV("rom.title", gba_info.internal_title);
+            log.KV("rom.game_code", gba_info.game_code);
+            log.KV("rom.maker", gba_info.maker_code);
+            log.KV("rom.sha256", gba_info.sha256);
+            for (const auto& warning : gba_info.warnings) log.Line("warning: " + warning);
+            {
+                std::string detail = gba_info.game_code + ", " + HumanBytes((long long)gba_info.file_size);
+                if (!gba_info.warnings.empty()) {
+                    detail += " - " + gba_info.warnings.front();
+                    if (gba_info.warnings.size() > 1) {
+                        detail += " (+" + std::to_string(gba_info.warnings.size() - 1) + " more, see log)";
+                    }
+                }
+                FinishStep(5, detail);
+            }
+
+            BeginStep(6);
+            staged_rom_file = profile.staging + "/title.gba";
+            std::string copy_error;
+            if (!CopyFile(staged_rom, staged_rom_file, copy_error)) {
+                FailStep(6, ClassifyWriteFailure(), copy_error);
+                log.EndSession(false, "ROM staging failed");
+                return;
+            }
+            FinishStep(6, HumanBytes(FileSize(staged_rom_file)));
+        } else if (is_gb) {
+            BeginStep(5);
+            log.Line("reading and analysing the Game Boy ROM image");
+            std::vector<uint8_t> rom_bytes;
+            if (!ReadFileBytes(staged_rom, rom_bytes)) {
+                FailStep(5, NsoErrorKind::InvalidRom, "could not read the downloaded ROM");
+                log.EndSession(false, "ROM unreadable");
+                return;
+            }
+            const GbRomInfo gb = AnalyzeGbRom(rom_bytes);
+            if (!gb.valid) {
+                const NsoErrorKind kind = gb.unsupported ? NsoErrorKind::UnsupportedRom
+                                                         : NsoErrorKind::InvalidRom;
+                FailStep(5, kind,
+                         "Invalid Game Boy ROM.\n" + gb.error +
+                         "\nNo Game Boy Online files were modified.");
+                log.EndSession(false, "ROM rejected");
+                return;
+            }
+            gb_mode = gb.mode;
+            gb_info = gb;
+            rom_sha256 = gb.sha256;
+            rom_internal_title = gb.internal_title;
+            log.KV("rom.mode", gb_mode == GbMode::Cgb ? "CGB (Game Boy Color)" : "DMG (Game Boy)");
+            log.KV("rom.title", gb.internal_title);
+            log.KV("rom.cartridge", GbCartridgeTypeName(gb.cartridge_type).empty()
+                                        ? "unknown"
+                                        : GbCartridgeTypeName(gb.cartridge_type));
+            log.KV("rom.global_checksum", GbChecksumHex(gb.global_checksum));
+            log.KV("rom.sha256", gb.sha256);
+            for (const auto& warning : gb.warnings) log.Line("warning: " + warning);
+            {
+                std::string detail = (gb_mode == GbMode::Cgb ? "Game Boy Color, " : "Game Boy, ") +
+                                     HumanBytes((long long)gb.file_size);
+                if (!gb.warnings.empty()) {
+                    detail += " - " + gb.warnings.front();
+                    if (gb.warnings.size() > 1) {
+                        detail += " (+" + std::to_string(gb.warnings.size() - 1) + " more, see log)";
+                    }
+                }
+                FinishStep(5, detail);
+            }
+
+            BeginStep(6);
+            staged_rom_file = profile.staging + "/title" + GbRomSuffix(gb_mode);
+            std::string copy_error;
+            if (!CopyFile(staged_rom, staged_rom_file, copy_error)) {
+                FailStep(6, ClassifyWriteFailure(), copy_error);
+                log.EndSession(false, "ROM staging failed");
+                return;
+            }
+            FinishStep(6, HumanBytes(FileSize(staged_rom_file)) + ", " +
+                          (gb_mode == GbMode::Cgb ? ".gbc" : ".gb"));
+        } else if (is_nes) {
+            BeginStep(5);
+            log.Line("reading and analysing the NES ROM image");
+            std::vector<uint8_t> rom_bytes;
+            if (!ReadFileBytes(staged_rom, rom_bytes)) {
+                FailStep(5, NsoErrorKind::InvalidRom, "could not read the downloaded ROM");
+                log.EndSession(false, "ROM unreadable");
+                return;
+            }
+            const NesRomInfo nes = AnalyzeNesRom(rom_bytes);
+            if (!nes.valid) {
+                const NsoErrorKind kind = nes.unsupported ? NsoErrorKind::UnsupportedRom
+                                                          : NsoErrorKind::InvalidRom;
+                FailStep(5, kind,
+                         (nes.unsupported ? "Unsupported NES image.\n"
+                                          : "Invalid NES ROM.\n") +
+                         nes.error + "\nNo NES Online files were modified.");
+                log.EndSession(false, "ROM rejected");
+                return;
+            }
+            rom_sha256 = nes.sha256;
+            log.KV("rom.container", NesContainerName(nes.container));
+            log.KV("rom.mapper", std::to_string(nes.mapper) +
+                                 (NesMapperName(nes.mapper).empty() ? "" : " (" + NesMapperName(nes.mapper) + ")"));
+            log.KV("rom.prg", HumanBytes((long long)nes.prg_size));
+            log.KV("rom.chr", nes.chr_ram ? "CHR RAM" : HumanBytes((long long)nes.chr_size));
+            log.KV("rom.sha256", nes.sha256);
+            for (const auto& warning : nes.warnings) log.Line("warning: " + warning);
+            {
+                std::string detail = NesContainerName(nes.container) + ", mapper " +
+                                     std::to_string(nes.mapper) + ", " + HumanBytes((long long)nes.file_size);
+                if (!nes.warnings.empty()) {
+                    detail += " - " + nes.warnings.front();
+                    if (nes.warnings.size() > 1) {
+                        detail += " (+" + std::to_string(nes.warnings.size() - 1) + " more, see log)";
+                    }
+                }
+                FinishStep(5, detail);
+            }
+
+            // "Generation" for NES is a copy into staging under the name the
+            // installer expects. Deliberately still a step of its own: it is
+            // where a full SD card shows up, and staging the file means the
+            // install phase copies from a verified local source rather than
+            // from the download directory.
+            BeginStep(6);
+            staged_rom_file = profile.staging + "/title.nes";
+            std::string copy_error;
+            if (!CopyFile(staged_rom, staged_rom_file, copy_error)) {
+                FailStep(6, ClassifyWriteFailure(), copy_error);
+                log.EndSession(false, "ROM staging failed");
+                return;
+            }
+            FinishStep(6, HumanBytes(FileSize(staged_rom_file)) + ", iNES header kept");
+        } else {
         BeginStep(5);
-        const std::string staged_sfrom = std::string(kStagingDir) + "/title.sfrom";
+        const std::string staged_sfrom = profile.staging + "/title.sfrom";
         log.Line("reading and analysing the ROM image");
         SfromConversionResult conversion = ConvertToSfrom(staged_rom, staged_sfrom);
         if (!conversion.rom.valid) {
@@ -1110,28 +1653,44 @@ namespace romm::nso {
             log.EndSession(false, "sfrom generation failed");
             return;
         }
-        const std::string staged_sfromsig = std::string(kStagingDir) + "/title.sfromsig";
+        staged_sfromsig = profile.staging + "/title.sfromsig";
         std::string sig_error;
         if (!WriteSfromSig(staged_sfromsig, sig_error)) {
             FailStep(6, ClassifyWriteFailure(), sig_error);
             log.EndSession(false, "sfromsig write failed");
             return;
         }
+        rom_sha256 = conversion.rom.sha256;
+        rom_internal_title = conversion.rom.internal_title;
+        staged_rom_file = staged_sfrom;
         FinishStep(6, HumanBytes((long long)conversion.totalBytes) + ", footer " + conversion.footerHex);
+        } // end SNES container branch
 
         // --- 7. Images -----------------------------------------------------
         BeginStep(7);
-        const std::string staged_cover_png = std::string(kStagingDir) + "/title.png";
-        const std::string staged_details_png = std::string(kStagingDir) + "/title-details.png";
-        log.Line("decoding cover and encoding the 512x374 PNG");
-        NsoImageResult cover_result = ConvertCover(staged_cover, staged_cover_png);
+        const std::string staged_cover_png = profile.staging + "/title.png";
+        const std::string staged_details_png = profile.staging + "/title-details.png";
+        // SNES fits the art into a fixed 512x374 box; NES fixes the height at
+        // 512 and lets the width follow the source aspect. Both then render the
+        // same 400x300 details screen.
+        log.Line(profile.container_rom ? "decoding cover and encoding the 512x374 PNG"
+                                       : "decoding cover and encoding the 512-tall PNG");
+        // N64 covers are 512x374, the same box SNES uses; measured on CaVE's
+        // own output for an injected title.
+        NsoImageResult cover_result =
+            (is_gb || is_gba) ? ConvertCoverGb(staged_cover, staged_cover_png)  :
+            is_nes            ? ConvertCoverNes(staged_cover, staged_cover_png) :
+                                ConvertCover(staged_cover, staged_cover_png);
         if (!cover_result.success) {
             FailStep(7, NsoErrorKind::ImageConversion, cover_result.error);
             log.EndSession(false, "cover conversion failed");
             return;
         }
-        log.Line("encoding the 400x300 details PNG");
-        NsoImageResult details_result = ConvertDetails(staged_cover, staged_details_png);
+        // Game Boy's details screen is 1069x802, not the 400x300 the SNES and
+        // NES apps use.
+        log.Line(is_gb ? "encoding the 1069x802 details PNG" : "encoding the 400x300 details PNG");
+        NsoImageResult details_result = is_gb ? ConvertDetailsGb(staged_cover, staged_details_png)
+                                              : ConvertDetails(staged_cover, staged_details_png);
         if (!details_result.success) {
             FailStep(7, NsoErrorKind::ImageConversion, details_result.error);
             log.EndSession(false, "details conversion failed");
@@ -1146,7 +1705,10 @@ namespace romm::nso {
                                     std::to_string(details_result.output_height) + ", " +
                                     std::to_string(details_result.output_bytes) + " bytes");
         FinishStep(7, std::to_string(cover_result.source_width) + "x" + std::to_string(cover_result.source_height) +
-                       " -> 512x374 + 400x300");
+                       " -> " + std::to_string(cover_result.output_width) + "x" +
+                       std::to_string(cover_result.output_height) + " + " +
+                       std::to_string(details_result.output_width) + "x" +
+                       std::to_string(details_result.output_height));
 
         // --- 8. Database entry ---------------------------------------------
         BeginStep(8);
@@ -1170,10 +1732,10 @@ namespace romm::nso {
             return;
         }
 
-        auto injected = LoadInjectedIndex();
+        auto injected = LoadInjectedIndex(profile.index);
         std::string preferred_code;
         {
-            auto it = injected.find(conversion.rom.sha256);
+            auto it = injected.find(rom_sha256);
             if (it != injected.end()) {
                 preferred_code = it->second.code;
                 // The remembered slot is only reusable if it is still free, or
@@ -1192,16 +1754,45 @@ namespace romm::nso {
             }
         }
         const bool is_reinstall = !preferred_code.empty() && HasCode(db, preferred_code);
-        const std::string code = AllocateGameCode(db, conversion.rom.sha256, preferred_code);
+        std::string code;
+        if (is_n64) {
+            code = AllocateN64GameCode(db, rom_sha256, preferred_code);
+        } else if (is_gba) {
+            // The cartridge's own four-character game code, as CaVE names them.
+            code = AllocateGbaGameCode(db, gba_info, preferred_code);
+        } else if (is_gb) {
+            // Derived, not allocated: a Game Boy code is the cartridge's own
+            // global checksum in hex, so it comes straight from the step-5
+            // parse. Re-reading the file here instead would risk falling back to
+            // a zeroed header — and D-0000_e — if the read failed.
+            code = AllocateGbGameCode(db, gb_info, preferred_code);
+        } else if (is_nes) {
+            code = AllocateNesGameCode(db, rom_sha256, preferred_code);
+        } else {
+            code = AllocateGameCode(db, rom_sha256, preferred_code);
+        }
         if (code.empty()) {
-            FailStep(8, NsoErrorKind::DuplicateEntry, "no free S-#### code left in the database");
+            FailStep(8, NsoErrorKind::DuplicateEntry,
+                     is_n64 ? "no free N-#### code left in the database" :
+                     is_gba ? "no free code left near this ROM's game code in the database" :
+                     is_gb  ? "no free code left near this ROM's checksum in the database" :
+                     is_nes ? "no free CLV-P-NZ__E code left in the database"
+                            : "no free S-#### code left in the database");
             log.EndSession(false, "code allocation failed");
             return;
         }
 
-        NsoTitleMeta meta;
+        NsoTitleMeta meta = is_n64 ? N64DefaultTitleMeta() :
+                            is_gba ? GbaDefaultTitleMeta() :
+                            is_gb  ? GbDefaultTitleMeta()  :
+                            is_nes ? NesDefaultTitleMeta() : NsoTitleMeta();
         meta.code = code;
-        meta.title = request.title.empty() ? conversion.rom.internal_title : request.title;
+        // SNES can fall back to the cartridge header's internal title; an iNES
+        // header carries no title at all, so NES has only what RomM supplied.
+        // SNES and Game Boy both carry a title in the cartridge header; an iNES
+        // header does not.
+        meta.title = !request.title.empty() ? request.title
+                     : (!rom_internal_title.empty() ? rom_internal_title : std::string("Unknown"));
         meta.sort_title = MakeSortKey(meta.title);
         meta.publisher = publisher.empty() ? "Unknown" : publisher;
         meta.sort_publisher = MakeSortKey(meta.publisher);
@@ -1210,10 +1801,19 @@ namespace romm::nso {
         meta.lcla6_release_date = TodayIso();
         meta.players_count = players_count;
         meta.simultaneous = players_count > 1;
-        meta.save_count = 1;
-        meta.volume = 100;
+        if (!is_nes && !is_gb && !is_gba && !is_n64) {
+            meta.save_count = 1;
+            meta.volume = 100;
+        }
+        // NES keeps NesDefaultTitleMeta()'s save_count 0 / volume 80, which is
+        // what CaVE writes for a ROM outside the stock catalogue.
 
-        const std::string entry_json = BuildTitleEntryJson(meta);
+        const std::string entry_json =
+            is_n64 ? BuildN64TitleEntryJson(meta, NsoN64Extras{})       :
+            is_gba ? BuildGbaTitleEntryJson(meta, NsoGbaExtras{})       :
+            is_gb  ? BuildGbTitleEntryJson(meta, gb_mode, NsoGbExtras{}) :
+            is_nes ? BuildNesTitleEntryJson(meta, NsoNesExtras{})        :
+                     BuildTitleEntryJson(meta);
         log.KV("db.entries_before", std::to_string(db.codes.size()));
         log.KV("db.generated_code", code + (is_reinstall ? " (reusing the slot from an earlier run)" : " (new)"));
         log.KV("db.entry_json", entry_json);
@@ -1229,7 +1829,7 @@ namespace romm::nso {
 
         // --- 9. Validate staged database ------------------------------------
         BeginStep(9);
-        const std::string staged_db = std::string(kStagingDir) + "/lclassics.titlesdb";
+        const std::string staged_db = profile.staging + "/lclassics.titlesdb";
         std::string write_error;
         if (!WriteFileAtomic(staged_db, new_db_text, write_error)) {
             FailStep(9, ClassifyWriteFailure(), write_error);
@@ -1243,7 +1843,13 @@ namespace romm::nso {
             return;
         }
         std::string verify_error;
-        if (!VerifySerializedDb(reread, db.codes, code, verify_error)) {
+        const bool staged_db_ok =
+            is_n64 ? VerifySerializedN64Db(reread, db.codes, code, verify_error)         :
+            is_gba ? VerifySerializedGbaDb(reread, db.codes, code, verify_error)         :
+            is_gb  ? VerifySerializedGbDb(reread, db.codes, code, gb_mode, verify_error) :
+            is_nes ? VerifySerializedNesDb(reread, db.codes, code, verify_error)         :
+                     VerifySerializedDb(reread, db.codes, code, verify_error);
+        if (!staged_db_ok) {
             FailStep(9, NsoErrorKind::Validation, verify_error);
             log.EndSession(false, "staged database validation failed");
             return;
@@ -1278,7 +1884,9 @@ namespace romm::nso {
             std::string patched;
             bool changed = false;
             std::string strings_error;
-            if (!PatchStringsFile(original, code, wrapped_description, patched, changed, strings_error)) {
+            if (!PatchStringsFile(original, code, wrapped_description,
+                                  GuideKeysFor(request.platform),
+                                  patched, changed, strings_error)) {
                 FailStep(9, NsoErrorKind::MalformedDatabase,
                          install.strings_languages[i] + "/strings.lng: " + strings_error);
                 log.EndSession(false, "strings patch failed");
@@ -1291,7 +1899,7 @@ namespace romm::nso {
 
         // --- 10. Backup ------------------------------------------------------
         BeginStep(10);
-        const std::string backup_dir = std::string(kBackupsDir) + "/" + NowStamp(true);
+        const std::string backup_dir = profile.backups + "/" + NowStamp(true);
         EnsureDir(backup_dir);
         if (!IsDirectory(backup_dir)) {
             FailStep(10, ClassifyWriteFailure(), "cannot create " + backup_dir);
@@ -1303,12 +1911,47 @@ namespace romm::nso {
         const bool title_dir_existed = IsDirectory(title_dir);
 
         struct Artefact { std::string staged; std::string target; };
-        const std::vector<Artefact> artefacts = {
-            {staged_sfrom,        title_dir + "/" + code + ".sfrom"},
-            {staged_sfromsig,     title_dir + "/" + code + ".sfromsig"},
-            {staged_cover_png,    title_dir + "/" + code + ".png"},
-            {staged_details_png,  title_dir + "/" + code + "-details.png"}
-        };
+        std::vector<Artefact> artefacts;
+        if (is_n64) {
+            // The compressed ROM lands as "<CODE>.bnz" while the entry above
+            // names "<CODE>.bin" — CaVE's arrangement, and what the app reads.
+            // The MetaPack sits beside them under the title's own code; nothing
+            // in the database entry points at it, so the name is the only thing
+            // tying it to the game.
+            artefacts = {
+                {staged_rom_file,    title_dir + "/" + code + ".bnz"},
+                {staged_metapack,    title_dir + "/" + code + kN64MetaPackSuffix},
+                {staged_cover_png,   title_dir + "/" + code + ".png"},
+                {staged_details_png, title_dir + "/" + code + "-details.png"}
+            };
+        } else if (is_gba) {
+            artefacts = {
+                {staged_rom_file,    title_dir + "/" + code + ".gba"},
+                {staged_cover_png,   title_dir + "/" + code + ".png"},
+                {staged_details_png, title_dir + "/" + code + "-details.png"}
+            };
+        } else if (is_gb) {
+            artefacts = {
+                {staged_rom_file,    title_dir + "/" + code + GbRomSuffix(gb_mode)},
+                {staged_cover_png,   title_dir + "/" + code + ".png"},
+                {staged_details_png, title_dir + "/" + code + "-details.png"}
+            };
+        } else if (is_nes) {
+            // Three files, and the details screen is "<CODE>00.png" here rather
+            // than SNES's "<CODE>-details.png".
+            artefacts = {
+                {staged_rom_file,    title_dir + "/" + code + ".nes"},
+                {staged_cover_png,   title_dir + "/" + code + ".png"},
+                {staged_details_png, title_dir + "/" + code + "00.png"}
+            };
+        } else {
+            artefacts = {
+                {staged_rom_file,    title_dir + "/" + code + ".sfrom"},
+                {staged_sfromsig,    title_dir + "/" + code + ".sfromsig"},
+                {staged_cover_png,   title_dir + "/" + code + ".png"},
+                {staged_details_png, title_dir + "/" + code + "-details.png"}
+            };
+        }
 
         std::vector<BackupRecord> records;
         std::string backup_error;
@@ -1355,7 +1998,7 @@ namespace romm::nso {
             manifest += "title_id=" + install.title_id + "\n";
             manifest += "code=" + code + "\n";
             manifest += "title=" + meta.title + "\n";
-            manifest += "sha256=" + conversion.rom.sha256 + "\n";
+            manifest += "sha256=" + rom_sha256 + "\n";
             manifest += "database=" + install.database_path + "\n";
             for (const auto& record : records) {
                 manifest.push_back(record.kind);
@@ -1482,7 +2125,13 @@ namespace romm::nso {
                 return;
             }
             std::string final_error;
-            if (!VerifySerializedDb(final_db.text, db.codes, code, final_error)) {
+            const bool final_db_ok =
+                is_n64 ? VerifySerializedN64Db(final_db.text, db.codes, code, final_error)         :
+                is_gba ? VerifySerializedGbaDb(final_db.text, db.codes, code, final_error)         :
+                is_gb  ? VerifySerializedGbDb(final_db.text, db.codes, code, gb_mode, final_error) :
+                is_nes ? VerifySerializedNesDb(final_db.text, db.codes, code, final_error)         :
+                         VerifySerializedDb(final_db.text, db.codes, code, final_error);
+            if (!final_db_ok) {
                 FailStep(14, NsoErrorKind::Validation, final_error);
                 rollback(final_error);
                 log.EndSession(false, "verification failed");
@@ -1502,23 +2151,49 @@ namespace romm::nso {
 
         // Record the hash -> code mapping so a reinstall reuses this slot.
         {
-            auto index = LoadInjectedIndex();
-            index[conversion.rom.sha256] = InjectedEntry{code, meta.title, request.rom_id};
-            SaveInjectedIndex(index);
+            auto index = LoadInjectedIndex(profile.index);
+            index[rom_sha256] = InjectedEntry{code, meta.title, request.rom_id};
+            SaveInjectedIndex(profile.root, profile.index, index);
         }
 
-        RemoveDirectoryTree(kStagingDir);
+        RemoveDirectoryTree(profile.staging);
 
         {
             std::lock_guard<std::mutex> lock(mutex);
             state = NsoPipelineState::Success;
-            summary = meta.title + " installed as " + code + ".\nReboot or relaunch SNES Online to see it.";
+            summary = meta.title + " installed as " + code + ".\nReboot or relaunch " +
+                      profile.name + " to see it.";
+            if (request.platform == NsoPlatform::N64) {
+                // Everything above can succeed and the game still not start:
+                // the N64 app boots each title from its MetaPack (.dtz). Saying
+                // which one went in is the difference between "romm-nx is
+                // broken" and "this game needs a community pack".
+                if (metapack_from_user) {
+                    summary += "\n\nInstalled with the community MetaPack found in " +
+                               std::string(kN64MetaPackDir) + ".";
+                } else {
+                    summary += "\n\nromm-nx generated a MetaPack for this title (";
+                    summary += n64_metapack_pal ? "PAL timing" : "NTSC timing";
+                    summary += ", " + std::to_string(n64_metapack_idle) + " idle entr" +
+                               (n64_metapack_idle == 1 ? "y" : "ies") + ").";
+                    if (n64_metapack_idle == 0) {
+                        // The one field that has been seen to decide whether a
+                        // title runs. Nothing in this ROM's boot segment
+                        // qualified, so say so rather than let a black screen
+                        // look unexplained.
+                        summary += "\nNo idle loop could be derived from this ROM. If the game does "
+                                   "not start, a community .dtz for it in " +
+                                   std::string(kN64MetaPackDir) + " is the fix - name it after the "
+                                   "ROM, the title, or its CRC1 " + N64Crc1Hex(n64_info.crc1) + ".";
+                    }
+                }
+            }
         }
         log.EndSession(true, meta.title + " -> " + code);
-        RefreshDetection();
+        RefreshDetection(request.platform);
     }
 
-    void NsoSnesInstaller::RunRestore() {
+    void NsoSnesInstaller::RunRestore(NsoPlatform platform) {
         auto& log = NsoLog::Instance();
 
         ResetSteps({
@@ -1529,12 +2204,13 @@ namespace romm::nso {
             "Validate restored database"
         });
 
-        log.BeginSession("SNES Online backup restore");
+        const NsoProfile profile = MakeProfile(platform);
+        log.BeginSession(std::string(profile.name) + " backup restore");
 
         BeginStep(0);
-        const std::string backup_dir = LatestBackupPath();
+        const std::string backup_dir = LatestBackupPath(platform);
         if (backup_dir.empty()) {
-            FailStep(0, NsoErrorKind::NotDetected, "no backup found under " + std::string(kBackupsDir));
+            FailStep(0, NsoErrorKind::NotDetected, "no backup found under " + profile.backups);
             log.EndSession(false, "no backup");
             return;
         }
@@ -1637,18 +2313,18 @@ namespace romm::nso {
         FinishStep(4, std::to_string(db.codes.size()) + " entries");
 
         if (!sha256.empty()) {
-            auto index = LoadInjectedIndex();
+            auto index = LoadInjectedIndex(profile.index);
             index.erase(sha256);
-            SaveInjectedIndex(index);
+            SaveInjectedIndex(profile.root, profile.index, index);
         }
 
         {
             std::lock_guard<std::mutex> lock(mutex);
             state = NsoPipelineState::Success;
-            summary = "Restored the SNES Online backup from " + backup_dir + ".";
+            summary = std::string("Restored the ") + profile.name + " backup from " + backup_dir + ".";
         }
         log.EndSession(true, "restored " + backup_dir);
-        RefreshDetection();
+        RefreshDetection(platform);
     }
 
 }

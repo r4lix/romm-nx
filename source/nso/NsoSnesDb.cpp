@@ -486,8 +486,34 @@ namespace romm::nso {
         return std::string(); // database is full of S-codes; caller reports it
     }
 
+    const std::vector<NsoGuideKey>& SnesGuideKeys() {
+        // Exactly the key set CaVE writes for an injected SNES title: one label
+        // per input the key-guide screen can show.
+        static const std::vector<NsoGuideKey> keys = {
+            {"META_TITLE_KEY_GUIDE_a_",             "A"},
+            {"META_TITLE_KEY_GUIDE_b_",             "B"},
+            {"META_TITLE_KEY_GUIDE_dpad_",          "D-Pad"},
+            {"META_TITLE_KEY_GUIDE_dpad_down_",     "D-Pad Down"},
+            {"META_TITLE_KEY_GUIDE_dpad_left_",     "D-Pad Left"},
+            {"META_TITLE_KEY_GUIDE_dpad_right_",    "D-Pad Right"},
+            {"META_TITLE_KEY_GUIDE_dpad_up_",       "D-Pad Up"},
+            {"META_TITLE_KEY_GUIDE_l_",             "L"},
+            {"META_TITLE_KEY_GUIDE_mouse_l_",       "Mouse L"},
+            {"META_TITLE_KEY_GUIDE_mouse_r_",       "Mouse R"},
+            {"META_TITLE_KEY_GUIDE_notation_",      "Notation"},
+            {"META_TITLE_KEY_GUIDE_r_",             "R"},
+            {"META_TITLE_KEY_GUIDE_select_",        "Select"},
+            {"META_TITLE_KEY_GUIDE_start_",         "Start"},
+            {"META_TITLE_KEY_GUIDE_supplementary_", "Supplementary"},
+            {"META_TITLE_KEY_GUIDE_x_",             "X"},
+            {"META_TITLE_KEY_GUIDE_y_",             "Y"}
+        };
+        return keys;
+    }
+
     bool PatchStringsFile(const std::string& text, const std::string& code,
                           const std::string& description,
+                          const std::vector<NsoGuideKey>& guide,
                           std::string& out_text, bool& changed, std::string& error) {
         error.clear();
         changed = false;
@@ -511,34 +537,12 @@ namespace romm::nso {
 
         const std::string key_code = CodeToStringKey(code);
 
-        // Exactly the key set CaVE writes for an injected title: the info-screen
-        // description plus one label per input the key-guide screen can show.
-        struct KeyValue { const char* suffix; const char* value; };
-        static const KeyValue kGuide[] = {
-            {"META_TITLE_KEY_GUIDE_a_",             "A"},
-            {"META_TITLE_KEY_GUIDE_b_",             "B"},
-            {"META_TITLE_KEY_GUIDE_dpad_",          "D-Pad"},
-            {"META_TITLE_KEY_GUIDE_dpad_down_",     "D-Pad Down"},
-            {"META_TITLE_KEY_GUIDE_dpad_left_",     "D-Pad Left"},
-            {"META_TITLE_KEY_GUIDE_dpad_right_",    "D-Pad Right"},
-            {"META_TITLE_KEY_GUIDE_dpad_up_",       "D-Pad Up"},
-            {"META_TITLE_KEY_GUIDE_l_",             "L"},
-            {"META_TITLE_KEY_GUIDE_mouse_l_",       "Mouse L"},
-            {"META_TITLE_KEY_GUIDE_mouse_r_",       "Mouse R"},
-            {"META_TITLE_KEY_GUIDE_notation_",      "Notation"},
-            {"META_TITLE_KEY_GUIDE_r_",             "R"},
-            {"META_TITLE_KEY_GUIDE_select_",        "Select"},
-            {"META_TITLE_KEY_GUIDE_start_",         "Start"},
-            {"META_TITLE_KEY_GUIDE_supplementary_", "Supplementary"},
-            {"META_TITLE_KEY_GUIDE_x_",             "X"},
-            {"META_TITLE_KEY_GUIDE_y_",             "Y"}
-        };
-
+        // The info-screen description plus the caller's key-guide set.
         std::vector<std::pair<std::string, std::string>> wanted;
-        wanted.reserve(1 + sizeof(kGuide) / sizeof(kGuide[0]));
+        wanted.reserve(1 + guide.size());
         wanted.emplace_back("META_TITLE_COMMENT_" + key_code, description);
-        for (const auto& kv : kGuide) {
-            wanted.emplace_back(std::string(kv.suffix) + key_code, kv.value);
+        for (const auto& kv : guide) {
+            wanted.emplace_back(std::string(kv.suffix) + key_code, kv.label);
         }
 
         // KEY ORDER MATTERS. A stock strings.lng is sorted, and the first build
@@ -727,23 +731,13 @@ namespace romm::nso {
     }
 
 
-    std::vector<std::string> TitleStringKeys(const std::string& code) {
-        static const char* kSuffixes[] = {
-            "META_TITLE_COMMENT_",
-            "META_TITLE_KEY_GUIDE_a_", "META_TITLE_KEY_GUIDE_b_",
-            "META_TITLE_KEY_GUIDE_dpad_", "META_TITLE_KEY_GUIDE_dpad_down_",
-            "META_TITLE_KEY_GUIDE_dpad_left_", "META_TITLE_KEY_GUIDE_dpad_right_",
-            "META_TITLE_KEY_GUIDE_dpad_up_", "META_TITLE_KEY_GUIDE_l_",
-            "META_TITLE_KEY_GUIDE_mouse_l_", "META_TITLE_KEY_GUIDE_mouse_r_",
-            "META_TITLE_KEY_GUIDE_notation_", "META_TITLE_KEY_GUIDE_r_",
-            "META_TITLE_KEY_GUIDE_select_", "META_TITLE_KEY_GUIDE_start_",
-            "META_TITLE_KEY_GUIDE_supplementary_", "META_TITLE_KEY_GUIDE_x_",
-            "META_TITLE_KEY_GUIDE_y_"
-        };
+    std::vector<std::string> TitleStringKeys(const std::string& code,
+                                             const std::vector<NsoGuideKey>& guide) {
         const std::string key_code = CodeToStringKey(code);
         std::vector<std::string> keys;
-        keys.reserve(sizeof(kSuffixes) / sizeof(kSuffixes[0]));
-        for (const char* suffix : kSuffixes) keys.push_back(std::string(suffix) + key_code);
+        keys.reserve(1 + guide.size());
+        keys.push_back("META_TITLE_COMMENT_" + key_code);
+        for (const auto& kv : guide) keys.push_back(std::string(kv.suffix) + key_code);
         return keys;
     }
 
@@ -805,6 +799,7 @@ namespace romm::nso {
     }
 
     bool UnpatchStringsFile(const std::string& text, const std::string& code,
+                            const std::vector<NsoGuideKey>& guide,
                             std::string& out_text, bool& changed, std::string& error) {
         changed = false;
         out_text = text;
@@ -821,7 +816,7 @@ namespace romm::nso {
         }
 
         size_t removed = 0;
-        if (!EraseMembers(text, strings.value_start, TitleStringKeys(code), out_text, removed, error)) return false;
+        if (!EraseMembers(text, strings.value_start, TitleStringKeys(code, guide), out_text, removed, error)) return false;
         changed = (removed > 0);
         if (!changed) return true;
 

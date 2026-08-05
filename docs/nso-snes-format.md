@@ -254,13 +254,18 @@ unmodded app — see the table below if this is ever extended.
 | GB/GBC | `0100C62011050000` | `.gbc` (raw) | `.png` |
 | Virtual Boy | `0100BFC01D976000` | `.vb` (raw) | `.png` |
 | N64 | `0100C9A00ECE6000` | `.bin` (raw) | `.png` |
-| NES | `0100D870045B6000` | `.nes` (raw) | `.xtx.z` |
-| Mega Drive | `0100B3C014BDA000` | `.bin` (raw) | `.xtx.z` |
-| SNES | `01008D300C50C000` | `.sfrom` | `.png` |
+| NES | `0100D870045B6000` | `.nes` (raw) | `.png` 359x512 |
+| Mega Drive | `0100B3C014BDA000` | `.bin` (raw) | ? |
+| SNES | `01008D300C50C000` | `.sfrom` | `.png` 512x374 |
 
 SNES is the hardest of the set: the only one needing a container format and the
-only one needing a mod. The `.xtx.z` covers the original brief expected belong to
-NES and Mega Drive.
+only one needing a mod.
+
+The NES row was `.xtx.z` here until CaVE's own stock database and image
+templates were read — the covers are ordinary PNG, and the rest of the NES
+format is written up in `nso-nes-format.md`. The `.xtx.z` the original brief
+expected has not turned up on any platform yet, so treat the Mega Drive entry as
+unverified too rather than as evidence for it.
 
 ## What romm-nx deliberately does not touch
 

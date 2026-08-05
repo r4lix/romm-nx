@@ -75,19 +75,37 @@ namespace romm::navigation {
         std::string canonical_id;   // canonical platform id the setting is keyed by
         std::string platform_name;  // display name, for the two "don't ask again" rows
         std::string title;
-        // Full Unlock missing: a warning on the modal, never a refusal — it can
-        // live inside a custom NSP where romm-nx cannot see it.
-        bool has_exefs_mod = true;
+        // Which caveat, if any, to show under the choices. Never a refusal —
+        // both are things the user can act on, and one of them (the Full
+        // Unlock) can be present somewhere romm-nx cannot see.
+        enum class Caution {
+            None,
+            MissingUnlock, // SNES only: the signature check is still in place
+            NeedsMetaPack  // N64 only: the ROM alone does not boot
+        };
+        Caution caution = Caution::None;
+        // Games this one answer covers. Empty for the ordinary single-game
+        // prompt; filled when ZR queued a selection, so a batch asks once
+        // rather than once per game — or, as it did before, not at all.
+        std::vector<std::pair<int, std::string>> batch; // rom_id -> title
         size_t selected_row = 0;
+        // The "remember this for <platform>" toggle. Off means the choice
+        // applies to this download only and the prompt comes back next time.
+        //
+        // Replaced a four-row layout that spelled out every combination
+        // (inject once / never / always inject / never inject). Adding a third
+        // action to that would have meant six rows saying four things.
+        bool remember = false;
         Screen source_screen = Screen::Library;
     };
 
-    // Rows of that modal, in display order.
+    // Rows of that modal, in display order. The first three are the actions;
+    // Remember is a toggle, and A on it flips the checkbox instead of closing.
     enum class NsoInjectChoiceRow {
-        InjectOnce,
-        DownloadOnly,
-        AlwaysInject,
-        NeverInject,
+        InjectOnly,   // install into the Switch Online app, delete the ROM
+        DownloadOnly, // ROM on the SD card, nothing injected
+        Both,
+        Remember,
         Count
     };
 
@@ -265,6 +283,12 @@ namespace romm::navigation {
         // Returns true when the prompt is up, meaning the caller must NOT
         // enqueue — answering the modal does that.
         bool MaybePromptNsoInjection(int rom_id, const std::string& platform_slug, const std::string& title);
+        // Same question for a whole ZR batch. Every game in a bulk selection
+        // belongs to the loaded platform, so one answer is the right shape.
+        // Returns true when the prompt is up, meaning the caller must NOT
+        // enqueue — answering does that for every game in `games`.
+        bool MaybePromptNsoInjectionBatch(const std::vector<std::pair<int, std::string>>& games,
+                                          const std::string& platform_slug);
 
         // Library Y-Menu controls
         bool IsLibraryMenuActive() const { return library_menu_active; }
@@ -282,6 +306,12 @@ namespace romm::navigation {
         void PollUpdateNotification();
 
     private:
+        // Shared front half of both prompt entry points: decides whether the
+        // question is worth asking for this platform at all (injectable, set to
+        // Ask, and a target actually present) and fills the payload fields that
+        // do not depend on which games it covers. Leaves the modal inactive.
+        bool PrepareNsoInjectPrompt(const std::string& platform_slug);
+
         UninstallModalPayload uninstall_modal;
         NsoInjectModalPayload nso_inject_modal;
         bool update_modal_active = false;

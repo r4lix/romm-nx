@@ -143,7 +143,7 @@ namespace romm::model {
 
     bool DownloadManager::IsGameInstalled(const std::string& platform_slug, const std::string& filename) {
         std::string final_path = ResolveGameInstallPath(platform_slug, filename);
-        
+
         if (platform_slug == "ps2") {
             if (IsLogicalFileValid(final_path)) {
                 return true;
@@ -152,7 +152,24 @@ namespace romm::model {
 
         struct stat buffer;
         bool exists = (stat(final_path.c_str(), &buffer) == 0 && buffer.st_size > 0);
-        return exists;
+        if (exists) return true;
+
+        // Installed into the Switch Online app with the ROM deliberately not
+        // kept. There is no file to stat, but the game IS installed — and this
+        // is what every "is it installed" question resolves to, so without it
+        // the library offers Download again and the Uninstall path (the only
+        // thing that removes the injected title) becomes unreachable.
+        //
+        // Neither caller holds index_mutex; see RefreshInstallCache and
+        // GetCachedInstallState, which both take install_cache_mutex only after
+        // this returns.
+        {
+            const std::string key = platform_slug + "|" + filename;
+            std::lock_guard<std::mutex> lock(index_mutex);
+            auto it = installed_index.find(key);
+            if (it != installed_index.end() && it->second.switch_online_only) return true;
+        }
+        return false;
     }
 
     void DownloadManager::LoadInstalledIndex() {
@@ -180,6 +197,14 @@ namespace romm::model {
                 jsonExtractString(block, "install_path", entry.install_path);
                 jsonExtractString(block, "cover_path", entry.cover_path);
                 jsonExtractInt(block, "rom_id", entry.rom_id);
+                {
+                    // Absent in every index written before inject-only existed,
+                    // which is exactly right: those all have a real ROM on the
+                    // card.
+                    int flag = 0;
+                    jsonExtractInt(block, "switch_online_only", flag);
+                    entry.switch_online_only = (flag != 0);
+                }
                 installed_index[key] = entry;
             }
             pos = end_pos + 1;
@@ -229,7 +254,9 @@ namespace romm::model {
             json_out += "    \"title\": \"" + JsonEscape(pair.second.title) + "\",\n";
             json_out += "    \"original_filename\": \"" + JsonEscape(pair.second.original_filename) + "\",\n";
             json_out += "    \"install_path\": \"" + JsonEscape(pair.second.install_path) + "\",\n";
-            json_out += "    \"cover_path\": \"" + JsonEscape(pair.second.cover_path) + "\"\n";
+            json_out += "    \"cover_path\": \"" + JsonEscape(pair.second.cover_path) + "\",\n";
+            json_out += "    \"switch_online_only\": " +
+                        std::string(pair.second.switch_online_only ? "1" : "0") + "\n";
             json_out += "  }";
         }
         json_out += "\n]\n";
@@ -279,13 +306,21 @@ namespace romm::model {
             for (auto& pair : installed_index) {
                 auto entry = pair.second;
                 bool exists = false;
-                if (entry.platform_slug == "ps2") {
+                if (entry.switch_online_only) {
+                    // Deliberately has no file: the ROM was deleted once the
+                    // Switch Online injection succeeded. This sweep exists to
+                    // drop entries whose ROM was removed behind romm-nx's back,
+                    // and without this check it would treat every inject-only
+                    // game as exactly that and quietly forget it — taking the
+                    // rom_id that uninstalling the injected title depends on.
+                    exists = true;
+                } else if (entry.platform_slug == "ps2") {
                     exists = IsLogicalFileValid(entry.install_path);
                 } else {
                     struct stat buffer;
                     exists = (stat(entry.install_path.c_str(), &buffer) == 0 && buffer.st_size > 0);
                 }
-                
+
                 if (exists) {
                     entry.platform_slug = NormalizePlatformSlug(entry.platform_slug);
                     if (entry.cover_path.empty()) {
@@ -731,6 +766,7 @@ namespace romm::model {
         {
             int rom_id = 0;
             std::string indexed_title;
+            std::string switch_online_only_key;
             {
                 std::lock_guard<std::mutex> lock(index_mutex);
                 for (const auto& entry : installed_index) {
@@ -739,13 +775,29 @@ namespace romm::model {
                     if (NormalizePlatformSlug(entry.second.platform_slug) != resolved_slug) continue;
                     rom_id = entry.second.rom_id;
                     indexed_title = entry.second.title;
+                    if (entry.second.switch_online_only) switch_online_only_key = entry.first;
                     break;
                 }
+            }
+            // An inject-only game has no file for the deletions below to remove
+            // and is now exempt from the reconcile sweep, so nothing else would
+            // ever drop it. Safe to erase before the removal below runs: the
+            // rom_id and title it needs are already copied out above.
+            if (!switch_online_only_key.empty()) {
+                {
+                    std::lock_guard<std::mutex> lock(index_mutex);
+                    installed_index.erase(switch_online_only_key);
+                }
+                SaveInstalledIndex();
             }
             if (rom_id > 0) {
                 // Title goes along as the fallback for index entries written
                 // before the rom_id field existed.
-                const auto outcome = romm::nso::NsoSnesInstaller::Instance().UninstallSync(rom_id, indexed_title);
+                romm::nso::NsoPlatform uninstall_platform = romm::nso::NsoPlatform::Snes;
+                romm::nso::NsoPlatformForId(romm::model::ResolvePlatformIdentity(resolved_slug, ""),
+                                            uninstall_platform);
+                const auto outcome = romm::nso::NsoSnesInstaller::Instance()
+                    .UninstallSync(rom_id, indexed_title, uninstall_platform);
                 if (!outcome.success) {
                     std::cerr << "[NSO] Could not remove " << filename
                               << " from Switch Online: " << outcome.error << std::endl;
@@ -965,7 +1017,7 @@ namespace romm::model {
         // Injection is decided here, once — not re-read when the task runs, so
         // changing the setting mid-queue cannot retroactively change what an
         // already-queued job does. Ask is resolved by the caller before
-        // enqueueing and arrives as InjectChoice::Yes/No; UseSetting means
+        // enqueueing and arrives as an explicit choice; UseSetting means
         // nobody asked, so an unresolved Ask is treated as "not this time"
         // rather than silently injecting.
         {
@@ -973,14 +1025,24 @@ namespace romm::model {
             const bool supported = romm::nso::PlatformSupportsInjection(canonical);
             const auto mode = config.GetNsoInjectionMode(canonical);
             bool wants_injection = false;
+            bool discard_rom = false;
             switch (inject) {
-                case InjectChoice::Yes:
+                case InjectChoice::Both:
                     wants_injection = supported;
                     break;
-                case InjectChoice::No:
+                case InjectChoice::InjectOnly:
+                    wants_injection = supported;
+                    // Only meaningful if the injection actually happens. For an
+                    // unsupported platform this collapses to an ordinary
+                    // download rather than deleting what the user asked for.
+                    discard_rom = supported;
+                    break;
+                case InjectChoice::RomOnly:
                     break;
                 case InjectChoice::UseSetting:
-                    wants_injection = supported && mode == NsoInjectionMode::Always;
+                    wants_injection = supported && (mode == NsoInjectionMode::Both ||
+                                                    mode == NsoInjectionMode::InjectOnly);
+                    discard_rom = supported && mode == NsoInjectionMode::InjectOnly;
                     if (supported && mode == NsoInjectionMode::Ask) {
                         // Bulk download and anything else that enqueues without
                         // a user present. Saying so is better than silently
@@ -991,14 +1053,17 @@ namespace romm::model {
                     break;
             }
             task.inject_nso = false;
+            task.discard_rom_after_inject = false;
             if (wants_injection) {
                 // Re-detect rather than trusting whatever the settings screen
                 // last cached: the target could have been removed, or never
                 // set up at all. Injecting into a LayeredFS that isn't there
                 // would silently do nothing, which is worse than not trying.
                 auto& installer = romm::nso::NsoSnesInstaller::Instance();
-                installer.RefreshDetection();
-                const auto detection = installer.GetDetection();
+                romm::nso::NsoPlatform nso_platform = romm::nso::NsoPlatform::Snes;
+                romm::nso::NsoPlatformForId(canonical, nso_platform);
+                installer.RefreshDetection(nso_platform);
+                const auto detection = installer.GetDetection(nso_platform);
                 if (!detection.found) {
                     std::cerr << "[NSO] Skipping injection for " << title
                               << ": no Switch Online target for " << canonical << std::endl;
@@ -1009,11 +1074,12 @@ namespace romm::model {
                     // it can live inside a custom NSP where romm-nx cannot see
                     // it.
                     task.inject_nso = true;
+                    task.discard_rom_after_inject = discard_rom;
                     if (!detection.database_exists) {
                         std::cout << "[NSO] No database yet; one will be created at "
                                   << detection.database_path << std::endl;
                     }
-                    if (!detection.has_exefs_mod) {
+                    if (nso_platform == romm::nso::NsoPlatform::Snes && !detection.has_exefs_mod) {
                         std::cerr << "[NSO] Warning: Full Unlock (exefs/subsdk9) not detected; "
                                      "injected ROMs will not load without it" << std::endl;
                     }
@@ -2007,15 +2073,21 @@ namespace romm::model {
             // happens next, so a failed injection never fails the download —
             // the game is still there for RetroArch or anything else.
             bool inject_now = false;
+            bool discard_rom = false;
             std::string inject_title;
             std::string inject_rom_path;
+            std::string inject_platform;
+            std::string inject_filename;
             {
                 std::lock_guard<std::mutex> lock(task_mutex);
                 for (auto& t : download_queue) {
                     if (t.rom_id != rom_id) continue;
                     inject_now = t.inject_nso;
+                    discard_rom = t.discard_rom_after_inject;
                     inject_title = t.title;
                     inject_rom_path = t.final_path;
+                    inject_platform = t.platform_slug;
+                    inject_filename = t.filename;
                     break;
                 }
             }
@@ -2028,10 +2100,51 @@ namespace romm::model {
                 req.rom_id = rom_id;
                 req.title = inject_title;
                 req.local_rom_path = inject_rom_path;
+                // Which Switch Online app this goes into. Falls back to SNES
+                // only if the task somehow carries no platform, which cannot
+                // happen for a task that reached this point with inject_nso set.
+                romm::nso::NsoPlatformForId(
+                    romm::model::ResolvePlatformIdentity(inject_platform, ""), req.platform);
                 const auto outcome = romm::nso::NsoSnesInstaller::Instance().InstallSync(req);
 
                 if (outcome.success) {
                     std::cout << "[NSO] Injected " << inject_title << " as " << outcome.code << std::endl;
+
+                    // "Install to Nintendo Classics only": the injected title
+                    // already holds its own copy of the ROM, so the download is
+                    // redundant. Deleted only here, on the success path — a
+                    // failed or retried injection keeps the file, which is also
+                    // what makes the retry above able to reuse it.
+                    if (discard_rom) {
+                        const std::string key = inject_platform + "|" + inject_filename;
+                        const Result rc = DeleteLogicalFile(inject_rom_path);
+                        if (R_SUCCEEDED(rc)) {
+                            std::cout << "[NSO] Removed the downloaded ROM; " << inject_title
+                                      << " now lives only in the Switch Online app" << std::endl;
+                        } else {
+                            std::cerr << "[NSO] Could not delete " << inject_rom_path
+                                      << "; the game is injected but the ROM is still on the card" << std::endl;
+                        }
+                        // Flagged either way. The entry has to stay so the
+                        // Installed screen can still list the game and, more
+                        // importantly, so uninstalling from there still finds
+                        // the rom_id it needs to remove the injected title.
+                        //
+                        // install_path is deliberately left alone: the Installed
+                        // screen reads it for the row's filename and location,
+                        // and blanking it would empty the row rather than mark
+                        // it. Only the size goes, because there is no file left
+                        // to have one.
+                        {
+                            std::lock_guard<std::mutex> lock(index_mutex);
+                            auto it = installed_index.find(key);
+                            if (it != installed_index.end()) {
+                                it->second.switch_online_only = true;
+                                it->second.size = 0;
+                            }
+                        }
+                        SaveInstalledIndex();
+                    }
                 } else {
                     std::cerr << "[NSO] Injection failed for " << inject_title << ": " << outcome.error << std::endl;
                     bool requeued = false;

@@ -92,8 +92,12 @@ namespace romm::nso {
             return (long)st.st_size;
         }
 
+        // `height_locked` switches the target from a fixed box to a fixed
+        // height: the canvas becomes exactly the scaled art, so nothing is
+        // padded. target_w is then a maximum rather than the width.
         NsoImageResult ConvertTo(const std::string& sourcePath, const std::string& outputPath,
-                                 int target_w, int target_h, bool with_alpha) {
+                                 int target_w, int target_h, bool with_alpha,
+                                 bool height_locked = false) {
             NsoImageResult result;
             result.output_width = target_w;
             result.output_height = target_h;
@@ -106,6 +110,21 @@ namespace romm::nso {
             }
             result.source_width = source->w;
             result.source_height = source->h;
+
+            if (height_locked && source->w > 0 && source->h > 0) {
+                int width = (int)((double)source->w * (double)target_h / (double)source->h + 0.5);
+                if (width < 1) width = 1;
+                if (width > target_w) {
+                    // Wider than the cap: fit by width and let the height come
+                    // down, rather than cropping or squashing.
+                    target_h = (int)((double)source->h * (double)target_w / (double)source->w + 0.5);
+                    if (target_h < 1) target_h = 1;
+                } else {
+                    target_w = width;
+                }
+                result.output_width = target_w;
+                result.output_height = target_h;
+            }
 
             // Blit as a straight copy: an RGBA source would otherwise be alpha
             // blended over the black canvas and lose its own transparency edges.
@@ -197,6 +216,18 @@ namespace romm::nso {
 
     NsoImageResult ConvertDetails(const std::string& sourcePath, const std::string& outputPath) {
         return ConvertTo(sourcePath, outputPath, kDetailsWidth, kDetailsHeight, false);
+    }
+
+    NsoImageResult ConvertCoverNes(const std::string& sourcePath, const std::string& outputPath) {
+        return ConvertTo(sourcePath, outputPath, kNesCoverMaxWidthPx, kNesCoverTargetHeight, true, true);
+    }
+
+    NsoImageResult ConvertCoverGb(const std::string& sourcePath, const std::string& outputPath) {
+        return ConvertTo(sourcePath, outputPath, kGbCoverBoxPx, kGbCoverBoxPx, true, true);
+    }
+
+    NsoImageResult ConvertDetailsGb(const std::string& sourcePath, const std::string& outputPath) {
+        return ConvertTo(sourcePath, outputPath, kGbDetailsWidthPx, kGbDetailsHeightPx, false);
     }
 
 }

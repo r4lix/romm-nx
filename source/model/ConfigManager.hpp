@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PlatformCatalog.hpp" // PlatformSortMode
+
 #include <string>
 #include <map>
 #include <mutex>
@@ -26,19 +28,30 @@ namespace romm::model {
         Banners // Column of platform logo art, selection pinned to a fixed slot
     };
 
-    // Whether downloading a game for a platform also installs it into the
-    // matching Nintendo Switch Online app.
+    // What downloading a game for a platform actually produces: a ROM on the SD
+    // card, a title in the matching Nintendo Switch Online app, or both.
     //
-    // Off is the default and must stay that way: injection writes into
-    // /atmosphere, and someone who only wants ROMs for RetroArch should never
-    // have that happen because they installed an update. The ROM itself always
-    // lands in the platform's ROM folder either way — injection is an extra
-    // destination, never a replacement.
+    // InjectOnly is the reason this is not a bool. An injected title already
+    // holds a full copy of the ROM inside /atmosphere, so keeping the download
+    // as well stores the same game twice — which on a 64 MiB N64 cartridge is
+    // worth caring about. The ROM is only deleted once the injection has
+    // actually succeeded; a failed one leaves the download exactly where it is.
     enum class NsoInjectionMode {
-        Off,
         Ask,
-        Always
+        RomOnly,    // download only, never touch /atmosphere
+        InjectOnly, // inject, then delete the downloaded ROM
+        Both        // inject and keep the ROM
     };
+
+    // What an injectable platform does before the user has said anything.
+    //
+    // Was Off, which meant the feature stayed invisible on a console that could
+    // run it: nothing prompts, nothing injects, and the Settings row reads "Off"
+    // as though it had been turned off deliberately. Ask is the honest default —
+    // it costs one prompt on the first download of a supported platform and
+    // makes the feature discoverable. Platforms romm-nx cannot inject never
+    // consult this.
+    constexpr NsoInjectionMode kDefaultNsoInjectionMode = NsoInjectionMode::Ask;
 
     class ConfigManager {
     public:
@@ -223,6 +236,23 @@ namespace romm::model {
         const std::set<std::string>& GetHiddenPlatformIds() const { return hidden_platforms; }
         const std::set<std::string>& GetKnownPlatformIds() const { return known_platforms; }
 
+        // --- Platform ordering (Settings > Platforms) ---------------------
+        // Applies wherever a platform list is drawn. Name is the default: a
+        // config written before this setting existed has no key, and server
+        // order — what those builds showed — is arbitrary enough that
+        // alphabetical is the friendlier thing to land on.
+        PlatformSortMode GetPlatformSortMode() const { return platform_sort_mode; }
+        void SetPlatformSortMode(PlatformSortMode mode) { platform_sort_mode = mode; }
+        std::string GetPlatformSortModeString() const;
+        static std::string PlatformSortModeToString(PlatformSortMode mode);
+        static PlatformSortMode PlatformSortModeFromString(const std::string& value);
+
+        // The user's own order, as canonical ids, read only in Custom mode.
+        // Platforms absent from it sort after every listed one, so a platform
+        // detected later appears at the end instead of vanishing.
+        const std::vector<std::string>& GetPlatformOrder() const { return platform_order; }
+        void SetPlatformOrder(std::vector<std::string> ids) { platform_order = std::move(ids); }
+
     private:
         ConfigManager();
 
@@ -279,6 +309,11 @@ namespace romm::model {
         // re-hiding one the user deliberately enabled earlier.
         std::set<std::string> hidden_platforms;
         std::set<std::string> known_platforms;
+
+        PlatformSortMode platform_sort_mode = PlatformSortMode::Name;
+        // Empty until the user first switches to Custom, which seeds it from
+        // whatever order was on screen at that moment.
+        std::vector<std::string> platform_order;
     };
 
 }

@@ -132,6 +132,21 @@ namespace romm::ui {
         CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type = CoverProfileType::DefaultPortrait, bool is_big = false, bool allow_download = true);
         CoverCacheResult GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, const std::string& variant, bool allow_download = true, int decode_w = 0, int decode_h = 0);
 
+        // Any decoded texture for this image, whatever size it was decoded at,
+        // or nullptr if none is ready.
+        //
+        // Decode size is part of the cache key, so the same picture at two
+        // display sizes is two entries. That is right for memory and wrong for
+        // the moment a viewer opens: the fullscreen viewer decodes at 1080p,
+        // finds its own entry cold even though the detail panel is displaying
+        // that very image, and would otherwise fall back to a DIFFERENT picture
+        // until the big decode lands. Showing the same image at the size we
+        // already have — softer for a moment, then replaced — is what the user
+        // asked for by opening it.
+        pu::sdl2::Texture FindReadyAnySize(int64_t rom_id, const std::string& platform_slug,
+                                           const std::string& cover_source,
+                                           const std::string& variant) const;
+
         // Drive the two-phase cover pipeline: hand completed downloads (or
         // disk-cache hits) to a worker thread for decoding, and upload
         // finished decodes to GPU textures (at most 2 uploads per call).

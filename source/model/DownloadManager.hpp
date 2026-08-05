@@ -21,6 +21,12 @@ namespace romm::model {
         std::string cover_path;
         long long size = 0;
         std::string installed_at;
+        // The game lives in the Switch Online app and nowhere else — the
+        // downloaded ROM was deleted once the injection succeeded. The entry
+        // stays so the Installed screen can still list it and, more
+        // importantly, so uninstalling from there still finds the rom_id it
+        // needs to remove the injected title.
+        bool switch_online_only = false;
     };
 
     enum class DownloadState {
@@ -75,6 +81,10 @@ namespace romm::model {
         // prompt), never re-read later, so changing the setting mid-queue can't
         // retroactively change what a queued job does.
         bool inject_nso = false;
+        // Delete the downloaded ROM once the injection has succeeded, so the
+        // game is not stored twice. Deliberately NOT named inject_only — that
+        // is the field right below and means something else entirely.
+        bool discard_rom_after_inject = false;
         // Requeued injection retry: the ROM is already on the SD card, so only
         // the injection is redone.
         bool inject_only = false;
@@ -101,6 +111,7 @@ namespace romm::model {
             title = other.title;
             platform_slug = other.platform_slug;
             inject_nso = other.inject_nso;
+            discard_rom_after_inject = other.discard_rom_after_inject;
             inject_only = other.inject_only;
             inject_attempts = other.inject_attempts;
             total_bytes = other.total_bytes;
@@ -123,6 +134,7 @@ namespace romm::model {
             title = other.title;
             platform_slug = other.platform_slug;
             inject_nso = other.inject_nso;
+            discard_rom_after_inject = other.discard_rom_after_inject;
             inject_only = other.inject_only;
             inject_attempts = other.inject_attempts;
             total_bytes = other.total_bytes;
@@ -139,12 +151,16 @@ namespace romm::model {
     // inject_nso is fixed at enqueue time and never re-read, so a resolved Ask
     // has to arrive with the call, and a caller that never asked (bulk
     // download) must not be able to accidentally inherit someone else's answer.
+    // What the user (or the per-platform setting) decided this download should
+    // produce. Mirrors NsoInjectionMode minus Ask, which is resolved before a
+    // task is ever enqueued.
     enum class InjectChoice {
-        // Read the per-platform setting. Always injects; Off and an unresolved
-        // Ask do not.
+        // Read the per-platform setting. Both and InjectOnly inject; RomOnly and
+        // an unresolved Ask do not.
         UseSetting,
-        Yes,
-        No
+        RomOnly,
+        InjectOnly, // inject, then delete the downloaded ROM
+        Both
     };
 
     class DownloadManager {

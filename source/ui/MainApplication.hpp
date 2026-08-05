@@ -2,6 +2,8 @@
 
 #include <pu/Plutonium>
 #include "../model/DataModel.hpp"
+// For InjectChoice: a bulk queue item carries the answer the ZR prompt gave.
+#include "../model/DownloadManager.hpp"
 #include "../model/RommApi.hpp"
 #include "../navigation/NavigationManager.hpp"
 #include "../navigation/HttpClient.hpp"
@@ -48,6 +50,12 @@ namespace romm::ui {
             std::string platform_slug;
             std::string title;
             bool detail_requested = false;
+            // Resolved once for the whole batch, at the moment ZR queued it,
+            // and carried per item because the detail fetches land one at a
+            // time. Without it every bulk item enqueued as UseSetting, and a
+            // platform set to Ask has nobody to ask by then — so a queued
+            // selection silently downloaded with no injection.
+            romm::model::InjectChoice inject = romm::model::InjectChoice::UseSetting;
         };
         std::vector<BulkDownloadItem> bulk_queue;
         void PollBulkDownload();
@@ -70,7 +78,8 @@ namespace romm::ui {
         void TriggerFetchPlatforms();
         void TriggerFetchRomDetail(int rom_id, uint64_t generation = 0, const std::string& platform_slug = "");
         // Adds a ROM to the bulk download queue; ignores duplicates.
-        void EnqueueBulkDownload(int rom_id, const std::string& platform_slug, const std::string& title);
+        void EnqueueBulkDownload(int rom_id, const std::string& platform_slug, const std::string& title,
+                                 romm::model::InjectChoice inject = romm::model::InjectChoice::UseSetting);
         size_t GetBulkQueueRemaining() const { return bulk_queue.size(); }
         int GetCurrentRomsRequestId() const { return current_roms_request_id; }
 

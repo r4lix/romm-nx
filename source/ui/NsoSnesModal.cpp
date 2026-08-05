@@ -87,19 +87,21 @@ namespace romm::ui {
     NsoSnesModal::NsoSnesModal(std::shared_ptr<romm::navigation::NavigationManager> nav)
         : Element::Element(), nav_mgr(nav) {}
 
-    void NsoSnesModal::Show() {
+    void NsoSnesModal::Show(romm::nso::NsoPlatform target) {
+        platform = target;
         active = true;
         page = Page::Overview;
         overview_row = 0;
         picker_row = 0;
         picker_scroll = 0;
         RefreshDetection();
-        LoadSnesLibrary();
+        LoadLibrary();
     }
 
-    void NsoSnesModal::ShowRestore() {
+    void NsoSnesModal::ShowRestore(romm::nso::NsoPlatform target) {
+        platform = target;
         auto& installer = romm::nso::NsoSnesInstaller::Instance();
-        if (!installer.HasBackup() || installer.IsBusy()) return;
+        if (!installer.HasBackup(platform) || installer.IsBusy()) return;
 
         active = true;
         page = Page::Progress;
@@ -108,23 +110,26 @@ namespace romm::ui {
         // Backing out of the progress page lands on the overview, which reads
         // the library for its first row — fetch it now rather than leaving that
         // row saying the library is empty.
-        LoadSnesLibrary();
-        std::cout << "[NSO-SNES] Restore requested from Settings > Switch Online" << std::endl;
-        installer.StartRestore();
+        LoadLibrary();
+        std::cout << "[NSO] Restore requested for " << romm::nso::NsoPlatformName(platform)
+                  << " from Settings > Nintendo Classic" << std::endl;
+        installer.StartRestore(platform);
     }
 
-    void NsoSnesModal::ShowUninstallAll() {
+    void NsoSnesModal::ShowUninstallAll(romm::nso::NsoPlatform target) {
+        platform = target;
         auto& installer = romm::nso::NsoSnesInstaller::Instance();
         if (installer.IsBusy()) return;
-        if (installer.InjectedGameCount() == 0) return;
+        if (installer.InjectedGameCount(platform) == 0) return;
 
         active = true;
         page = Page::Progress;
         overview_row = 0;
         RefreshDetection();
-        LoadSnesLibrary();
-        std::cout << "[NSO-SNES] Bulk removal requested from Settings > Nintendo Classic" << std::endl;
-        installer.StartUninstallAll();
+        LoadLibrary();
+        std::cout << "[NSO] Bulk removal requested for " << romm::nso::NsoPlatformName(platform)
+                  << " from Settings > Nintendo Classic" << std::endl;
+        installer.StartUninstallAll(platform);
     }
 
     void NsoSnesModal::Hide() {
@@ -133,10 +138,10 @@ namespace romm::ui {
     }
 
     void NsoSnesModal::RefreshDetection() {
-        romm::nso::NsoSnesInstaller::Instance().RefreshDetection();
+        romm::nso::NsoSnesInstaller::Instance().RefreshDetection(platform);
     }
 
-    void NsoSnesModal::LoadSnesLibrary() {
+    void NsoSnesModal::LoadLibrary() {
         snes_games.clear();
         pending_fetch.reset();
         library_status.clear();
@@ -146,24 +151,41 @@ namespace romm::ui {
         auto model = nav->GetModel();
         if (!model) return;
 
-        const romm::model::Platform* snes = nullptr;
-        for (const auto& platform : model->GetAllPlatforms()) {
-            if (romm::model::ResolvePlatformIdentity(platform.slug, platform.name) == "snes") {
-                snes = &platform;
-                break;
-            }
+        // One app can span two RomM platforms: Game Boy and Game Boy Color are
+        // separate shelves in a library and the same Switch Online title.
+        std::vector<std::string> wanted;
+        switch (platform) {
+            case romm::nso::NsoPlatform::Nes:     wanted = {"nes"}; break;
+            case romm::nso::NsoPlatform::GameBoy: wanted = {"gb", "gbc"}; break;
+            case romm::nso::NsoPlatform::Gba:     wanted = {"gba"}; break;
+            default:                              wanted = {"snes"}; break;
         }
-        if (!snes) {
+        auto is_wanted = [&wanted](const std::string& id) {
+            for (const auto& w : wanted) {
+                if (w == id) return true;
+            }
+            return false;
+        };
+
+        const romm::model::Platform* first_match = nullptr;
+        for (const auto& plat : model->GetAllPlatforms()) {
+            const std::string id = romm::model::ResolvePlatformIdentity(plat.slug, plat.name);
+            if (!is_wanted(id)) continue;
+            if (!first_match) first_match = &plat;
+            // Anything already browsed is free to reuse, and for the Game Boy
+            // app this is what merges the two shelves into one picker.
+            snes_games.insert(snes_games.end(), plat.games.begin(), plat.games.end());
+        }
+        if (!first_match) {
             library_status = romm::i18n::tr("nso.snes.library.no_platform");
             return;
         }
+        if (!snes_games.empty()) return;
 
-        if (!snes->games.empty()) {
-            snes_games = snes->games;
-            return;
-        }
-
-        const long platform_id = std::strtol(snes->id.c_str(), nullptr, 10);
+        // Nothing cached: fetch the first matching shelf. A second shelf
+        // (Game Boy Color) is picked up once the user has browsed it — the
+        // download flow handles both regardless, this picker is a test bench.
+        const long platform_id = std::strtol(first_match->id.c_str(), nullptr, 10);
         if (platform_id <= 0) {
             library_status = romm::i18n::tr("nso.snes.library.no_platform");
             return;
@@ -188,6 +210,7 @@ namespace romm::ui {
         const auto& game = snes_games[picker_row];
 
         romm::nso::NsoInstallRequest request;
+        request.platform = platform;
         request.rom_id = game.id;
         request.title = game.title;
         // file_id, filename and cover URL are resolved by the pipeline's own
@@ -252,7 +275,7 @@ namespace romm::ui {
         } else if (keys_down & (HidNpadButton_Down | HidNpadButton_StickLDown)) {
             if (overview_row + 1 < kOverviewRowCount) ++overview_row;
         } else if (keys_down & HidNpadButton_X) {
-            LoadSnesLibrary();
+            LoadLibrary();
             RefreshDetection();
         } else if (keys_down & HidNpadButton_A) {
             const auto detection = installer.GetDetection();
@@ -261,7 +284,7 @@ namespace romm::ui {
                 page = Page::Picker;
                 PollLibraryFetch();
             } else if (overview_row == 1) {
-                if (!installer.HasBackup()) return;
+                if (!installer.HasBackup(platform)) return;
                 page = Page::Progress;
                 installer.StartRestore();
             }
@@ -282,8 +305,14 @@ namespace romm::ui {
         drawer->RenderRoundedRectangleFill(kBorder, mx, my, kModalW, kModalH, 16);
         drawer->RenderRoundedRectangleFill(kBackground, mx + 4, my + 4, kModalW - 8, kModalH - 8, 12);
 
-        DrawText(drawer, "Orbitron@30", romm::i18n::tr("nso.snes.title"), mx + 40, my + 32, kText);
-        DrawText(drawer, "Ubuntu@20", romm::i18n::tr("nso.snes.experimental"), mx + 40, my + 74, kWarn);
+        const std::string app_name = romm::nso::NsoPlatformName(platform);
+        DrawText(drawer, "Orbitron@30",
+                 romm::i18n::format("nso.title", {{"platform", app_name}}), mx + 40, my + 32, kText);
+        DrawText(drawer, "Ubuntu@20",
+                 romm::i18n::format(romm::nso::IsNsoPlatformUnstable(platform) ? "nso.unstable"
+                                                                               : "nso.experimental",
+                                    {{"platform", app_name}}),
+                 mx + 40, my + 74, kWarn);
 
         const s32 body_y = my + 118;
 
@@ -315,10 +344,14 @@ namespace romm::ui {
                     langs += detection.strings_languages[i];
                 }
                 pair(romm::i18n::tr("nso.snes.detect.strings"), langs.empty() ? "-" : langs, kText);
-                pair(romm::i18n::tr("nso.snes.detect.mod"),
-                     romm::i18n::tr(detection.has_exefs_mod ? "nso.snes.detect.mod_present"
-                                                            : "nso.snes.detect.mod_absent"),
-                     detection.has_exefs_mod ? kOk : kWarn);
+                // SNES is the only app with a signature check to defeat, so it
+                // is the only one where a missing Full Unlock means anything.
+                if (platform == romm::nso::NsoPlatform::Snes) {
+                    pair(romm::i18n::tr("nso.snes.detect.mod"),
+                         romm::i18n::tr(detection.has_exefs_mod ? "nso.snes.detect.mod_present"
+                                                                : "nso.snes.detect.mod_absent"),
+                         detection.has_exefs_mod ? kOk : kWarn);
+                }
             } else {
                 DrawText(drawer, "Ubuntu@22", romm::i18n::tr("nso.snes.detect.not_found"), col1, row, kBad);
                 row += line + 6;
@@ -338,7 +371,7 @@ namespace romm::ui {
                 romm::i18n::tr("nso.snes.action.install"),
                 romm::i18n::tr("nso.snes.action.restore")
             };
-            const std::string backup = installer.LatestBackupPath();
+            const std::string backup = installer.LatestBackupPath(platform);
             const std::string values[kOverviewRowCount] = {
                 detection.found ? (snes_games.empty()
                                        ? (library_status.empty() ? romm::i18n::tr("nso.snes.library.empty") : library_status)

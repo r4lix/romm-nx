@@ -89,6 +89,50 @@ namespace romm::ui {
             return profile;
         }
 
+        if (platform.slug == "n64" || platform.slug == "nintendo-64" ||
+            platform.slug == "nintendo64" || platform.slug == "nintendo_64") {
+            // Measured the same way as SNES, off a real grid: the art rendered
+            // 108x78 at 720p inside the portrait default's tile, i.e. 1.385:1.
+            // PAL N64 boxes are the same landscape shape as PAL SNES ones, so
+            // this takes the same 7:5 tile and the same grid — anything else
+            // would be two answers to one question.
+            CoverProfile profile;
+            profile.type = CoverProfileType::Nintendo64;
+            profile.name = "Nintendo64";
+            profile.columns = big ? 3 : 4;
+            profile.visibleRows = big ? 2 : 3;
+            profile.fitMode = FitMode::Contain;
+            return profile;
+        }
+
+        if (platform.slug == "snes" || platform.slug == "super-nes" ||
+            platform.slug == "super-nintendo" || platform.slug == "super-nintendo-entertainment-system" ||
+            platform.slug == "sfc" || platform.slug == "sfam" || platform.slug == "super-famicom") {
+            // SNES boxes are landscape (~7:5), and until this profile existed
+            // they were drawn in DefaultPortrait's 2:3 tile — width-bound inside
+            // a tile more than twice as tall as the art, so a cover occupied
+            // under half its tile and the box text was unreadable. Same failure
+            // 3DS had before it got its own aspect; see the note there.
+            //
+            // Both modes are far coarser than any other profile, and
+            // deliberately so: legibility of the box text is the entire point
+            // here, so the grids are sized for reading rather than for fitting
+            // a page. Each step was tried on hardware: Default went 6x4 -> 4x2
+            // -> 4x3, Big went 4x3 -> 4x2 -> 3x2.
+            //
+            // Default (4x3) fills the canvas at 343x245 a tile, height-bound,
+            // so it shows 12 games with no wasted vertical space. Big (3x2)
+            // gives 491x351 — nearly a quarter of the canvas per cover — which
+            // is what makes the small print on a box readable.
+            CoverProfile profile;
+            profile.type = CoverProfileType::SuperNintendo;
+            profile.name = "SuperNintendo";
+            profile.columns = big ? 3 : 4;
+            profile.visibleRows = big ? 2 : 3;
+            profile.fitMode = FitMode::Contain;
+            return profile;
+        }
+
         if (platform.slug == "gb" || platform.slug == "game-boy" ||
             platform.slug == "gameboy" || platform.slug == "nintendo-game-boy") {
             CoverProfile profile;
@@ -158,6 +202,8 @@ namespace romm::ui {
             case CoverProfileType::GameBoy:
             case CoverProfileType::GameBoyColor:
             case CoverProfileType::GameBoyAdvance: aspect_w = 276; aspect_h = 250; break;
+            case CoverProfileType::SuperNintendo:
+            case CoverProfileType::Nintendo64:      aspect_w = 7;   aspect_h = 5;   break;
             case CoverProfileType::DefaultPortrait:
             default:                               aspect_w = 120; aspect_h = 180; break;
         }

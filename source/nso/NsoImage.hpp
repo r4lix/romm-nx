@@ -32,11 +32,37 @@ namespace romm::nso {
     constexpr int kDetailsWidth = 400;
     constexpr int kDetailsHeight = 300;
 
+    // NES covers work the other way round: the height is fixed and the width
+    // follows the source aspect, with no padding at all. Measured on CaVE's own
+    // output — a 497x680 source came out 374x512, i.e. scaled to 512 tall and
+    // left at whatever width that gives. See docs/nso-nes-format.md.
+    constexpr int kNesCoverTargetHeight = 512;
+    constexpr int kNesCoverMaxWidthPx = 512;
+
     // Fits the source art inside the target box without distortion and pads the
     // remainder with opaque black. Cropping to fill was rejected: RomM serves
     // portrait box art for a good share of SNES titles, and a centre-crop of a
     // portrait cover into a 512x374 landscape frame throws away the title text.
     NsoImageResult ConvertCover(const std::string& sourcePath, const std::string& outputPath);
     NsoImageResult ConvertDetails(const std::string& sourcePath, const std::string& outputPath);
+
+    // NES cover: 512 tall, width from the source aspect, no letterboxing. A
+    // cover wide enough to exceed kNesCoverMaxWidthPx is fitted by width
+    // instead, so an unusual RomM image cannot produce an enormous texture.
+    NsoImageResult ConvertCoverNes(const std::string& sourcePath, const std::string& outputPath);
+
+    // Game Boy geometry. CaVE's output for an injected title is a 512x512 cover
+    // and a 1069x802 details screen — a far larger details image than the
+    // 400x300 the SNES and NES apps use.
+    constexpr int kGbCoverBoxPx = 512;
+    constexpr int kGbDetailsWidthPx = 1069;
+    constexpr int kGbDetailsHeightPx = 802;
+
+    // Same height-locked rule as NES, capped at 512 wide: a square source (what
+    // Game Boy box art usually is) lands on exactly the 512x512 CaVE produces,
+    // and anything else keeps its aspect instead of being stretched into a
+    // square.
+    NsoImageResult ConvertCoverGb(const std::string& sourcePath, const std::string& outputPath);
+    NsoImageResult ConvertDetailsGb(const std::string& sourcePath, const std::string& outputPath);
 
 }

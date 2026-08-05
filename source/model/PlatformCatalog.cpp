@@ -1,5 +1,6 @@
 #include "PlatformCatalog.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <map>
 
@@ -130,29 +131,38 @@ namespace romm::model {
     }
 
     const std::vector<PlatformCatalogEntry>& GetPlatformCatalog() {
+        // Grouped by manufacturer, oldest first inside a group — this order is
+        // what PlatformSortMode::Brand shows, so it is release chronology
+        // rather than anything alphabetical. The last column is the shipped
+        // default visibility, which no longer has to be a contiguous block:
+        // both lists that used to lean on this order now sort explicitly.
         static const std::vector<PlatformCatalogEntry> catalog = {
-            // Shown by default
-            {"gb",        "Game Boy",             true},
-            {"gbc",       "Game Boy Color",       true},
-            {"gba",       "Game Boy Advance",     true},
-            {"nes",       "NES",                  true},
-            {"snes",      "SNES",                 true},
-            {"n64",       "Nintendo 64",          true},
-            {"nds",       "Nintendo DS",          true},
-            {"3ds",       "Nintendo 3DS",         true},
-            {"psx",       "PlayStation",          true},
-            {"ps2",       "PlayStation 2",        true},
-            {"psp",       "PlayStation Portable", true},
-            // Hidden by default
-            {"arcade",    "Arcade",               false},
-            {"atari2600", "Atari 2600",           false},
-            {"genesis",   "Genesis / Mega Drive", false},
-            {"ps3",       "PlayStation 3",        false},
-            {"ps4",       "PlayStation 4",        false},
-            {"saturn",    "Sega Saturn",          false},
-            {"switch",    "Nintendo Switch",      false},
-            {"wii",       "Nintendo Wii",         false},
-            {"wiiu",      "Nintendo Wii U",       false},
+            {"nes",       "NES",                  "Nintendo", true},
+            {"gb",        "Game Boy",             "Nintendo", true},
+            {"snes",      "SNES",                 "Nintendo", true},
+            {"n64",       "Nintendo 64",          "Nintendo", true},
+            {"gbc",       "Game Boy Color",       "Nintendo", true},
+            {"gba",       "Game Boy Advance",     "Nintendo", true},
+            {"nds",       "Nintendo DS",          "Nintendo", true},
+            {"wii",       "Nintendo Wii",         "Nintendo", false},
+            {"3ds",       "Nintendo 3DS",         "Nintendo", true},
+            {"wiiu",      "Nintendo Wii U",       "Nintendo", false},
+            {"switch",    "Nintendo Switch",      "Nintendo", false},
+
+            {"psx",       "PlayStation",          "Sony",     true},
+            {"ps2",       "PlayStation 2",        "Sony",     true},
+            {"psp",       "PlayStation Portable", "Sony",     true},
+            {"ps3",       "PlayStation 3",        "Sony",     false},
+            {"ps4",       "PlayStation 4",        "Sony",     false},
+
+            {"genesis",   "Genesis / Mega Drive", "Sega",     false},
+            {"saturn",    "Sega Saturn",          "Sega",     false},
+
+            {"atari2600", "Atari 2600",           "Atari",    false},
+
+            // Arcade has no single manufacturer, so it carries no brand and
+            // sorts with the server-only platforms at the end of a brand list.
+            {"arcade",    "Arcade",               "",         false},
         };
         return catalog;
     }
@@ -182,6 +192,82 @@ namespace romm::model {
         if (entry != nullptr) return entry->display_name;
         if (!server_name.empty()) return server_name;
         return canonical_id;
+    }
+
+    std::string GetPlatformBrand(const std::string& canonical_id) {
+        const auto* entry = FindPlatformCatalogEntry(canonical_id);
+        return entry != nullptr ? entry->brand : std::string();
+    }
+
+    namespace {
+
+        // Case-insensitive, so a server that reports "playstation 5" doesn't
+        // land after every capitalised name in the list.
+        int CompareNames(const std::string& a, const std::string& b) {
+            const size_t n = std::min(a.size(), b.size());
+            for (size_t i = 0; i < n; ++i) {
+                const int ca = std::tolower((unsigned char)a[i]);
+                const int cb = std::tolower((unsigned char)b[i]);
+                if (ca != cb) return ca < cb ? -1 : 1;
+            }
+            if (a.size() == b.size()) return 0;
+            return a.size() < b.size() ? -1 : 1;
+        }
+
+        // Position in the catalogue; server-only platforms answer with its size
+        // so they follow everything romm-nx ships knowledge of.
+        size_t CatalogRank(const std::string& id) {
+            const auto& catalog = GetPlatformCatalog();
+            for (size_t i = 0; i < catalog.size(); ++i) {
+                if (catalog[i].id == id) return i;
+            }
+            return catalog.size();
+        }
+
+        size_t CustomRank(const std::vector<std::string>& order, const std::string& id) {
+            for (size_t i = 0; i < order.size(); ++i) {
+                if (order[i] == id) return i;
+            }
+            return order.size();
+        }
+
+    }
+
+    bool PlatformSortsBefore(PlatformSortMode mode,
+                             const std::vector<std::string>& custom_order,
+                             const std::string& id_a, const std::string& name_a,
+                             const std::string& id_b, const std::string& name_b) {
+        switch (mode) {
+        case PlatformSortMode::Brand: {
+            const std::string brand_a = GetPlatformBrand(id_a);
+            const std::string brand_b = GetPlatformBrand(id_b);
+            // No known manufacturer (Arcade, anything the server invented) goes
+            // last as a group rather than sorting as an empty string, which
+            // would put it first.
+            if (brand_a.empty() != brand_b.empty()) return brand_b.empty();
+            if (!brand_a.empty()) {
+                const int by_brand = CompareNames(brand_a, brand_b);
+                if (by_brand != 0) return by_brand < 0;
+            }
+            const size_t rank_a = CatalogRank(id_a);
+            const size_t rank_b = CatalogRank(id_b);
+            if (rank_a != rank_b) return rank_a < rank_b;
+            break; // both server-only: fall through to the name comparison
+        }
+        case PlatformSortMode::Custom: {
+            const size_t rank_a = CustomRank(custom_order, id_a);
+            const size_t rank_b = CustomRank(custom_order, id_b);
+            if (rank_a != rank_b) return rank_a < rank_b;
+            break; // both unlisted: fall through, so they at least sort sanely
+        }
+        case PlatformSortMode::Name:
+            break;
+        }
+
+        const int by_name = CompareNames(name_a, name_b);
+        if (by_name != 0) return by_name < 0;
+        // Two platforms with the same display name still need a stable answer.
+        return id_a < id_b;
     }
 
 }

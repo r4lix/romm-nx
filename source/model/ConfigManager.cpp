@@ -167,6 +167,27 @@ namespace romm::model {
         hidden_platforms.clear();
     }
 
+    // --- Platform ordering ---------------------------------------------------
+
+    std::string ConfigManager::PlatformSortModeToString(PlatformSortMode mode) {
+        switch (mode) {
+            case PlatformSortMode::Brand: return "brand";
+            case PlatformSortMode::Custom: return "custom";
+            case PlatformSortMode::Name: break;
+        }
+        return "name";
+    }
+
+    PlatformSortMode ConfigManager::PlatformSortModeFromString(const std::string& value) {
+        if (value == "brand" || value == "Brand") return PlatformSortMode::Brand;
+        if (value == "custom" || value == "Custom") return PlatformSortMode::Custom;
+        return PlatformSortMode::Name;
+    }
+
+    std::string ConfigManager::GetPlatformSortModeString() const {
+        return PlatformSortModeToString(platform_sort_mode);
+    }
+
     bool ConfigManager::RegisterDetectedPlatforms(const std::vector<std::string>& slugs) {
         bool changed = false;
         for (const auto& slug : slugs) {
@@ -244,35 +265,41 @@ namespace romm::model {
         return "sdmc:/roms/" + platform + "/";
     }
 
+    // "off" and "always" are kept as the stored spellings for RomOnly and Both.
+    // They are what every existing config already contains, so renaming them
+    // would silently reset everyone's choice to the default — and a config
+    // written here stays readable by an older build, which matters while this
+    // is a -testing channel.
     std::string ConfigManager::NsoInjectionModeToString(NsoInjectionMode mode) {
         switch (mode) {
             case NsoInjectionMode::Ask: return "ask";
-            case NsoInjectionMode::Always: return "always";
-            case NsoInjectionMode::Off: break;
+            case NsoInjectionMode::Both: return "always";
+            case NsoInjectionMode::InjectOnly: return "inject_only";
+            case NsoInjectionMode::RomOnly: break;
         }
         return "off";
     }
 
     NsoInjectionMode ConfigManager::NsoInjectionModeFromString(const std::string& value) {
         if (value == "ask") return NsoInjectionMode::Ask;
-        if (value == "always") return NsoInjectionMode::Always;
-        return NsoInjectionMode::Off;
+        if (value == "always") return NsoInjectionMode::Both;
+        if (value == "inject_only") return NsoInjectionMode::InjectOnly;
+        return NsoInjectionMode::RomOnly;
     }
 
     NsoInjectionMode ConfigManager::GetNsoInjectionMode(const std::string& platform) const {
         auto it = nso_injection.find(platform);
-        return (it == nso_injection.end()) ? NsoInjectionMode::Off : it->second;
+        return (it == nso_injection.end()) ? kDefaultNsoInjectionMode : it->second;
     }
 
     void ConfigManager::SetNsoInjectionMode(const std::string& platform, NsoInjectionMode mode) {
         if (platform.empty()) return;
-        if (mode == NsoInjectionMode::Off) {
-            // Off is the default, so it is not persisted - keeps config.json
-            // free of a row for every platform the user never touched.
-            nso_injection.erase(platform);
-        } else {
-            nso_injection[platform] = mode;
-        }
+        // Every mode is persisted, Off included. It used to erase the key on Off
+        // on the grounds that Off was the default — the moment the default
+        // became Ask, that turned "never inject this platform" into "ask me
+        // again next launch". An absent key now means "never chosen", which is
+        // exactly what the default is for.
+        nso_injection[platform] = mode;
     }
 
     void ConfigManager::SetRomPath(const std::string& platform, const std::string& path) {
@@ -486,14 +513,53 @@ namespace romm::model {
             }
         }
 
+        // How the platform list is ordered, and the user's own order for the
+        // Custom mode. Both absent on a config written before the setting
+        // existed, which leaves the defaults (Name, no custom order) standing.
+        {
+            std::string sort_mode;
+            if (jsonExtractString(content, "platform_sort", sort_mode) && !sort_mode.empty()) {
+                platform_sort_mode = PlatformSortModeFromString(sort_mode);
+            }
+
+            std::vector<std::string> order_list;
+            if (jsonExtractStringArray(content, "platform_order", order_list)) {
+                platform_order.clear();
+                for (const auto& raw : order_list) {
+                    const std::string id = NormalizePlatformId(raw);
+                    // Normalizing can collapse two entries onto one id, and a
+                    // hand-edited file can repeat one outright — a duplicate
+                    // would silently pin the second copy's platform to the
+                    // first copy's slot.
+                    if (id.empty()) continue;
+                    if (std::find(platform_order.begin(), platform_order.end(), id) != platform_order.end()) continue;
+                    platform_order.push_back(id);
+                }
+            }
+        }
+
         // Per-platform grid view mode overrides (set via the in-game Y-Menu;
         // independent of the global grid_view_mode default above).
-        platform_grid_view_mode.clear();
-        std::vector<std::string> view_mode_platforms = {"psx", "ps2", "psp", "nds", "gb", "gbc", "gba", "3ds"};
-        for (const auto& plat : view_mode_platforms) {
-            std::string mode_str = extractPlatformPath(content, "platform_grid_view_mode", plat);
-            if (!mode_str.empty()) {
-                platform_grid_view_mode[plat] = GridViewModeFromString(mode_str);
+        //
+        // Every platform in the file, not a fixed list — the same asymmetry
+        // rom_paths had below. Save() writes the whole map, but this used to
+        // read back eight hardcoded slugs, so setting Big on anything else
+        // (snes, nes, n64, genesis, an unrecognised platform...) was written to
+        // config.json and then silently dropped on the next launch, landing the
+        // platform back on the global default.
+        //
+        // Keys are normalized on the way in because that's what Get/Set do —
+        // a file written by a build whose normalizer mapped slugs differently
+        // still resolves to the entry the lookup will ask for.
+        {
+            std::map<std::string, std::string> modes;
+            platform_grid_view_mode.clear();
+            if (extractObject(content, "platform_grid_view_mode", modes)) {
+                for (const auto& entry : modes) {
+                    if (entry.first.empty() || entry.second.empty()) continue;
+                    platform_grid_view_mode[NormalizePlatformSlug(entry.first)] =
+                        GridViewModeFromString(entry.second);
+                }
             }
         }
 
@@ -544,15 +610,17 @@ namespace romm::model {
             }
         }
 
-        // Injection modes, keyed by canonical platform id. Absent is Off.
+        // Injection modes, keyed by canonical platform id. An absent key means
+        // the user has never chosen, which is kDefaultNsoInjectionMode — so an
+        // explicit "off" has to be read back as off rather than dropped, or
+        // turning a platform off would not survive a restart.
         {
             std::map<std::string, std::string> modes;
             if (extractObject(content, "nso_injection", modes)) {
                 nso_injection.clear();
                 for (const auto& entry : modes) {
                     if (entry.first.empty()) continue;
-                    const NsoInjectionMode mode = NsoInjectionModeFromString(entry.second);
-                    if (mode != NsoInjectionMode::Off) nso_injection[entry.first] = mode;
+                    nso_injection[entry.first] = NsoInjectionModeFromString(entry.second);
                 }
             }
         }
@@ -669,7 +737,9 @@ namespace romm::model {
         // Settings > Platforms. hidden_platforms is the user-facing list;
         // known_platforms is bookkeeping so a platform detected later can be
         // hidden by default exactly once, instead of every launch.
-        auto writeIdArray = [&content](const char* key, const std::set<std::string>& ids, bool last) {
+        // platform_order is a vector, not a set: its whole point is that the
+        // order is the data, so it can't be written by anything that sorts.
+        auto writeIdArray = [&content](const char* key, const auto& ids, bool last) {
             content += std::string("  \"") + key + "\": [";
             bool first_id = true;
             for (const auto& id : ids) {
@@ -679,6 +749,8 @@ namespace romm::model {
             }
             content += last ? "]\n" : "],\n";
         };
+        content += "  \"platform_sort\": \"" + GetPlatformSortModeString() + "\",\n";
+        writeIdArray("platform_order", platform_order, false);
         writeIdArray("hidden_platforms", hidden_platforms, false);
         writeIdArray("known_platforms", known_platforms, true);
 

@@ -389,12 +389,13 @@ namespace romm::ui {
         TriggerFetchRomDetail(rom_id, 0, romm::model::NormalizePlatformSlug(platforms[plat_idx].slug));
     }
 
-    void MainApplication::EnqueueBulkDownload(int rom_id, const std::string& platform_slug, const std::string& title) {
+    void MainApplication::EnqueueBulkDownload(int rom_id, const std::string& platform_slug, const std::string& title,
+                                              romm::model::InjectChoice inject) {
         if (rom_id <= 0) return;
         for (const auto& item : bulk_queue) {
             if (item.rom_id == rom_id) return;
         }
-        bulk_queue.push_back({ rom_id, platform_slug, title, false });
+        bulk_queue.push_back({ rom_id, platform_slug, title, false, inject });
     }
 
     void MainApplication::PollBulkDownload() {
@@ -406,7 +407,8 @@ namespace romm::ui {
         auto& item = bulk_queue.front();
 
         if (const auto* detail = data_model->GetCachedDetail(item.rom_id)) {
-            romm::model::DownloadManager::Instance().EnqueueDownload(*detail, item.platform_slug, item.title);
+            romm::model::DownloadManager::Instance().EnqueueDownload(*detail, item.platform_slug, item.title,
+                                                                     item.inject);
             std::cout << "[BULK] Queued download for rom " << item.rom_id
                       << " (" << bulk_queue.size() - 1 << " remaining)" << std::endl;
             bulk_queue.erase(bulk_queue.begin());

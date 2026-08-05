@@ -212,6 +212,47 @@ namespace romm::nso {
         }
     }
 
+    Sha256Stream::Sha256Stream() {
+        Sha256Ctx ctx;
+        Sha256Init(ctx);
+        std::memcpy(state, ctx.state, sizeof(state));
+        bit_len = ctx.bit_len;
+        buffer_len = ctx.buffer_len;
+    }
+
+    void Sha256Stream::Update(const uint8_t* data, size_t length) {
+        // The context here IS this object's fields; copying in and out keeps
+        // the transform code in one place rather than duplicating it.
+        Sha256Ctx ctx;
+        std::memcpy(ctx.state, state, sizeof(state));
+        ctx.bit_len = bit_len;
+        std::memcpy(ctx.buffer, buffer, sizeof(buffer));
+        ctx.buffer_len = buffer_len;
+        Sha256Update(ctx, data, length);
+        std::memcpy(state, ctx.state, sizeof(state));
+        bit_len = ctx.bit_len;
+        std::memcpy(buffer, ctx.buffer, sizeof(buffer));
+        buffer_len = ctx.buffer_len;
+    }
+
+    std::string Sha256Stream::FinishHex() {
+        Sha256Ctx ctx;
+        std::memcpy(ctx.state, state, sizeof(state));
+        ctx.bit_len = bit_len;
+        std::memcpy(ctx.buffer, buffer, sizeof(buffer));
+        ctx.buffer_len = buffer_len;
+        uint8_t digest[32];
+        Sha256Final(ctx, digest);
+        static const char* hex = "0123456789abcdef";
+        std::string out;
+        out.reserve(64);
+        for (int i = 0; i < 32; ++i) {
+            out.push_back(hex[digest[i] >> 4]);
+            out.push_back(hex[digest[i] & 0x0F]);
+        }
+        return out;
+    }
+
     uint32_t Crc32(const uint8_t* data, size_t length) {
         static uint32_t table[256];
         static bool built = false;

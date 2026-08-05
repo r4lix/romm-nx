@@ -213,8 +213,9 @@ namespace romm::ui {
 
         std::shared_ptr<SettingsCard> card;
         std::shared_ptr<SettingsConfirmModal> confirm_modal;
-        // Settings > Advanced > SNES Online Injection Test (experimental).
+        // Settings > Nintendo Classic > injection screen (experimental).
         std::shared_ptr<NsoSnesModal> nso_snes_modal;
+
         pu::ui::elm::TextBlock::Ref settings_title_text;
         pu::ui::elm::TextBlock::Ref hint_text;
 
@@ -249,8 +250,15 @@ namespace romm::ui {
         // Rebuilds the row list from the catalogue + the live model, then
         // clamps the cursor if the list shrank.
         void RefreshPlatformRows();
-        // Left/Right on a platform row: sets the state outright.
-        void ToggleSelectedPlatform(bool visible);
+        // Left/Right in the platform list: sets a platform's visibility
+        // outright, or cycles the sort order on the row that owns it.
+        void AdjustSelectedPlatformRow(int direction);
+        // Name -> Brand -> Custom. Switching to Custom seeds the stored order
+        // from what is currently on screen, if the user has none yet.
+        void CyclePlatformSortMode(int direction);
+        // L/R on a platform row, Custom sort only: moves it one slot up (-1) or
+        // down (+1) and persists the new order.
+        void MoveSelectedPlatform(int direction);
         void SetPlatformVisibility(size_t platform_row_idx, bool visible);
         void ApplyPlatformVisibility();
 

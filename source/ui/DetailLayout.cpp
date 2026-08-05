@@ -1392,6 +1392,17 @@ namespace romm::ui {
             note_state(res.state);
             if (res.state == CoverState::Ready && res.texture) {
                 selected_tex = res.texture;
+            } else {
+                // The 1080p decode is not ready. Before falling back to another
+                // picture entirely, take THIS picture at whatever size is
+                // already decoded — the detail panel behind this viewer is
+                // usually displaying it. Reported from hardware: open a cover
+                // fullscreen before the miximage has loaded, go back, see the
+                // miximage on the panel, reopen, and the viewer still showed
+                // the plain cover until the big decode caught up.
+                selected_tex = CoverCache::Instance().FindReadyAnySize(
+                    query_key.rom_id, query_key.platform_slug,
+                    query_key.cover_source, query_key.variant);
             }
         }
 

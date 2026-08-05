@@ -388,7 +388,14 @@ namespace romm::ui {
 
         info_location_tex = pu::ui::render::RenderText("Ubuntu@24", location_dir, text_clr, 680);
         info_file_tex = pu::ui::render::RenderText("Ubuntu@24", filename_ext, text_clr, 680);
-        info_status_tex = pu::ui::render::RenderText("Ubuntu@24", romm::i18n::tr("installed.status.installed"), text_clr);
+        // A game injected with "Nintendo Classics only" has no ROM on the card.
+        // It still belongs in this list — it is installed, just somewhere else —
+        // and uninstalling it here is what removes the injected title.
+        info_status_tex = pu::ui::render::RenderText(
+            "Ubuntu@24",
+            romm::i18n::tr(g.switch_online_only ? "installed.status.switch_online_only"
+                                                : "installed.status.installed"),
+            text_clr);
 
         info_cached_idx = selected_idx;
     }

@@ -220,8 +220,7 @@ namespace romm::navigation {
 
     // Ask mode, resolved at the only moment it can be: after the user asks for
     // the download and before the task exists.
-    bool NavigationManager::MaybePromptNsoInjection(int rom_id, const std::string& platform_slug,
-                                                    const std::string& title) {
+    bool NavigationManager::PrepareNsoInjectPrompt(const std::string& platform_slug) {
         const std::string canonical = romm::model::ResolvePlatformIdentity(platform_slug, "");
         if (!romm::nso::PlatformSupportsInjection(canonical)) return false;
 
@@ -233,26 +232,55 @@ namespace romm::navigation {
         // question with no useful answer, so in that case the download just
         // proceeds as normal.
         auto& installer = romm::nso::NsoSnesInstaller::Instance();
-        installer.RefreshDetection();
-        const auto detection = installer.GetDetection();
+        romm::nso::NsoPlatform nso_platform = romm::nso::NsoPlatform::Snes;
+        romm::nso::NsoPlatformForId(canonical, nso_platform);
+        installer.RefreshDetection(nso_platform);
+        const auto detection = installer.GetDetection(nso_platform);
         if (!detection.found) {
-            std::cout << "[NSO] " << title << ": platform is set to ask, but no Switch Online target for "
+            std::cout << "[NSO] platform is set to ask, but no Switch Online target for "
                       << canonical << "; downloading without injection" << std::endl;
             return false;
         }
 
         nso_inject_modal = NsoInjectModalPayload();
-        nso_inject_modal.rom_id = rom_id;
         nso_inject_modal.platform_slug = platform_slug;
         nso_inject_modal.canonical_id = canonical;
         nso_inject_modal.platform_name = romm::model::GetPlatformDisplayName(canonical, "");
-        nso_inject_modal.title = title;
-        nso_inject_modal.has_exefs_mod = detection.has_exefs_mod;
-        nso_inject_modal.selected_row = (size_t)NsoInjectChoiceRow::InjectOnce;
+        if (nso_platform == romm::nso::NsoPlatform::Snes && !detection.has_exefs_mod) {
+            nso_inject_modal.caution = NsoInjectModalPayload::Caution::MissingUnlock;
+        } else if (nso_platform == romm::nso::NsoPlatform::N64) {
+            // The N64 app runs each title from a per-game MetaPack (.dtz).
+            // romm-nx generates one, but it cannot always derive a working idle
+            // entry — worth saying before the download rather than after a
+            // black screen.
+            nso_inject_modal.caution = NsoInjectModalPayload::Caution::NeedsMetaPack;
+        }
+        nso_inject_modal.selected_row = (size_t)NsoInjectChoiceRow::Both;
         nso_inject_modal.source_screen = current_screen;
+        return true;
+    }
+
+    bool NavigationManager::MaybePromptNsoInjection(int rom_id, const std::string& platform_slug,
+                                                    const std::string& title) {
+        if (!PrepareNsoInjectPrompt(platform_slug)) return false;
+        nso_inject_modal.rom_id = rom_id;
+        nso_inject_modal.title = title;
         nso_inject_modal.active = true;
         std::cout << "[NSO] Asking about injection for rom_id=" << rom_id
-                  << " platform=" << canonical << std::endl;
+                  << " platform=" << nso_inject_modal.canonical_id << std::endl;
+        return true;
+    }
+
+    bool NavigationManager::MaybePromptNsoInjectionBatch(
+            const std::vector<std::pair<int, std::string>>& games, const std::string& platform_slug) {
+        if (games.empty()) return false;
+        if (!PrepareNsoInjectPrompt(platform_slug)) return false;
+        nso_inject_modal.batch = games;
+        nso_inject_modal.title = romm::i18n::format("modal.nso_inject.batch_count",
+                                                    {{"count", std::to_string(games.size())}});
+        nso_inject_modal.active = true;
+        std::cout << "[NSO] Asking about injection for a batch of " << games.size()
+                  << " on platform=" << nso_inject_modal.canonical_id << std::endl;
         return true;
     }
 
@@ -279,26 +307,62 @@ namespace romm::navigation {
         if (!(keys_down & HidNpadButton_A)) return;
 
         const auto row = (NsoInjectChoiceRow)nso_inject_modal.selected_row;
-        const bool inject = (row == NsoInjectChoiceRow::InjectOnce || row == NsoInjectChoiceRow::AlwaysInject);
 
-        // "Always" / "Never" are the don't-ask-again affordance: they answer
-        // this download AND rewrite the per-platform setting, so the same
-        // question isn't asked for the next game on that platform.
-        if (row == NsoInjectChoiceRow::AlwaysInject || row == NsoInjectChoiceRow::NeverInject) {
-            const auto mode = (row == NsoInjectChoiceRow::AlwaysInject) ? romm::model::NsoInjectionMode::Always
-                                                                       : romm::model::NsoInjectionMode::Off;
+        // The toggle is a row like any other so it is reachable with the stick,
+        // but A on it flips the checkbox rather than answering the question.
+        if (row == NsoInjectChoiceRow::Remember) {
+            nso_inject_modal.remember = !nso_inject_modal.remember;
+            return;
+        }
+
+        romm::model::NsoInjectionMode mode = romm::model::NsoInjectionMode::Both;
+        romm::model::InjectChoice choice = romm::model::InjectChoice::Both;
+        switch (row) {
+            case NsoInjectChoiceRow::InjectOnly:
+                mode = romm::model::NsoInjectionMode::InjectOnly;
+                choice = romm::model::InjectChoice::InjectOnly;
+                break;
+            case NsoInjectChoiceRow::DownloadOnly:
+                mode = romm::model::NsoInjectionMode::RomOnly;
+                choice = romm::model::InjectChoice::RomOnly;
+                break;
+            default:
+                break;
+        }
+
+        // Ticked, the answer becomes the platform's setting and the prompt stops
+        // appearing for it. Per platform, not globally: the Settings row it
+        // writes is per platform, and each Switch Online app is a separate
+        // target the user may well want a different answer for.
+        if (nso_inject_modal.remember) {
             auto& config = romm::model::ConfigManager::Instance();
             config.SetNsoInjectionMode(nso_inject_modal.canonical_id, mode);
             config.Save();
             std::cout << "[NSO] platform=" << nso_inject_modal.canonical_id << " injection="
                       << romm::model::ConfigManager::NsoInjectionModeToString(mode)
-                      << " (set from the download prompt)" << std::endl;
+                      << " (remembered from the download prompt)" << std::endl;
         }
 
         const int rom_id = nso_inject_modal.rom_id;
         const std::string slug = nso_inject_modal.platform_slug;
         const std::string title = nso_inject_modal.title;
+        const auto batch = nso_inject_modal.batch;
         nso_inject_modal.active = false;
+
+        // A batch goes back to the bulk queue carrying the answer. That queue
+        // fetches each detail itself, one at a time, so unlike the single-game
+        // path below it does not need anything cached now.
+        if (!batch.empty()) {
+            auto main_app = static_cast<romm::ui::MainApplication*>(app);
+            for (const auto& game : batch) {
+                main_app->EnqueueBulkDownload(game.first, slug, game.second, choice);
+            }
+            std::cout << "[NSO] Bulk download queued for " << batch.size()
+                      << " games with an explicit injection choice" << std::endl;
+            ClearBulkSelection();
+            UpdateLayoutSelection();
+            return;
+        }
 
         // The detail is re-read rather than captured: the modal outlives the
         // frame that raised it, and the cache is what every other download path
@@ -311,9 +375,7 @@ namespace romm::navigation {
             return;
         }
 
-        romm::model::DownloadManager::Instance().EnqueueDownload(
-            *detail, slug, title,
-            inject ? romm::model::InjectChoice::Yes : romm::model::InjectChoice::No);
+        romm::model::DownloadManager::Instance().EnqueueDownload(*detail, slug, title, choice);
         UpdateLayoutSelection();
     }
 
@@ -724,20 +786,56 @@ namespace romm::navigation {
                     state_changed = true;
                 }
             }
-            // ZR queues every selected game. Chosen over A-with-modifier because
-            // it can't be hit by accident while browsing.
+            // ZR queues every selected game, or — with nothing selected — just
+            // the one under the cursor. Chosen over A-with-modifier because it
+            // can't be hit by accident while browsing.
+            //
+            // The single-game case is the same button doing the same thing to a
+            // selection of one, rather than a second binding to remember. It
+            // used to be inert with an empty selection.
             else if (keys_down & HidNpadButton_ZR) {
+                const std::string slug = romm::model::NormalizePlatformSlug(current_platform.slug);
+                auto main_app = static_cast<romm::ui::MainApplication*>(app);
                 if (GetBulkSelectionCount() > 0) {
-                    auto main_app = static_cast<romm::ui::MainApplication*>(app);
-                    const std::string slug = romm::model::NormalizePlatformSlug(current_platform.slug);
+                    std::vector<std::pair<int, std::string>> selected;
                     for (const auto& game : current_platform.games) {
-                        if (IsBulkSelected(game.id)) {
-                            main_app->EnqueueBulkDownload(game.id, slug, game.title);
-                        }
+                        if (IsBulkSelected(game.id)) selected.emplace_back(game.id, game.title);
                     }
-                    std::cout << "[NAV] [ZR] Bulk download queued for "
-                              << GetBulkSelectionCount() << " games" << std::endl;
-                    ClearBulkSelection();
+                    // Ask once for the whole batch. Every game in a bulk
+                    // selection is from the loaded platform, so one answer is
+                    // the right shape — and without this the queue enqueued as
+                    // UseSetting, which for a platform set to Ask meant nobody
+                    // was ever asked and nothing was ever injected.
+                    if (MaybePromptNsoInjectionBatch(selected, slug)) {
+                        // Selection deliberately kept until the prompt is
+                        // answered: B on it cancels the download, and clearing
+                        // here would throw the selection away too.
+                        state_changed = true;
+                    } else {
+                        for (const auto& game : selected) {
+                            main_app->EnqueueBulkDownload(game.first, slug, game.second);
+                        }
+                        std::cout << "[NAV] [ZR] Bulk download queued for "
+                                  << selected.size() << " games" << std::endl;
+                        ClearBulkSelection();
+                        state_changed = true;
+                    }
+                } else if ((library_focus == LibraryFocus::Grid || library_focus == LibraryFocus::Panel) &&
+                           selected_game_idx < filtered_count) {
+                    const auto& game = current_platform.games[filtered_indices[selected_game_idx]];
+                    // Prompt only when the detail is already cached: answering
+                    // the modal enqueues from that cache, so raising it without
+                    // one would ask a question whose answer goes nowhere. The
+                    // grid prefetches the highlighted game, so this is the
+                    // normal case; without it, fall through to the same path
+                    // bulk ZR uses, which fetches the detail itself.
+                    const bool prompted =
+                        model && model->GetCachedDetail(game.id) &&
+                        MaybePromptNsoInjection(game.id, slug, game.title);
+                    if (!prompted) {
+                        main_app->EnqueueBulkDownload(game.id, slug, game.title);
+                        std::cout << "[NAV] [ZR] Queued " << game.title << std::endl;
+                    }
                     state_changed = true;
                 }
             }
@@ -1371,13 +1469,29 @@ namespace romm::navigation {
                         }
                         else if ((keys_effective & HidNpadButton_Left) || (keys_effective & HidNpadButton_StickLLeft)) {
                             if (settings_layout) {
-                                settings_layout->ToggleSelectedPlatform(false);
+                                settings_layout->AdjustSelectedPlatformRow(-1);
                                 state_changed = true;
                             }
                         }
                         else if ((keys_effective & HidNpadButton_Right) || (keys_effective & HidNpadButton_StickLRight)) {
                             if (settings_layout) {
-                                settings_layout->ToggleSelectedPlatform(true);
+                                settings_layout->AdjustSelectedPlatformRow(1);
+                                state_changed = true;
+                            }
+                        }
+                        // L/R reorder the list under the Custom sort order, and
+                        // do nothing under the other two. Not on the D-Pad:
+                        // Up/Down move the cursor and Left/Right already own
+                        // visibility, so reordering needs keys of its own.
+                        else if (keys_down & HidNpadButton_L) {
+                            if (settings_layout) {
+                                settings_layout->MoveSelectedPlatform(-1);
+                                state_changed = true;
+                            }
+                        }
+                        else if (keys_down & HidNpadButton_R) {
+                            if (settings_layout) {
+                                settings_layout->MoveSelectedPlatform(1);
                                 state_changed = true;
                             }
                         }

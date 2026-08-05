@@ -111,14 +111,42 @@ namespace romm::nso {
     bool RemoveTitleEntry(const TitlesDb& db, const std::string& code,
                           std::string& out_text, bool& found, std::string& error);
 
-    // Removes the per-title keys PatchStringsFile added. Leaves every other key
-    // byte-for-byte untouched.
-    bool UnpatchStringsFile(const std::string& text, const std::string& code,
-                            std::string& out_text, bool& changed, std::string& error);
+    // One key-guide entry: the key's prefix and the placeholder label written
+    // for it. The set differs per NSO app — the NES app's info screen has no
+    // X/Y/L/R or mouse rows, and its strings.lng carries no such keys — so the
+    // patch/unpatch pair below is parameterized by it rather than assuming SNES.
+    struct NsoGuideKey {
+        const char* suffix;
+        const char* label;
+    };
+
+    // The SNES key-guide set: 17 entries, matching what CaVE writes.
+    const std::vector<NsoGuideKey>& SnesGuideKeys();
 
     // The per-title key set, shared by the patch and unpatch paths so they can
     // never disagree about which keys belong to a title.
-    std::vector<std::string> TitleStringKeys(const std::string& code);
+    std::vector<std::string> TitleStringKeys(const std::string& code,
+                                             const std::vector<NsoGuideKey>& guide);
+
+    // Writes one description plus a key-guide label per button into a localized
+    // strings.lng, and removes exactly those again. Patch returns the new
+    // document; a language file that already carries the keys comes back
+    // unchanged with `changed` false. Unpatch leaves every other key
+    // byte-for-byte untouched.
+    //
+    // The key-guide set is always explicit. There were once convenience
+    // overloads that defaulted it to SnesGuideKeys(), and they were the reason
+    // removal quietly used the SNES set for Nintendo 64 titles and orphaned
+    // eleven keys per title: nothing at the call site looked wrong. A caller
+    // that has to name the set cannot make that mistake by omission.
+    // NsoSnesInstaller's GuideKeysFor() is where the platform mapping lives.
+    bool PatchStringsFile(const std::string& text, const std::string& code,
+                          const std::string& description,
+                          const std::vector<NsoGuideKey>& guide,
+                          std::string& out_text, bool& changed, std::string& error);
+    bool UnpatchStringsFile(const std::string& text, const std::string& code,
+                            const std::vector<NsoGuideKey>& guide,
+                            std::string& out_text, bool& changed, std::string& error);
 
     // Re-parses a serialized database and checks that every code in `before`
     // is still present, that `expected_new` exists, and that its asset paths
@@ -132,14 +160,6 @@ namespace romm::nso {
     // it does not collide with anything already in the database.
     std::string AllocateGameCode(const TitlesDb& db, const std::string& sha256,
                                  const std::string& preferred_code);
-
-    // The 18 per-title strings CaVE writes into each localized strings.lng
-    // (one description plus a key-guide label per button). Returns the new
-    // document; a language file that already carries the keys is returned
-    // unchanged with `changed` false.
-    bool PatchStringsFile(const std::string& text, const std::string& code,
-                          const std::string& description,
-                          std::string& out_text, bool& changed, std::string& error);
 
     // Lowercased, ASCII-folded sort key in the shape the database uses.
     std::string MakeSortKey(const std::string& value);

@@ -67,6 +67,16 @@ namespace romm::ui {
                        profile_type == CoverProfileType::GameBoyColor ||
                        profile_type == CoverProfileType::GameBoyAdvance) {
                 w = 340; h = 340;
+            } else if (profile_type == CoverProfileType::SuperNintendo ||
+                       profile_type == CoverProfileType::Nintendo64) {
+                // Big mode draws a SNES tile 491px wide, so the portrait
+                // default's 360x480 box would shrink a landscape cover to
+                // 360x257 and leave the grid upscaling it by a third. 500x357
+                // is the 7:5 the tile is solved at, sized to the largest tile.
+                // Costs 714KB a texture — under the 761KB a PSP "big" cover
+                // already takes, so it stays inside the cache's existing
+                // worst case rather than setting a new one.
+                w = 500; h = 357;
             } else {
                 w = 360; h = 480;
             }
@@ -81,6 +91,15 @@ namespace romm::ui {
                 w = 247; h = 378;
             } else if (profile_type == CoverProfileType::PS1Square) {
                 w = 310; h = 310;
+            } else if (profile_type == CoverProfileType::SuperNintendo ||
+                       profile_type == CoverProfileType::Nintendo64) {
+                // 180x270 gave a landscape cover 180x129 — a third of the
+                // Default-mode tile, which is why the standard-quality grid
+                // looked soft as soon as the tiles grew. Matched to the "big"
+                // box: this only ever shrinks, so a cap the server's small.png
+                // never reaches costs nothing, while a cap below it throws away
+                // pixels the 364px and 491px tiles have room for.
+                w = 500; h = 357;
             } else {
                 w = 180; h = 270;
             }
@@ -240,6 +259,35 @@ namespace romm::ui {
     // ---------------------------------------------------------------------------
     // GetOrRequest
     // ---------------------------------------------------------------------------
+
+    pu::sdl2::Texture CoverCache::FindReadyAnySize(int64_t rom_id, const std::string& platform_slug,
+                                                   const std::string& cover_source,
+                                                   const std::string& variant) const {
+        if (rom_id <= 0 || cover_source.empty()) return nullptr;
+
+        // Everything SerializeKey writes except the trailing "<w>x<h>", so this
+        // matches the same image at every decode size it has been asked for.
+        const std::string prefix = romm::model::NormalizePlatformSlug(platform_slug) + "|" +
+                                   std::to_string(rom_id) + "|" + cover_source + "|" + variant + "|";
+
+        // Linear over at most MAX_ENTRIES, and only reached while a viewer is
+        // waiting on its own decode — not a per-frame cost in the steady state.
+        pu::sdl2::Texture best = nullptr;
+        s32 best_width = -1;
+        for (const auto& entry : cache_) {
+            if (entry.first.size() <= prefix.size()) continue;
+            if (entry.first.compare(0, prefix.size(), prefix) != 0) continue;
+            if (entry.second.state != CoverState::Ready || !entry.second.texture) continue;
+            // Largest wins: it is the closest to what the caller is about to
+            // draw, and the one that will look least soft blown up.
+            const s32 width = pu::ui::render::GetTextureWidth(entry.second.texture);
+            if (width > best_width) {
+                best_width = width;
+                best = entry.second.texture;
+            }
+        }
+        return best;
+    }
 
     CoverCacheResult CoverCache::GetOrRequest(int64_t rom_id, const std::string& platform_slug, const std::string& cover_path_rel, CoverProfileType profile_type, bool is_big, bool allow_download) {
         std::string variant = is_big ? "big" : "small";

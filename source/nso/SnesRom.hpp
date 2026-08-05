@@ -66,4 +66,18 @@ namespace romm::nso {
     uint32_t Crc32(const uint8_t* data, size_t length);
     std::string Sha256Hex(const uint8_t* data, size_t length);
 
+    // Incremental form of the same hash, for input too large to hold in memory.
+    // The N64 path streams a 64 MiB cartridge through byte-order conversion and
+    // zlib in one pass; buffering it twice to hash it would double the peak.
+    struct Sha256Stream {
+        uint32_t state[8];
+        uint64_t bit_len;
+        uint8_t buffer[64];
+        size_t buffer_len;
+
+        Sha256Stream();
+        void Update(const uint8_t* data, size_t length);
+        std::string FinishHex();
+    };
+
 }
